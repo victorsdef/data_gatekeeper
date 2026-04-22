@@ -1,0 +1,34 @@
+# Entorno virtual
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Variables de entorno (credenciales)
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Auditoría / archivos generados
+audit_storage/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Carpeta duplicada generada por error
+data_gatekeeper/
+{auth,config,validators,views,utils,.streamlit}/
