@@ -15,6 +15,7 @@ from config.catalogs import (
 from dg_validators.engine import validate_dataframe, ValidationResult
 from utils.file_handler import read_uploaded_file, get_file_stats
 from utils.report_builder import build_error_report
+from utils.db_writer import execute_load
 
 
 # ------------------------------------------------------------------
@@ -465,16 +466,56 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
 # Paso 3: Resultado / Confirmación
 # ------------------------------------------------------------------
 def _render_result_step(catalog: dict) -> None:
-    df: Optional[pd.DataFrame] = st.session_state.get("uploaded_df")
-    filename = st.session_state.get("uploaded_name", "archivo")
+    from datetime import datetime
 
-    # Simular la carga (en producción aquí va la inserción real en SingleStore/Hive)
+    df: Optional[pd.DataFrame] = st.session_state.get("uploaded_df")
+    filename   = st.session_state.get("uploaded_name", "archivo")
+    file_bytes = st.session_state.get("uploaded_bytes") or b""
+    user       = st.session_state.user_info or {}
+    project_id = st.session_state.get("selected_project_id", "")
+
     if not st.session_state.get("carga_ejecutada"):
         with st.spinner(f"Ejecutando {catalog['estrategia'].upper()} en {catalog['tabla_destino']}..."):
-            import time
-            time.sleep(1.5)   # Simulación
+            load_result = execute_load(
+                df=df,
+                file_bytes=file_bytes,
+                filename=filename,
+                catalog=catalog,
+                username=user.get("username", "—"),
+                project_id=project_id,
+            )
         st.session_state.carga_ejecutada = True
+        st.session_state.load_result     = load_result
+        st.rerun()
 
+    load_result = st.session_state.get("load_result", {})
+    success     = load_result.get("success", False)
+    is_demo     = load_result.get("demo", False)
+
+    if not success:
+        st.markdown(f"""
+        <div style="
+            padding:28px 32px; background:#FEF2F2;
+            border:1px solid #FCA5A5; border-radius:14px;
+            text-align:center; margin-bottom:24px;
+        ">
+            <div style="font-size:48px; margin-bottom:12px;">❌</div>
+            <div style="font-weight:600; font-size:18px; color:#7F1D1D;">
+                Error al insertar en la base de datos
+            </div>
+            <div style="font-size:13px; color:#B91C1C; margin-top:8px;">
+                {load_result.get("error", "Error desconocido")}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("← Volver e intentar de nuevo", key="btn_back_error"):
+            for key in ["carga_ejecutada", "load_result"]:
+                st.session_state.pop(key, None)
+            st.session_state.current_step = "upload"
+            st.rerun()
+        return
+
+    demo_note = " (modo demo — BD no impactada)" if is_demo else ""
     st.markdown(f"""
     <div style="
         padding:28px 32px; background:#F0FDF4;
@@ -483,43 +524,43 @@ def _render_result_step(catalog: dict) -> None:
     ">
         <div style="font-size:48px; margin-bottom:12px;">🎉</div>
         <div style="font-weight:600; font-size:18px; color:#14532D;">
-            Carga completada exitosamente
+            Carga completada exitosamente{demo_note}
         </div>
         <div style="font-size:13px; color:#166534; margin-top:8px;">
-            Los datos fueron insertados en <code>{catalog['tabla_destino']}</code>
-            y el archivo original fue guardado en el almacenamiento auditado.
+            {f'Los datos fueron insertados en <code>{catalog["tabla_destino"]}</code>.' if not is_demo
+             else 'Validación OK. En producción los datos se insertarán en <code>' + catalog["tabla_destino"] + '</code>.'}
+            {' El archivo original fue guardado en almacenamiento auditado.' if load_result.get("zip_path") else ''}
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Resumen de la operación
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Filas cargadas", f"{len(df):,}" if df is not None else "—")
-    col2.metric("Tabla destino",   catalog["tabla_destino"])
-    col3.metric("Estrategia",      catalog["estrategia"].upper())
-    col4.metric("Estado",          "Éxito ✓")
+    col1.metric("Filas cargadas", f"{load_result.get('rows', 0):,}")
+    col2.metric("Tabla destino",  catalog["tabla_destino"])
+    col3.metric("Estrategia",     catalog["estrategia"].upper())
+    col4.metric("Estado",         "Éxito ✓")
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-
-    # Log de auditoría simulado
-    from datetime import datetime
-    user = st.session_state.user_info or {}
-    st.markdown("**Registro de auditoría generado**")
+    st.markdown("**Registro de auditoría**")
     st.json({
-        "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "usuario_ad":        user.get("username", "—"),
-        "id_catalogo":       catalog["catalog_id"],
-        "nombre_archivo":    filename,
-        "filas_procesadas":  len(df) if df is not None else 0,
-        "estrategia_usada":  catalog["estrategia"],
-        "tabla_destino":     catalog["tabla_destino"],
-        "estado_carga":      "Éxito",
+        "timestamp":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "usuario_ad":       user.get("username", "—"),
+        "project_id":       project_id,
+        "id_catalogo":      catalog["catalog_id"],
+        "nombre_archivo":   filename,
+        "filas_procesadas": load_result.get("rows", 0),
+        "estrategia_usada": catalog["estrategia"],
+        "destino":          catalog["destino"],
+        "tabla_destino":    catalog["tabla_destino"],
+        "estado_carga":     "Éxito",
+        "zip_auditoria":    load_result.get("zip_path") or "—",
+        "modo_demo":        is_demo,
     }, expanded=True)
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
     if st.button("Nueva carga", type="primary", key="btn_nueva_carga"):
         for key in ["uploaded_df", "uploaded_bytes", "uploaded_name",
-                    "validation_result", "carga_ejecutada"]:
+                    "validation_result", "carga_ejecutada", "load_result"]:
             st.session_state.pop(key, None)
         st.session_state.current_step = "upload"
         st.rerun()
