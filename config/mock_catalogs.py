@@ -24,6 +24,7 @@ PROYECTOS: Dict[str, Any] = {
             {
                 "catalog_id":    "CAT_CATALOGO_PRODUCTOS",
                 "nombre":        "Catálogo de Productos",
+                "base_datos":    "db_catalogos_manuales",
                 "tabla_destino": "tbsc_catalogo_productos",
                 "estrategia":    "overwrite",
                 "destino":       "singlestore",
@@ -31,7 +32,7 @@ PROYECTOS: Dict[str, Any] = {
                     "columnas": [
                         # TODO: primera columna sin nombre en el header del CSV.
                         # Confirmar con DBA el nombre real en la tabla y reemplazar "" por ese nombre.
-                        {"nombre": "",                   "tipo": "str",  "nullable": False, "reglas": []},
+                        {"nombre": "categoria",                   "tipo": "str",  "nullable": False, "reglas": []},
                         {"nombre": "subcategoria",       "tipo": "str",  "nullable": False, "reglas": [
                             {"tipo": "isin", "valor": ["CAPTACIONES", "COLOCACIONES"]}
                         ]},
@@ -47,8 +48,8 @@ PROYECTOS: Dict[str, Any] = {
                                                        "TARJETAS", "INMOBILIARIO", "MICRO", "DIGITAL"]}
                         ]},
                         # crol es el único campo realmente numérico; valores válidos: 1, 2, 3, 5
-                        {"nombre": "crol",               "tipo": "int",  "nullable": False, "reglas": [
-                            {"tipo": "isin", "valor": [1, 2, 3, 5]}
+                        {"nombre": "crol",               "tipo": "str",  "nullable": False, "reglas": [
+                            {"tipo": "isin", "valor": ["1", "2", "3", "5"]}
                         ]},
                         {"nombre": "rol",                "tipo": "str",  "nullable": False, "reglas": [
                             {"tipo": "isin", "valor": ["MASIVO", "MASIVO AFLUENTE", "AFLUENTE", "JEFE DE AGENCIA"]}
@@ -68,6 +69,7 @@ PROYECTOS: Dict[str, Any] = {
             {
                 "catalog_id":    "CAT_ROLES_CREDITO",
                 "nombre":        "Roles de crédito",
+                "base_datos":    "db_catalogos_manuales",
                 "tabla_destino": "cat_roles_credito",
                 "estrategia":    "overwrite",
                 "destino":       "singlestore",
@@ -83,6 +85,7 @@ PROYECTOS: Dict[str, Any] = {
             {
                 "catalog_id":    "CAT_TIPO_CREDITO",
                 "nombre":        "Tipos de crédito",
+                "base_datos":    "db_catalogos_manuales",
                 "tabla_destino": "cat_tipo_credito",
                 "estrategia":    "append",
                 "destino":       "singlestore",
@@ -103,6 +106,7 @@ PROYECTOS: Dict[str, Any] = {
             {
                 "catalog_id":    "CAT_SEGMENTOS_TD",
                 "nombre":        "Segmentos de tarjeta",
+                "base_datos":    "db_catalogos_manuales",
                 "tabla_destino": "cat_segmentos_td",
                 "estrategia":    "overwrite",
                 "destino":       "hive",
@@ -123,6 +127,7 @@ PROYECTOS: Dict[str, Any] = {
             {
                 "catalog_id":    "CAT_LISTAS_CONTROL",
                 "nombre":        "Listas de control",
+                "base_datos":    "db_catalogos_manuales",
                 "tabla_destino": "cat_listas_control",
                 "estrategia":    "reproceso",
                 "destino":       "singlestore",

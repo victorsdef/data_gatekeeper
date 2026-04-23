@@ -13,7 +13,7 @@ from config.catalogs import (
     get_catalog_by_id,
 )
 from dg_validators.engine import validate_dataframe, ValidationResult
-from utils.file_handler import read_uploaded_file, get_file_stats
+from utils.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
 from utils.report_builder import build_error_report
 from utils.db_writer import execute_load
 
@@ -241,31 +241,38 @@ def _render_step_indicator(current: str) -> None:
 # ------------------------------------------------------------------
 # Paso 1: Upload
 # ------------------------------------------------------------------
+_DELIM_LABEL = {
+    ",":  "Coma (,)",
+    ";":  "Punto y coma (;)",
+    "|":  "Pipe (|)",
+    "\t": "Tabulador",
+}
+_DELIM_TIP = {
+    ",":  "El más común en archivos generados fuera de Excel. Ej: `Juan,García,25`",
+    ";":  "Común en Excel exportado en español. Ej: `Juan;García;25`",
+    "|":  "Usado en algunos sistemas bancarios. Ej: `Juan|García|25`",
+    "\t": "El archivo usa un espacio grande (Tab) entre cada dato.",
+}
+_ENC_LABEL = {
+    "utf-8":      "UTF-8",
+    "latin-1":    "Latin-1",
+    "iso-8859-1": "ISO-8859-1",
+    "cp1252":     "Windows-1252",
+}
+_ENC_TIP = {
+    "utf-8":      "Estándar moderno. Funciona con la mayoría de archivos actuales.",
+    "latin-1":    "Pruébalo si la ñ o las tildes aparecen con caracteres raros.",
+    "iso-8859-1": "Similar a Latin-1, para archivos de sistemas europeos.",
+    "cp1252":     "Para archivos generados por sistemas Windows o bancarios antiguos.",
+}
+
+
 def _render_upload_step(catalog: dict) -> None:
     col1, col2 = st.columns([3, 2])
 
     with col1:
         st.markdown("#### Subir archivo")
 
-        # Opciones de configuración
-        with st.expander("Opciones de lectura", expanded=False):
-            col_delim, col_enc = st.columns(2)
-            with col_delim:
-                delimiter = st.selectbox(
-                    "Delimitador",
-                    options=[",", ";", "|", "\t"],
-                    format_func=lambda x: {"," : "Coma (,)", ";" : "Punto y coma (;)",
-                                           "|" : "Pipe (|)", "\t": "Tabulador"}.get(x, x),
-                    key="delimiter",
-                )
-            with col_enc:
-                encoding = st.selectbox(
-                    "Encoding",
-                    options=["utf-8", "latin-1", "iso-8859-1", "cp1252"],
-                    key="encoding",
-                )
-
-        # Zona de carga
         uploaded_file = st.file_uploader(
             label="Arrastra tu archivo aquí o haz clic para seleccionar",
             type=["csv", "txt", "xlsx", "xls"],
@@ -275,20 +282,91 @@ def _render_upload_step(catalog: dict) -> None:
 
         if uploaded_file:
             file_bytes = uploaded_file.read()
+            ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+            is_excel = ext in ("xlsx", "xls")
+
+            # Detectar formato y mostrarlo al usuario
+            if not is_excel:
+                enc = st.session_state.get("encoding", "utf-8")
+                detected = detect_file_delimiter(file_bytes, enc)
+                selected = st.session_state.get("delimiter", ",")
+                # Si el usuario no ha forzado nada, usar el detectado
+                active_delim = selected if selected != "," else detected
+
+                st.success(
+                    f"Archivo detectado con separador: **{_DELIM_LABEL.get(detected, detected)}**  "
+                    f"— el sistema lo leerá automáticamente."
+                )
+
+                with st.expander("¿Las columnas no se ven bien? Ajustar lectura"):
+                    st.caption(
+                        "Cambia estas opciones solo si la previsualización muestra "
+                        "las columnas mezcladas o los caracteres con símbolos raros."
+                    )
+                    col_d, col_e = st.columns(2)
+                    with col_d:
+                        st.selectbox(
+                            "Separador",
+                            options=list(_DELIM_LABEL.keys()),
+                            format_func=lambda x: _DELIM_LABEL[x],
+                            key="delimiter",
+                        )
+                        cur_delim = st.session_state.get("delimiter", ",")
+                        st.caption(_DELIM_TIP[cur_delim])
+                        if cur_delim != "," and cur_delim != detected:
+                            st.warning(
+                                f"Detectamos **{_DELIM_LABEL[detected]}** en tu archivo. "
+                                f"Cambiaste a **{_DELIM_LABEL[cur_delim]}** — úsalo solo si "
+                                f"la previsualización sigue mostrando las columnas mezcladas."
+                            )
+                    with col_e:
+                        st.selectbox(
+                            "Codificación",
+                            options=list(_ENC_LABEL.keys()),
+                            format_func=lambda x: _ENC_LABEL[x],
+                            key="encoding",
+                        )
+                        cur_enc = st.session_state.get("encoding", "utf-8")
+                        st.caption(_ENC_TIP[cur_enc])
+            else:
+                sheets = get_excel_sheets(file_bytes)
+                if len(sheets) <= 1:
+                    st.success(
+                        f"Archivo Excel detectado — hoja **{sheets[0] if sheets else 'Sheet1'}** "
+                        f"se leerá automáticamente."
+                    )
+                else:
+                    st.success(
+                        f"Archivo Excel con **{len(sheets)} hojas** detectado — "
+                        f"se leerá la primera hoja por defecto."
+                    )
+                    with st.expander("¿Quieres leer otra hoja? Seleccionar"):
+                        st.caption(
+                            "El archivo tiene más de una hoja. "
+                            "Elige cuál contiene los datos que quieres cargar."
+                        )
+                        st.selectbox(
+                            "Hoja a leer",
+                            options=sheets,
+                            key="sheet_name",
+                            help="Selecciona la hoja que contiene los datos del catálogo.",
+                        )
+
             df, error = read_uploaded_file(
                 file_bytes=file_bytes,
                 filename=uploaded_file.name,
                 delimiter=st.session_state.get("delimiter", ","),
-                encoding=st.session_state.get("encoding",   "utf-8"),
+                encoding=st.session_state.get("encoding", "utf-8"),
             )
 
             if error:
-                st.error(f"Error al leer el archivo: {error}")
+                st.error(f"No se pudo leer el archivo: {error}")
                 return
 
             if df is None or df.empty:
                 st.error(
-                    "El archivo está vacío (0 filas). Verifica que tenga datos y que el delimitador/hoja sea la correcta."
+                    "El archivo está vacío o el separador es incorrecto. "
+                    "Abre 'Ajustar lectura' y prueba con otro separador."
                 )
                 st.session_state.uploaded_df = None
                 return
@@ -298,32 +376,29 @@ def _render_upload_step(catalog: dict) -> None:
             st.session_state.uploaded_bytes = file_bytes
             st.session_state.uploaded_name  = uploaded_file.name
 
-            # Stats del archivo
             c1, c2, c3 = st.columns(3)
-            c1.metric("Filas",     f"{stats['filas']:,}")
-            c2.metric("Columnas",  stats["columnas"])
-            c3.metric("Tamaño",    stats["size_str"])
+            c1.metric("Filas",    f"{stats['filas']:,}")
+            c2.metric("Columnas", stats["columnas"])
+            c3.metric("Tamaño",   stats["size_str"])
 
             if stats["null_count"] > 0:
-                st.warning(f"{stats['null_count']} valores nulos detectados en el archivo.")
+                st.warning(f"{stats['null_count']} celdas vacías detectadas en el archivo.")
 
     with col2:
         if st.session_state.get("uploaded_df") is not None:
             st.markdown("#### Previsualización")
-            df_preview = st.session_state.uploaded_df.head(20)
             st.dataframe(
-                df_preview,
+                st.session_state.uploaded_df.head(20),
                 use_container_width=True,
                 height=320,
             )
-            st.caption(f"Mostrando primeras {min(20, len(st.session_state.uploaded_df))} filas")
+            st.caption(f"Primeras {min(20, len(st.session_state.uploaded_df))} filas")
 
-    # Botón continuar
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if st.session_state.get("uploaded_df") is not None:
         if st.button("Continuar → Validar datos", type="primary", key="btn_to_validate"):
-            st.session_state.current_step    = "validate"
-            st.session_state.validation_result = None
+            st.session_state.current_step       = "validate"
+            st.session_state.validation_result  = None
             st.rerun()
 
 
@@ -388,7 +463,7 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             border:1px solid #6EE7B7; border-radius:12px;
             display:flex; align-items:center; gap:16px;
         ">
-            <div style="font-size:32px;">✅</div>
+            <div style="font-size:32px;"></div>
             <div>
                 <div style="font-weight:600; font-size:15px; color:#065F46;">
                     Validación exitosa

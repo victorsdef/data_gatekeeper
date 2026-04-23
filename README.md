@@ -20,18 +20,18 @@ Aplicación web interna que descentraliza la carga de catálogos manuales (CSV, 
 | Configuración | `config/settings.py` | Carga variables de entorno: DEMO_MODE, LDAP, SingleStore, auditoría |
 | Login demo | `auth/ldap_auth.py` | Usuarios hardcodeados para desarrollo sin AD |
 | Login LDAP | `auth/ldap_auth.py` | Autenticación real contra Active Directory via NTLM — activo con `DEMO_MODE=false` |
-| Catálogos mock | `config/mock_catalogs.py` | 4 proyectos con esquemas definidos para desarrollo |
-| Router catálogos | `config/catalogs.py` | Enruta a mock o SingleStore según `DEMO_MODE` |
-| Lectura de archivos | `utils/file_handler.py` | Lee CSV, TXT y Excel a pandas DataFrame |
+| Catálogos mock | `config/mock_catalogs.py` | 4 proyectos con esquemas y `base_datos` definidos para desarrollo |
+| Router catálogos | `config/catalogs.py` | Enruta a mock o SingleStore según `DEMO_MODE`; incluye `base_datos` y filtro `activo=1` |
+| Lectura de archivos | `utils/file_handler.py` | Lee CSV, TXT y Excel; detecta separador y encoding automáticamente; expone nombres de hojas Excel |
 | Motor de validación | `dg_validators/engine.py` | Validación completa en memoria (ver detalle abajo) |
 | Reporte de errores | `utils/report_builder.py` | Genera Excel descargable con 2 hojas, colores y metadatos |
 | UI Login | `views/login_view.py` | Pantalla de login con manejo de sesión |
-| UI Principal | `views/main_view.py` | Selector proyecto/catálogo, drag & drop, previsualización, consola de errores |
-| Escritura en SingleStore | `utils/db_writer.py` | Estrategias `append`, `overwrite` y `reproceso` con transacciones SQL |
-| Escritura en Hive | `utils/db_writer.py` | Estrategias `append`, `overwrite` y `reproceso` por partición de fecha |
+| UI Principal | `views/main_view.py` | Selector proyecto/catálogo, drag & drop, detección de formato, previsualización, consola de errores |
+| Escritura en SingleStore | `utils/db_writer.py` | Escribe en `base_datos.tabla_destino`; estrategias `append`, `overwrite` y `reproceso` con transacciones |
+| Escritura en Hive | `utils/db_writer.py` | Escribe en `base_datos.tabla_destino`; estrategias `append`, `overwrite` y `reproceso` por partición |
 | Cold storage | `utils/db_writer.py` | Guarda ZIP inmutable del archivo original en `AUDIT_STORAGE_PATH` |
 | Log de auditoría | `utils/db_writer.py` | Inserta en `log_auditoria` tras cada carga (éxito o fallo) |
-| DDL metadatos | `db/migrations/001_create_metadata_tables.sql` | Script para crear tablas en SingleStore |
+| DDL metadatos | `db/migrations/001_create_metadata_tables.sql` | Script para crear tablas en SingleStore (incluye columna `base_datos`) |
 | Seed inicial | `db/migrations/002_seed_initial_data.sql` | INSERTs con los catálogos actuales del mock |
 
 ###  Implementado pero desactivado (requiere `DEMO_MODE=false` + BD real)
@@ -48,6 +48,7 @@ Aplicación web interna que descentraliza la carga de catálogos manuales (CSV, 
 | Tarea | Descripción |
 |---|---|
 | **Ejecutar DDLs** | Correr `db/migrations/001_create_metadata_tables.sql` y `002_seed_initial_data.sql` en SingleStore |
+| **Poblar `catalogos_config`** | Insertar un registro por cada tabla de `db_catalogos_manuales` y `db_bsc_banca_personas` que se quiera exponer, con su `schema_json` correspondiente |
 | **Ajustar grupos del AD** | En `auth/ldap_auth.py` línea 92, reemplazar `GATEKEEPER_ADMIN` y `GATEKEEPER_PUBLICADOR` por los nombres reales de los grupos en el AD del banco |
 | **Confirmar primera columna** | En `config/mock_catalogs.py` hay un `TODO`: la primera columna de `tbsc_catalogo_productos` está sin nombre — confirmar con el DBA |
 
@@ -69,6 +70,27 @@ El motor `dg_validators/engine.py` aplica las siguientes validaciones en orden:
 | **Longitud exacta (`str_length`)** | El texto debe tener entre `min` y `max` caracteres |
 
 Si cualquier validación falla, el proceso se aborta inmediatamente y no se escribe nada en la BD.
+
+---
+
+## Lectura de archivos
+
+`utils/file_handler.py` soporta CSV, TXT y Excel con detección automática de formato.
+
+### CSV / TXT
+
+El sistema analiza los primeros 4 KB del archivo con `csv.Sniffer` y detecta el separador sin intervención del usuario. Separadores soportados: `,` `;` `|` `\t`.
+
+Si el archivo no se lee correctamente, la UI muestra un expander **"¿Las columnas no se ven bien? Ajustar lectura"** con:
+- Selector de separador con descripción contextual según la opción elegida
+- Selector de codificación (`utf-8`, `latin-1`, `iso-8859-1`, `cp1252`)
+- Advertencia automática si el usuario elige un separador distinto al detectado
+
+### Excel (.xlsx / .xls)
+
+No requiere separador ni codificación. El sistema detecta las hojas del archivo y:
+- Si tiene **una sola hoja**: la lee automáticamente, sin opciones adicionales
+- Si tiene **más de una hoja**: muestra el número de hojas y un expander **"¿Quieres leer otra hoja?"** con un selector de hoja
 
 ---
 
@@ -115,11 +137,40 @@ data_gatekeeper/
 
 ## Modelo de metadatos en SingleStore
 
+Base de datos: `gatekeeper_meta`
+
 ```sql
-proyectos          -- Agrupador lógico de catálogos
-catalogos_config   -- Definición de cada catálogo (tabla destino, estrategia, schema JSON)
-usuarios           -- Mapeo de usuarios del AD y sus roles (Admin / Publicador)
-log_auditoria      -- Registro inmutable de cada carga (timestamp, usuario, filas, estado)
+proyectos          -- Agrupador lógico (project_id, nombre, descripcion, activo)
+catalogos_config   -- Un registro por tabla destino:
+                   --   catalog_id, project_id, nombre, descripcion,
+                   --   base_datos (ej: db_catalogos_manuales),
+                   --   tabla_destino, destino, estrategia,
+                   --   schema_json, activo
+usuarios           -- Mapeo AD → rol interno (username, rol, activo, ultimo_acceso)
+                   -- Las credenciales las gestiona el Active Directory, no esta tabla
+log_auditoria      -- Registro inmutable de cada carga (timestamp, usuario_ad, id_catalogo,
+                   --   filas_procesadas, estrategia_usada, estado_carga, ruta_zip_auditoria)
+```
+
+### Columna `base_datos`
+
+`catalogos_config` tiene una columna `base_datos` que indica en qué base de datos está la tabla destino. Esto permite que el sistema escriba en `db_catalogos_manuales`, `db_bsc_banca_personas` u otras bases desde una única conexión a SingleStore, usando nombres completamente calificados (`base_datos.tabla_destino`).
+
+### Columna `schema_json`
+
+Define las columnas esperadas y sus reglas de validación. Estructura:
+
+```json
+{
+  "columnas": [
+    { "nombre": "codigo",       "tipo": "str",   "nullable": false },
+    { "nombre": "descripcion",  "tipo": "str",   "nullable": true  },
+    { "nombre": "estado",       "tipo": "str",   "nullable": false,
+      "validaciones": { "isin": ["A", "I"] } },
+    { "nombre": "monto",        "tipo": "float", "nullable": true,
+      "validaciones": { "gte": 0 } }
+  ]
+}
 ```
 
 ---

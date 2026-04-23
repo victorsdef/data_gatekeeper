@@ -48,6 +48,7 @@ def execute_load(
         demo     : bool  — True si corrió en modo demo (sin BD real)
     """
     tabla      = catalog["tabla_destino"]
+    base_datos = catalog["base_datos"]
     estrategia = catalog["estrategia"]
     destino    = catalog["destino"]
     catalog_id = catalog["catalog_id"]
@@ -61,9 +62,9 @@ def execute_load(
         # 1. Escritura en BD
         if not DEMO_MODE:
             if destino == "singlestore":
-                _write_singlestore(df, tabla, estrategia)
+                _write_singlestore(df, base_datos, tabla, estrategia)
             elif destino == "hive":
-                _write_hive(df, tabla, estrategia)
+                _write_hive(df, base_datos, tabla, estrategia)
             else:
                 raise ValueError(f"Destino desconocido: '{destino}'")
 
@@ -127,11 +128,12 @@ def _connect_ss():
     )
 
 
-def _write_singlestore(df: pd.DataFrame, tabla: str, estrategia: str) -> None:
+def _write_singlestore(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) -> None:
+    tabla_fq     = f"`{base_datos}`.`{tabla}`"
     cols         = list(df.columns)
     col_names    = ", ".join(f"`{c}`" for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
-    insert_sql   = f"INSERT INTO `{tabla}` ({col_names}) VALUES ({placeholders})"
+    insert_sql   = f"INSERT INTO {tabla_fq} ({col_names}) VALUES ({placeholders})"
     rows_data    = _df_to_tuples(df)
 
     with _connect_ss() as conn:
@@ -141,7 +143,7 @@ def _write_singlestore(df: pd.DataFrame, tabla: str, estrategia: str) -> None:
 
             elif estrategia == "overwrite":
                 cur.execute("BEGIN")
-                cur.execute(f"TRUNCATE TABLE `{tabla}`")
+                cur.execute(f"TRUNCATE TABLE {tabla_fq}")
                 _batch_insert(cur, insert_sql, rows_data)
                 cur.execute("COMMIT")
 
@@ -151,7 +153,7 @@ def _write_singlestore(df: pd.DataFrame, tabla: str, estrategia: str) -> None:
                 ph_fechas = ", ".join(["%s"] * len(fechas))
                 cur.execute("BEGIN")
                 cur.execute(
-                    f"DELETE FROM `{tabla}` WHERE `{partition_col}` IN ({ph_fechas})",
+                    f"DELETE FROM {tabla_fq} WHERE `{partition_col}` IN ({ph_fechas})",
                     fechas,
                 )
                 _batch_insert(cur, insert_sql, rows_data)
@@ -188,7 +190,7 @@ def _get_partition_col(df: pd.DataFrame) -> str:
 # ------------------------------------------------------------------
 # Hive
 # ------------------------------------------------------------------
-def _write_hive(df: pd.DataFrame, tabla: str, estrategia: str) -> None:
+def _write_hive(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) -> None:
     try:
         from pyhive import hive as pyhive_conn
     except ImportError:
@@ -199,28 +201,28 @@ def _write_hive(df: pd.DataFrame, tabla: str, estrategia: str) -> None:
 
     hive_host = os.getenv("HIVE_HOST", "localhost")
     hive_port = int(os.getenv("HIVE_PORT", "10000"))
-    hive_db   = os.getenv("HIVE_DATABASE", "default")
     hive_user = os.getenv("HIVE_USER", "hive")
+    tabla_fq  = f"{base_datos}.{tabla}"
 
     conn = pyhive_conn.Connection(
         host=hive_host, port=hive_port,
-        database=hive_db, username=hive_user,
+        database=base_datos, username=hive_user,
     )
     try:
         cur = conn.cursor()
 
         if estrategia == "overwrite":
-            _hive_insert(cur, df, tabla, overwrite=True)
+            _hive_insert(cur, df, tabla_fq, overwrite=True)
 
         elif estrategia == "append":
-            _hive_insert(cur, df, tabla, overwrite=False)
+            _hive_insert(cur, df, tabla_fq, overwrite=False)
 
         elif estrategia == "reproceso":
             partition_col = _get_partition_col(df)
             for fecha in df[partition_col].dropna().unique():
                 fecha_df = df[df[partition_col] == fecha]
                 _hive_insert(
-                    cur, fecha_df, tabla,
+                    cur, fecha_df, tabla_fq,
                     overwrite=True,
                     partition={partition_col: str(fecha)},
                 )

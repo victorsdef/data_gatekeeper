@@ -68,23 +68,9 @@ else:
         """
         with _connect() as conn:
             with conn.cursor() as cur:
-                try:
-                    cur.execute("SELECT id, nombre FROM proyectos ORDER BY nombre")
-                    rows = _fetchall_dict(cur)
-                    return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
-                except Exception:
-                    # Fallback: derivar proyectos de catalogos_config
-                    cur.execute(
-                        """
-                        SELECT DISTINCT
-                          project_id AS id,
-                          COALESCE(project_nombre, project_name, project_id) AS nombre
-                        FROM catalogos_config
-                        ORDER BY nombre
-                        """
-                    )
-                    rows = _fetchall_dict(cur)
-                    return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
+                cur.execute("SELECT project_id AS id, nombre FROM proyectos WHERE activo = 1 ORDER BY nombre")
+                rows = _fetchall_dict(cur)
+                return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
 
     def get_catalogs_by_project(project_id: str) -> List[Dict[str, Any]]:
         """
@@ -100,12 +86,13 @@ else:
                     SELECT
                       catalog_id,
                       nombre,
+                      base_datos,
                       tabla_destino,
                       estrategia,
                       destino,
                       schema_json
                     FROM catalogos_config
-                    WHERE project_id = %s
+                    WHERE project_id = %s AND activo = 1
                     ORDER BY nombre
                     """,
                     (project_id,),
@@ -115,12 +102,13 @@ else:
                 for r in rows:
                     catalogs.append(
                         {
-                            "catalog_id": str(r["catalog_id"]),
-                            "nombre": str(r["nombre"]),
+                            "catalog_id":   str(r["catalog_id"]),
+                            "nombre":       str(r["nombre"]),
+                            "base_datos":   str(r["base_datos"]),
                             "tabla_destino": str(r["tabla_destino"]),
-                            "estrategia": str(r["estrategia"]),
-                            "destino": str(r["destino"]),
-                            "schema": _parse_schema(r.get("schema_json")),
+                            "estrategia":   str(r["estrategia"]),
+                            "destino":      str(r["destino"]),
+                            "schema":       _parse_schema(r.get("schema_json")),
                         }
                     )
                 return catalogs
@@ -133,6 +121,7 @@ else:
                     SELECT
                       catalog_id,
                       nombre,
+                      base_datos,
                       tabla_destino,
                       estrategia,
                       destino,
@@ -148,11 +137,12 @@ else:
                     return {}
                 r = rows[0]
                 return {
-                    "catalog_id": str(r["catalog_id"]),
-                    "nombre": str(r["nombre"]),
+                    "catalog_id":    str(r["catalog_id"]),
+                    "nombre":        str(r["nombre"]),
+                    "base_datos":    str(r["base_datos"]),
                     "tabla_destino": str(r["tabla_destino"]),
-                    "estrategia": str(r["estrategia"]),
-                    "destino": str(r["destino"]),
-                    "schema": _parse_schema(r.get("schema_json")),
+                    "estrategia":    str(r["estrategia"]),
+                    "destino":       str(r["destino"]),
+                    "schema":        _parse_schema(r.get("schema_json")),
                 }
 
