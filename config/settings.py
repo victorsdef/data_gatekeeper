@@ -9,8 +9,12 @@ load_dotenv()
 
 # ------------------------------------------------------------------
 # Modo demo: True = no necesita LDAP ni BD reales, útil para desarrollo
+# DEMO_MODE       controla el LOGIN (True = usuarios hardcodeados, sin AD)
+# REAL_CATALOGS   controla los CATÁLOGOS (True = lee de SingleStore, False = mock)
+#                 Si no se define, sigue el valor contrario de DEMO_MODE
 # ------------------------------------------------------------------
 DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").lower() == "true"
+REAL_CATALOGS: bool = os.getenv("REAL_CATALOGS", str(not DEMO_MODE)).lower() == "true"
 
 # ------------------------------------------------------------------
 # LDAP / Active Directory

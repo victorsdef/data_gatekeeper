@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+
+  # ------------------------------------------------------------------
+  # SingleStore
+  # ------------------------------------------------------------------
+  singlestore:
+    image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+    container_name: gatekeeper_singlestore
+    environment:
+      ROOT_PASSWORD: "gatekeeper123"
+    ports:
+      - "3306:3306"    # MySQL protocol
+      - "8080:8080"    # Studio web UI
+    volumes:
+      - singlestore_data:/data
+      - ./init_db:/init_db    # Scripts SQL de inicialización
+    healthcheck:
+      test: ["CMD", "singlestore", "-u", "root", "-pgatekeeper123", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - gatekeeper_net
+
+  # ------------------------------------------------------------------
+  # Data Gatekeeper (Streamlit)
+  # ------------------------------------------------------------------
+  app:
+    build:
+      context:  ..
+      dockerfile: docker/Dockerfile
+    container_name: gatekeeper_app
+    env_file:
+      - ./.env
+    ports:
+      - "8501:8501"
+    volumes:
+      - audit_storage:/app/audit_storage    # Archivos zip de auditoría
+    depends_on:
+      singlestore:
+        condition: service_healthy
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+volumes:
+  singlestore_data:
+  audit_storage:
+
+networks:
+  gatekeeper_net:
+    driver: bridge

@@ -17,11 +17,11 @@ Aplicación web interna que descentraliza la carga de catálogos manuales (CSV, 
 | Componente | Archivo | Descripción |
 |---|---|---|
 | Entry point | `app.py` | Inicializa sesión y enruta a login o app principal |
-| Configuración | `config/settings.py` | Carga variables de entorno: DEMO_MODE, LDAP, SingleStore, auditoría |
-| Login demo | `auth/ldap_auth.py` | Usuarios hardcodeados para desarrollo sin AD |
-| Login LDAP | `auth/ldap_auth.py` | Autenticación real contra Active Directory via NTLM — activo con `DEMO_MODE=false` |
-| Catálogos mock | `config/mock_catalogs.py` | 4 proyectos con esquemas y `base_datos` definidos para desarrollo |
-| Router catálogos | `config/catalogs.py` | Enruta a mock o SingleStore según `DEMO_MODE`; incluye `base_datos` y filtro `activo=1` |
+| Configuración | `config/settings.py` | Carga variables de entorno: `DEMO_MODE`, `REAL_CATALOGS`, LDAP, SingleStore, auditoría |
+| Login demo | `auth/ldap_auth.py` | Usuarios hardcodeados para desarrollo sin AD (`DEMO_MODE=true`) |
+| Login LDAP | `auth/ldap_auth.py` | Autenticación real contra Active Directory via NTLM (`DEMO_MODE=false`) |
+| Catálogos desde SingleStore | `config/catalogs.py` | Lee proyectos y catálogos desde `catalogos_config` (`REAL_CATALOGS=true`) |
+| Fallback mock | `config/mock_catalogs.py` | Retorna listas vacías cuando `REAL_CATALOGS=false` |
 | Lectura de archivos | `utils/file_handler.py` | Lee CSV, TXT y Excel; detecta separador y encoding automáticamente; expone nombres de hojas Excel |
 | Motor de validación | `dg_validators/engine.py` | Validación completa en memoria (ver detalle abajo) |
 | Reporte de errores | `utils/report_builder.py` | Genera Excel descargable con 2 hojas, colores y metadatos |
@@ -32,25 +32,69 @@ Aplicación web interna que descentraliza la carga de catálogos manuales (CSV, 
 | Cold storage | `utils/db_writer.py` | Guarda ZIP inmutable del archivo original en `AUDIT_STORAGE_PATH` |
 | Log de auditoría | `utils/db_writer.py` | Inserta en `log_auditoria` tras cada carga (éxito o fallo) |
 | DDL metadatos | `db/migrations/001_create_metadata_tables.sql` | Script para crear tablas en SingleStore (incluye columna `base_datos`) |
-| Seed inicial | `db/migrations/002_seed_initial_data.sql` | INSERTs con los catálogos actuales del mock |
+| Seed inicial | `db/migrations/002_seed_initial_data.sql` | INSERTs iniciales de referencia |
 
-###  Implementado pero desactivado (requiere `DEMO_MODE=false` + BD real)
+###  Implementado pero desactivado
 
 | Componente | Archivo | Qué necesita |
 |---|---|---|
-| Login con Active Directory | `auth/ldap_auth.py` | Variables LDAP en `.env` |
-| Lectura de catálogos desde BD | `config/catalogs.py` | Ejecutar los scripts SQL + variables SingleStore en `.env` |
-| Escritura en BD y auditoría | `utils/db_writer.py` | Variables SingleStore en `.env` + tablas creadas |
+| Login con Active Directory | `auth/ldap_auth.py` | `DEMO_MODE=false` + variables LDAP en `.env` |
+| Escritura en BD y auditoría | `utils/db_writer.py` | `DEMO_MODE=false` + variables SingleStore en `.env` + tablas creadas |
 | Escritura en Hive | `utils/db_writer.py` | Variables `HIVE_HOST`, `HIVE_PORT`, `HIVE_DATABASE` en `.env` + `pip install pyhive` |
 
-###  Pendiente antes de producción
+###  Pendiente antes de producción completa
 
 | Tarea | Descripción |
 |---|---|
-| **Ejecutar DDLs** | Correr `db/migrations/001_create_metadata_tables.sql` y `002_seed_initial_data.sql` en SingleStore |
-| **Poblar `catalogos_config`** | Insertar un registro por cada tabla de `db_catalogos_manuales` y `db_bsc_banca_personas` que se quiera exponer, con su `schema_json` correspondiente |
-| **Ajustar grupos del AD** | En `auth/ldap_auth.py` línea 92, reemplazar `GATEKEEPER_ADMIN` y `GATEKEEPER_PUBLICADOR` por los nombres reales de los grupos en el AD del banco |
-| **Confirmar primera columna** | En `config/mock_catalogs.py` hay un `TODO`: la primera columna de `tbsc_catalogo_productos` está sin nombre — confirmar con el DBA |
+| **Activar login con AD** | Configurar variables LDAP en `.env` y cambiar `DEMO_MODE=false` |
+| **Ajustar grupos del AD** | En `auth/ldap_auth.py` línea 92, reemplazar `GATEKEEPER_ADMIN` y `GATEKEEPER_PUBLICADOR` por los nombres reales de los grupos en el Active Directory del banco |
+| **Instalar pyhive** | Solo si se usa Hive: `pip install pyhive thrift thrift-sasl` y agregar `HIVE_HOST`, `HIVE_PORT`, `HIVE_DATABASE`, `HIVE_USER` al `.env` |
+
+---
+
+## Variables de entorno y modos de ejecución
+
+`DEMO_MODE` y `REAL_CATALOGS` son independientes para permitir una transición gradual a producción.
+
+| Variable | Controla | Valores |
+|---|---|---|
+| `DEMO_MODE` | **Login** | `true` = usuarios hardcodeados / `false` = Active Directory |
+| `REAL_CATALOGS` | **Catálogos** | `true` = lee de `catalogos_config` en SingleStore / `false` = listas vacías |
+
+### Escenarios de configuración
+
+**Desarrollo puro** — sin BD ni AD:
+```
+DEMO_MODE=true
+REAL_CATALOGS=false
+```
+
+**Desarrollo con BD real** — BD conectada, AD pendiente (estado actual):
+```
+DEMO_MODE=true
+REAL_CATALOGS=true
+SS_HOST=...
+SS_PORT=3306
+SS_USER=...
+SS_PASSWORD=...
+SS_DATABASE=gatekeeper_meta
+```
+
+**Producción completa** — BD y AD activos:
+```
+DEMO_MODE=false
+REAL_CATALOGS=true
+SS_HOST=...
+SS_PORT=3306
+SS_USER=...
+SS_PASSWORD=...
+SS_DATABASE=gatekeeper_meta
+LDAP_SERVER=ldap://ad.baustro.fin.ec
+LDAP_DOMAIN=BAUSTRO
+LDAP_BASE_DN=DC=baustro,DC=fin,DC=ec
+```
+
+> Si `REAL_CATALOGS` no está definido en el `.env`, toma el valor contrario de `DEMO_MODE` automáticamente.
 
 ---
 
@@ -116,17 +160,18 @@ data_gatekeeper/
 ├── auth/
 │   └── ldap_auth.py                # Autenticación LDAP / demo
 ├── config/
-│   ├── settings.py                 # Variables de configuración
-│   ├── catalogs.py                 # Router mock vs SingleStore
-│   └── mock_catalogs.py            # Catálogos hardcodeados para DEMO_MODE
+│   ├── settings.py                 # Variables de configuración (DEMO_MODE, REAL_CATALOGS)
+│   ├── catalogs.py                 # Router REAL_CATALOGS vs fallback mock
+│   └── mock_catalogs.py            # Fallback vacío para REAL_CATALOGS=false
 ├── db/
 │   └── migrations/
 │       ├── 001_create_metadata_tables.sql   # DDL tablas de metadatos
-│       └── 002_seed_initial_data.sql        # Datos iniciales
+│       └── 002_seed_initial_data.sql        # Datos iniciales de referencia
 ├── dg_validators/
 │   └── engine.py                   # Motor de validación en memoria
 ├── utils/
-│   ├── file_handler.py             # Lectura CSV / TXT / Excel
+│   ├── file_handler.py             # Lectura CSV / TXT / Excel con auto-detección
+│   ├── db_writer.py                # Escritura BD, cold storage y auditoría
 │   └── report_builder.py          # Generador reporte Excel de errores
 └── views/
     ├── login_view.py               # Pantalla de login
@@ -192,50 +237,9 @@ pip install -r requirements.txt
 
 # 4. Configurar variables de entorno
 cp .env.example .env
-# Editar .env con los valores reales
+# Editar .env con los valores correspondientes al escenario deseado
 ```
 
-### Modo desarrollo (sin BD ni AD)
+Ver sección **Variables de entorno y modos de ejecución** para los escenarios disponibles.
 
-```bash
-streamlit run app.py
-```
-
-| Usuario | Contraseña | Rol |
-|---|---|---|
-| vcastro | demo123 | Publicador |
-| admin | admin123 | Admin |
-
-### Modo producción
-
-```bash
-# 1. Ejecutar scripts SQL en SingleStore
-# db/migrations/001_create_metadata_tables.sql
-# db/migrations/002_seed_initial_data.sql
-
-# 2. Configurar .env
-DEMO_MODE=false
-SS_HOST=tu-servidor
-SS_PORT=3306
-SS_USER=tu-usuario
-SS_PASSWORD=tu-password
-SS_DATABASE=gatekeeper_meta
-LDAP_SERVER=ldap://ad.baustro.fin.ec
-LDAP_DOMAIN=BAUSTRO
-LDAP_BASE_DN=DC=baustro,DC=fin,DC=ec
-
-# 3. Levantar la app
-streamlit run app.py --server.port 8501
-```
-
-Nginx actúa como proxy inverso hacia el puerto 8501.
-
----
-
-## Pendiente antes de producción
-
-1. **Ejecutar DDLs en SingleStore** — correr `db/migrations/001_create_metadata_tables.sql` y `002_seed_initial_data.sql` en la BD del banco
-2. **Configurar `.env`** — copiar `.env.example` a `.env` y ajustar credenciales reales de SingleStore y LDAP
-3. **Ajustar grupos del AD** — en `auth/ldap_auth.py` línea 92, reemplazar `GATEKEEPER_ADMIN` y `GATEKEEPER_PUBLICADOR` por los nombres reales de los grupos en el Active Directory del banco
-4. **Confirmar primera columna** — en `config/mock_catalogs.py` hay un `TODO`: la primera columna de `tbsc_catalogo_productos` está sin nombre — confirmar con el DBA y reemplazar `""` por el nombre real
-5. **Instalar pyhive** (solo si se usa Hive) — `pip install pyhive thrift thrift-sasl` y agregar variables `HIVE_HOST`, `HIVE_PORT`, `HIVE_DATABASE`, `HIVE_USER` al `.env`
+Nginx actúa como proxy inverso hacia el puerto 8501 en producción.

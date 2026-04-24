@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from config.settings import DEMO_MODE
+from config.settings import REAL_CATALOGS
 
-if DEMO_MODE:
+if not REAL_CATALOGS:
     from config.mock_catalogs import (  # type: ignore
         get_proyectos_list,
         get_catalogs_by_project,
