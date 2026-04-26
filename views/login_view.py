@@ -2,9 +2,15 @@
 views/login_view.py
 Pantalla de login integrada con Active Directory.
 """
+import base64
+from pathlib import Path
 import streamlit as st
 from auth.ldap_auth import authenticate_user
 from config.settings import DEMO_MODE
+
+def _logo_b64() -> str:
+    logo = Path(__file__).parent.parent / "assets" / "logo.png"
+    return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
 
 
 def render_login() -> None:
@@ -13,23 +19,18 @@ def render_login() -> None:
     _, center, _ = st.columns([1, 1, 1])
 
     with center:
-        st.markdown("<div style='height:60px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
 
-        # Icono de candado
-        st.markdown("""
-        <div style="text-align:center; margin-bottom:20px;">
-            <div style="
-                display:inline-flex; align-items:center; justify-content:center;
-                width:64px; height:64px; border-radius:50%;
-                background:#111827;
-                margin-bottom:18px;
-                box-shadow: 0 4px 14px rgba(0,0,0,0.18);
-            ">
-                <span style="font-size:26px; filter:grayscale(1) brightness(10);">🔒</span>
-            </div>
-            <h1 style="font-size:22px; font-weight:700; color:#111827; margin:0;">
-                Bienvenido de nuevo
-            </h1>
+        # Logo Banco del Austro
+        b64 = _logo_b64()
+        logo_html = f'<img src="data:image/png;base64,{b64}" width="72" style="margin-bottom:12px;">' if b64 else ""
+        st.markdown(f"""
+        <div style="text-align:center; margin-bottom:28px;">
+            {logo_html}
+            <div style="font-size:10px; font-weight:600; color:#6B7280; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px;">banco del austro</div>
+            <h2 style="font-size:18px; font-weight:700; color:#1C2F6E; margin:0;">
+                Portal de Ingesta de Datos
+            </h2>
             <p style="font-size:13px; color:#6B7280; margin:6px 0 0;">
                 Ingresa tus credenciales corporativas para continuar
             </p>
@@ -95,16 +96,16 @@ def render_login() -> None:
 def _inject_login_css() -> None:
     st.markdown("""
     <style>
-        .stApp { background: #F3F4F6; }
+        .stApp { background: linear-gradient(135deg, #EEF1F8 0%, #F4F6FB 100%); }
         #MainMenu, footer, header { visibility: hidden; }
         .block-container { padding-top: 0 !important; padding-bottom: 0 !important; }
 
-        /* Tarjeta = el form */
+        /* Tarjeta */
         div[data-testid="stForm"] {
             background: white !important;
             border-radius: 16px !important;
             padding: 28px 28px 20px !important;
-            box-shadow: 0 2px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04) !important;
+            box-shadow: 0 4px 24px rgba(28,47,110,0.10), 0 0 0 1px rgba(28,47,110,0.06) !important;
             border: none !important;
         }
 
@@ -112,71 +113,55 @@ def _inject_login_css() -> None:
         .field-label {
             font-size: 13px;
             font-weight: 600;
-            color: #111827;
+            color: #1C2F6E;
             margin: 0 0 6px 0;
             display: flex;
             align-items: center;
             gap: 6px;
         }
-        .field-icon { font-size: 13px; }
 
-        /* Inputs — base */
-        div[data-testid="stTextInput"] {
-            position: relative !important;
-        }
+        /* Inputs */
+        div[data-testid="stTextInput"] { position: relative !important; }
         div[data-testid="stTextInput"] input {
             border-radius: 10px !important;
-            border: 1.5px solid #E5E7EB !important;
+            border: 1.5px solid #D1D9F0 !important;
             padding: 11px 14px 11px 38px !important;
             font-size: 14px !important;
-            background: #F9FAFB !important;
-            color: #111827 !important;
+            background: #F7F9FF !important;
+            color: #1C2F6E !important;
             transition: all 0.15s !important;
         }
         div[data-testid="stTextInput"] input:focus {
-            border-color: #111827 !important;
+            border-color: #1C2F6E !important;
             background: white !important;
-            box-shadow: 0 0 0 3px rgba(17,24,39,0.08) !important;
+            box-shadow: 0 0 0 3px rgba(28,47,110,0.10) !important;
         }
-        div[data-testid="stTextInput"] input::placeholder {
-            color: #9CA3AF !important;
-        }
+        div[data-testid="stTextInput"] input::placeholder { color: #9CA3AF !important; }
 
-        /* Icono de usuario (campo con placeholder "Ej: vcastro") */
         input[placeholder="Ej: vcastro"] {
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E") !important;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%231C2F6E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='12' cy='7' r='4'/%3E%3C/svg%3E") !important;
             background-repeat: no-repeat !important;
             background-position: 13px center !important;
         }
-
-        /* Icono de candado (campo password) */
         input[placeholder="••••••••"] {
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='11' width='18' height='11' rx='2' ry='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E") !important;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%231C2F6E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='11' width='18' height='11' rx='2' ry='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E") !important;
             background-repeat: no-repeat !important;
             background-position: 13px center !important;
             padding-right: 42px !important;
         }
 
-        /* Ojo de contrasena — reposicionado dentro del input */
         button[data-testid="stTextInputPasswordToggle"] {
-            display: flex !important;
-            position: absolute !important;
-            right: 12px !important;
-            bottom: 10px !important;
-            background: transparent !important;
-            border: none !important;
-            padding: 0 !important;
-            color: #9CA3AF !important;
-            cursor: pointer !important;
-            z-index: 10 !important;
+            display: flex !important; position: absolute !important;
+            right: 12px !important; bottom: 10px !important;
+            background: transparent !important; border: none !important;
+            padding: 0 !important; color: #9CA3AF !important;
+            cursor: pointer !important; z-index: 10 !important;
         }
-        button[data-testid="stTextInputPasswordToggle"]:hover {
-            color: #374151 !important;
-        }
+        button[data-testid="stTextInputPasswordToggle"]:hover { color: #1C2F6E !important; }
 
-        /* Botón negro */
+        /* Botón navy */
         div[data-testid="stFormSubmitButton"] button {
-            background: #111827 !important;
+            background: #1C2F6E !important;
             border: none !important;
             border-radius: 10px !important;
             font-weight: 600 !important;
@@ -186,22 +171,27 @@ def _inject_login_css() -> None:
             letter-spacing: 0.2px !important;
             transition: background 0.15s !important;
         }
-        div[data-testid="stFormSubmitButton"] button:hover {
-            background: #1F2937 !important;
+        div[data-testid="stFormSubmitButton"] button:hover { background: #15245A !important; }
+
+        /* Línea amarilla decorativa debajo del botón */
+        div[data-testid="stFormSubmitButton"]::after {
+            content: '';
+            display: block;
+            height: 3px;
+            background: linear-gradient(90deg, #F5A800, #E52422);
+            border-radius: 0 0 10px 10px;
+            margin-top: -3px;
         }
 
         /* Demo hint */
         .demo-hint {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            margin-top: 12px;
-            padding: 11px 14px;
-            background: #F9FAFB;
-            border: 1px solid #E5E7EB;
+            display: flex; align-items: flex-start; gap: 10px;
+            margin-top: 12px; padding: 11px 14px;
+            background: #F7F9FF;
+            border: 1px solid #D1D9F0;
+            border-left: 3px solid #F5A800;
             border-radius: 10px;
-            font-size: 12px;
-            color: #374151;
+            font-size: 12px; color: #1C2F6E;
         }
     </style>
     """, unsafe_allow_html=True)

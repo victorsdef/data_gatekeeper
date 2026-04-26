@@ -7,15 +7,20 @@ import streamlit as st
 import pandas as pd
 from typing import Optional
 
-from config.catalogs import (
-    get_proyectos_list,
-    get_catalogs_by_project,
-    get_catalog_by_id,
-)
 from dg_validators.engine import validate_dataframe, ValidationResult
 from utils.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
 from utils.report_builder import build_error_report
 from utils.db_writer import execute_load
+import base64
+from pathlib import Path
+from utils.db_admin import (
+    get_all_databases, get_tables_from_db, describe_table, build_schema_json,
+    save_catalog_config, ensure_project_exists, catalog_exists,
+)
+
+def _logo_b64() -> str:
+    logo = Path(__file__).parent.parent / "assets" / "logo.png"
+    return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
 
 
 # ------------------------------------------------------------------
@@ -35,124 +40,198 @@ def _render_sidebar() -> None:
 
     with st.sidebar:
         # Logo + título
-        st.markdown("""
-        <div style="display:flex; align-items:center; gap:10px; padding:4px 0 20px;">
-            <div style="
-                width:36px; height:36px; border-radius:10px;
-                background:linear-gradient(135deg,#534AB7,#7F77DD);
-                display:flex; align-items:center; justify-content:center;
-                font-size:18px; flex-shrink:0;
-            ">🛡</div>
-            <div>
-                <div style="font-weight:600; font-size:14px; color:var(--text-color);">Data Gatekeeper</div>
-                <div style="font-size:11px; color:#9CA3AF;">v1.0</div>
+        b64 = _logo_b64()
+        logo_img = f'<img src="data:image/png;base64,{b64}" width="38" style="flex-shrink:0;">' if b64 else ""
+        st.markdown(f"""
+        <div style="padding:4px 0 20px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+                {logo_img}
+                <div>
+                    <div style="font-size:9px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
+                    <div style="font-size:16px;font-weight:800;color:white;letter-spacing:-0.3px;line-height:1;">Austro</div>
+                </div>
             </div>
+            <div style="font-size:10px;color:#7A8EC0;margin-left:48px;">Portal de Ingesta · v1.0</div>
         </div>
         """, unsafe_allow_html=True)
 
         st.divider()
 
         # Info usuario
-        rol_color = "#7C3AED" if user.get("rol") == "Admin" else "#0F6E56"
-        rol_bg    = "#EDE9FE" if user.get("rol") == "Admin" else "#E1F5EE"
+        is_admin  = user.get("rol") == "Admin"
+        rol_color = "#F5A800" if is_admin else "#6EE7B7"
+        rol_bg    = "rgba(245,168,0,0.18)" if is_admin else "rgba(110,231,183,0.15)"
         st.markdown(f"""
-        <div style="padding: 12px; background:var(--secondary-background-color);
-                    border-radius:10px; margin-bottom:16px;">
-            <div style="font-weight:500; font-size:13px; color:var(--text-color);">
+        <div style="padding:12px; background:rgba(255,255,255,0.07);
+                    border-radius:10px; margin-bottom:16px;
+                    border:1px solid rgba(255,255,255,0.10);">
+            <div style="font-weight:600; font-size:13px; color:white;">
                 {user.get('nombre', 'Usuario')}
             </div>
-            <div style="font-size:11px; color:#9CA3AF; margin-top:2px;">
+            <div style="font-size:11px; color:#A8B4D8; margin-top:2px;">
                 {user.get('email', '')}
             </div>
             <span style="
                 display:inline-block; margin-top:8px;
                 background:{rol_bg}; color:{rol_color};
-                font-size:11px; font-weight:500;
+                font-size:11px; font-weight:600;
                 padding:2px 10px; border-radius:20px;
+                border:1px solid {rol_color}40;
             ">{user.get('rol', 'Publicador')}</span>
         </div>
         """, unsafe_allow_html=True)
 
         st.markdown("**Seleccionar destino**")
 
-        # Selector de proyecto
+        # Selector de base de datos con búsqueda
         try:
-            proyectos = get_proyectos_list()
-        except Exception as exc:
-            st.error(f"No se pudo cargar la lista de proyectos: {exc}")
+            databases = get_all_databases()
+        except Exception as e:
+            st.error(f"Sin conexión a SingleStore: {e}")
             return
 
-        if not proyectos:
-            st.warning("No hay proyectos disponibles (revisa DEMO_MODE y la conexión a SingleStore).")
+        if not databases:
+            st.warning("No hay bases de datos disponibles.")
             return
-        proyecto_nombres = [p["nombre"] for p in proyectos]
-        proyecto_ids     = [p["id"]     for p in proyectos]
 
-        proyecto_idx = st.selectbox(
-            "Proyecto",
-            options=range(len(proyecto_nombres)),
-            format_func=lambda i: proyecto_nombres[i],
-            key="proyecto_idx",
+        db_search = st.text_input(
+            "Buscar base de datos",
+            key="db_search",
+            placeholder="Escribe para filtrar...",
         )
-        selected_project_id = proyecto_ids[proyecto_idx]
+        filtered_dbs = (
+            [db for db in databases if db_search.lower() in db.lower()]
+            if db_search else databases
+        )
 
-        # Selector de catálogo
-        catalogs = get_catalogs_by_project(selected_project_id)
-        if catalogs:
-            cat_nombres = [c["nombre"]     for c in catalogs]
-            cat_ids     = [c["catalog_id"] for c in catalogs]
+        if not filtered_dbs:
+            st.warning(f"Sin resultados para '{db_search}'.")
+            return
 
-            cat_idx = st.selectbox(
-                "Catálogo",
-                options=range(len(cat_nombres)),
-                format_func=lambda i: cat_nombres[i],
-                key="cat_idx",
+        db_sel = st.selectbox(
+            f"Base de datos ({len(filtered_dbs)} de {len(databases)})",
+            options=filtered_dbs,
+            key="sidebar_db_sel",
+        )
+
+        # Selector de tabla con búsqueda
+        try:
+            tables = get_tables_from_db(db_sel)
+        except Exception as e:
+            st.error(f"Error al listar tablas: {e}")
+            return
+
+        if not tables:
+            st.warning(f"No hay tablas en `{db_sel}`.")
+            return
+
+        tbl_search = st.text_input(
+            "Buscar tabla",
+            key="tbl_search",
+            placeholder="Escribe para filtrar...",
+        )
+        filtered_tables = (
+            [t for t in tables if tbl_search.lower() in t.lower()]
+            if tbl_search else tables
+        )
+
+        if not filtered_tables:
+            st.warning(f"Sin resultados para '{tbl_search}'.")
+            return
+
+        tbl_sel = st.selectbox(
+            f"Tabla ({len(filtered_tables)} de {len(tables)})",
+            options=filtered_tables,
+            key="sidebar_tbl_sel",
+        )
+
+        # Estrategia y destino
+        c1, c2 = st.columns(2)
+        with c1:
+            estrategia = st.selectbox(
+                "Estrategia",
+                options=["overwrite", "append", "reproceso"],
+                key="sidebar_estrategia",
             )
-            selected_catalog = catalogs[cat_idx]
+        with c2:
+            destino = st.selectbox(
+                "Destino",
+                options=["singlestore", "hive"],
+                key="sidebar_destino",
+            )
 
-            # Metadata del catálogo seleccionado
-            st.markdown(f"""
-            <div style="
-                margin-top:12px; padding:10px 12px;
-                background:var(--secondary-background-color);
-                border-radius:8px; font-size:12px; color:#6B7280;
-            ">
-                <div><b>Tabla destino:</b> {selected_catalog['tabla_destino']}</div>
-                <div style="margin-top:4px;"><b>Estrategia:</b>
-                    <span style="
-                        background:#E0E7FF; color:#3730A3;
-                        padding:1px 8px; border-radius:20px; font-size:11px;
-                    ">{selected_catalog['estrategia'].upper()}</span>
-                </div>
-                <div style="margin-top:4px;"><b>Destino:</b>
-                    <span style="
-                        background:#D1FAE5; color:#065F46;
-                        padding:1px 8px; border-radius:20px; font-size:11px;
-                    ">{selected_catalog['destino'].upper()}</span>
-                </div>
+        # Cargar esquema cuando cambia la tabla
+        schema_key = f"{db_sel}.{tbl_sel}"
+        if st.session_state.get("sidebar_schema_key") != schema_key:
+            try:
+                rows = describe_table(db_sel, tbl_sel)
+                st.session_state.sidebar_schema     = build_schema_json(rows)
+                st.session_state.sidebar_schema_key = schema_key
+                # Limpiar flujo si cambia la tabla
+                for k in ["uploaded_df", "uploaded_bytes", "uploaded_name",
+                          "validation_result", "carga_ejecutada", "load_result"]:
+                    st.session_state.pop(k, None)
+                st.session_state.current_step = "upload"
+            except Exception as e:
+                st.error(f"Error al consultar esquema: {e}")
+                return
+
+        schema = st.session_state.get("sidebar_schema", {})
+
+        # Info de la tabla seleccionada
+        st.markdown(f"""
+        <div style="margin-top:12px; padding:10px 12px;
+                    background:rgba(255,255,255,0.07);
+                    border:1px solid rgba(255,255,255,0.10);
+                    border-radius:8px; font-size:12px; color:#A8B4D8;">
+            <div style="color:white; font-weight:500; margin-bottom:6px;">
+                <code style="color:#F5A800; background:rgba(245,168,0,0.12);
+                    padding:2px 6px; border-radius:4px; font-size:11px;">
+                    {db_sel}.{tbl_sel}
+                </code>
             </div>
-            """, unsafe_allow_html=True)
+            <div>
+                <span style="background:rgba(245,168,0,0.18); color:#F5A800;
+                    padding:1px 8px; border-radius:20px; font-size:11px;
+                    border:1px solid rgba(245,168,0,0.3);
+                    margin-right:6px;">{estrategia.upper()}</span>
+                <span style="background:rgba(110,231,183,0.15); color:#6EE7B7;
+                    padding:1px 8px; border-radius:20px; font-size:11px;
+                    border:1px solid rgba(110,231,183,0.3);">{destino.upper()}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            # Columnas esperadas
-            with st.expander("Ver columnas esperadas", expanded=False):
-                schema_cols = selected_catalog.get("schema", {}).get("columnas", [])
-                for col in schema_cols:
-                    reglas_str = ", ".join(r["tipo"] for r in col.get("reglas", []))
-                    st.markdown(f"""
-                    <div style="font-size:12px; padding:3px 0; display:flex;
-                                justify-content:space-between; align-items:center;">
-                        <code style="color:#534AB7;">{col['nombre']}</code>
-                        <span style="color:#9CA3AF;">{col['tipo']}</span>
-                    </div>
-                    {f'<div style="font-size:11px;color:#6B7280;padding-bottom:4px;">{reglas_str}</div>' if reglas_str else ''}
-                    """, unsafe_allow_html=True)
+        # Columnas esperadas
+        with st.expander("Ver columnas esperadas", expanded=False):
+            for col in schema.get("columnas", []):
+                st.markdown(
+                    f"<div style='font-size:12px; padding:3px 0; display:flex;"
+                    f"justify-content:space-between;'>"
+                    f"<code style='color:#F5A800;'>{col['nombre']}</code>"
+                    f"<span style='color:#A8B4D8;'>{col['tipo']}</span></div>",
+                    unsafe_allow_html=True,
+                )
 
-            st.session_state.selected_project_id = selected_project_id
-            st.session_state.selected_catalog    = selected_catalog
-        else:
-            st.warning("No hay catálogos en este proyecto.")
+        # Construir catalog dict dinámicamente
+        st.session_state.selected_catalog = {
+            "catalog_id":    f"{db_sel}__{tbl_sel}",
+            "nombre":        tbl_sel,
+            "base_datos":    db_sel,
+            "tabla_destino": tbl_sel,
+            "estrategia":    estrategia,
+            "destino":       destino,
+            "schema":        schema,
+        }
+        st.session_state.selected_project_id = db_sel
 
         st.divider()
+
+        # Navegación para Admin
+        if user.get("rol") == "Admin":
+            if st.button("Administrar catálogos", use_container_width=True, key="btn_admin"):
+                st.session_state.current_view = "admin"
+                st.rerun()
 
         # Botón logout
         if st.button("Cerrar sesión", use_container_width=True):
@@ -271,31 +350,30 @@ def _render_upload_step(catalog: dict) -> None:
     col1, col2 = st.columns([3, 2])
 
     with col1:
-        st.markdown("#### Subir archivo")
+        st.markdown("#### Subir archivos")
 
-        uploaded_file = st.file_uploader(
-            label="Arrastra tu archivo aquí o haz clic para seleccionar",
+        uploaded_files = st.file_uploader(
+            label="Arrastra uno o más archivos aquí o haz clic para seleccionar",
             type=["csv", "txt", "xlsx", "xls"],
             key="file_uploader",
-            help="Máximo 50 MB. Formatos: CSV, TXT, Excel.",
+            help="Máximo 50 MB por archivo. Todos deben tener el mismo formato y columnas.",
+            accept_multiple_files=True,
         )
 
-        if uploaded_file:
-            file_bytes = uploaded_file.read()
-            ext = uploaded_file.name.rsplit(".", 1)[-1].lower()
+        if uploaded_files:
+            first_bytes = uploaded_files[0].read()
+            uploaded_files[0].seek(0)
+            ext = uploaded_files[0].name.rsplit(".", 1)[-1].lower()
             is_excel = ext in ("xlsx", "xls")
 
-            # Detectar formato y mostrarlo al usuario
+            # Opciones de lectura basadas en el primer archivo
             if not is_excel:
                 enc = st.session_state.get("encoding", "utf-8")
-                detected = detect_file_delimiter(file_bytes, enc)
-                selected = st.session_state.get("delimiter", ",")
-                # Si el usuario no ha forzado nada, usar el detectado
-                active_delim = selected if selected != "," else detected
+                detected = detect_file_delimiter(first_bytes, enc)
 
                 st.success(
-                    f"Archivo detectado con separador: **{_DELIM_LABEL.get(detected, detected)}**  "
-                    f"— el sistema lo leerá automáticamente."
+                    f"Separador detectado: **{_DELIM_LABEL.get(detected, detected)}**  "
+                    f"— se aplicará a todos los archivos."
                 )
 
                 with st.expander("¿Las columnas no se ven bien? Ajustar lectura"):
@@ -329,22 +407,15 @@ def _render_upload_step(catalog: dict) -> None:
                         cur_enc = st.session_state.get("encoding", "utf-8")
                         st.caption(_ENC_TIP[cur_enc])
             else:
-                sheets = get_excel_sheets(file_bytes)
+                sheets = get_excel_sheets(first_bytes)
                 if len(sheets) <= 1:
                     st.success(
-                        f"Archivo Excel detectado — hoja **{sheets[0] if sheets else 'Sheet1'}** "
-                        f"se leerá automáticamente."
+                        f"Excel detectado — hoja **{sheets[0] if sheets else 'Sheet1'}** "
+                        f"se leerá en todos los archivos."
                     )
                 else:
-                    st.success(
-                        f"Archivo Excel con **{len(sheets)} hojas** detectado — "
-                        f"se leerá la primera hoja por defecto."
-                    )
                     with st.expander("¿Quieres leer otra hoja? Seleccionar"):
-                        st.caption(
-                            "El archivo tiene más de una hoja. "
-                            "Elige cuál contiene los datos que quieres cargar."
-                        )
+                        st.caption("Se aplicará la misma hoja a todos los archivos Excel.")
                         st.selectbox(
                             "Hoja a leer",
                             options=sheets,
@@ -352,37 +423,62 @@ def _render_upload_step(catalog: dict) -> None:
                             help="Selecciona la hoja que contiene los datos del catálogo.",
                         )
 
-            df, error = read_uploaded_file(
-                file_bytes=file_bytes,
-                filename=uploaded_file.name,
-                delimiter=st.session_state.get("delimiter", ","),
-                encoding=st.session_state.get("encoding", "utf-8"),
-            )
+            # Leer y concatenar todos los archivos
+            dfs = []
+            all_bytes = []
+            errores_lectura = []
 
-            if error:
-                st.error(f"No se pudo leer el archivo: {error}")
-                return
-
-            if df is None or df.empty:
-                st.error(
-                    "El archivo está vacío o el separador es incorrecto. "
-                    "Abre 'Ajustar lectura' y prueba con otro separador."
+            for uf in uploaded_files:
+                fb = uf.read()
+                all_bytes.append(fb)
+                df_i, err_i = read_uploaded_file(
+                    file_bytes=fb,
+                    filename=uf.name,
+                    delimiter=st.session_state.get("delimiter", ","),
+                    encoding=st.session_state.get("encoding", "utf-8"),
                 )
+                if err_i:
+                    errores_lectura.append(f"**{uf.name}**: {err_i}")
+                elif df_i is None or df_i.empty:
+                    errores_lectura.append(f"**{uf.name}**: archivo vacío o separador incorrecto.")
+                else:
+                    dfs.append((uf.name, df_i, len(fb)))
+
+            if errores_lectura:
+                for msg in errores_lectura:
+                    st.error(msg)
                 st.session_state.uploaded_df = None
                 return
 
-            stats = get_file_stats(df, file_bytes)
-            st.session_state.uploaded_df    = df
-            st.session_state.uploaded_bytes = file_bytes
-            st.session_state.uploaded_name  = uploaded_file.name
+            # Mostrar stats por archivo
+            if len(dfs) > 1:
+                st.markdown("**Archivos cargados**")
+                for fname, df_i, size_i in dfs:
+                    size_str = f"{size_i/1024:.1f} KB" if size_i < 1024*1024 else f"{size_i/1024/1024:.1f} MB"
+                    st.markdown(
+                        f"<div style='font-size:12px; padding:4px 8px; background:var(--secondary-background-color);"
+                        f"border-radius:6px; margin-bottom:4px;'>"
+                        f"📄 <b>{fname}</b> — {len(df_i):,} filas · {size_str}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            # Concatenar
+            combined_df = pd.concat([d for _, d, _ in dfs], ignore_index=True)
+            combined_name = " + ".join(fname for fname, _, _ in dfs)
+            total_bytes = sum(len(b) for b in all_bytes)
+
+            stats = get_file_stats(combined_df, b"x" * total_bytes)
+            st.session_state.uploaded_df    = combined_df
+            st.session_state.uploaded_bytes = all_bytes[0]
+            st.session_state.uploaded_name  = combined_name
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Filas",    f"{stats['filas']:,}")
-            c2.metric("Columnas", stats["columnas"])
-            c3.metric("Tamaño",   stats["size_str"])
+            c1.metric("Filas totales", f"{stats['filas']:,}")
+            c2.metric("Columnas",      stats["columnas"])
+            c3.metric("Archivos",      len(dfs))
 
             if stats["null_count"] > 0:
-                st.warning(f"{stats['null_count']} celdas vacías detectadas en el archivo.")
+                st.warning(f"{stats['null_count']} celdas vacías detectadas en el conjunto combinado.")
 
     with col2:
         if st.session_state.get("uploaded_df") is not None:
@@ -392,7 +488,7 @@ def _render_upload_step(catalog: dict) -> None:
                 use_container_width=True,
                 height=320,
             )
-            st.caption(f"Primeras {min(20, len(st.session_state.uploaded_df))} filas")
+            st.caption(f"Primeras {min(20, len(st.session_state.uploaded_df))} filas del total combinado")
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if st.session_state.get("uploaded_df") is not None:
@@ -559,6 +655,27 @@ def _render_result_step(catalog: dict) -> None:
                 username=user.get("username", "—"),
                 project_id=project_id,
             )
+
+        # Guardar en catalogos_config si la carga fue exitosa y no es demo
+        if load_result.get("success") and not load_result.get("demo"):
+            try:
+                base_datos = catalog.get("base_datos", "")
+                ensure_project_exists(base_datos, base_datos)
+                inserted = save_catalog_config(
+                    catalog_id    = catalog["catalog_id"],
+                    project_id    = base_datos,
+                    nombre        = catalog["nombre"],
+                    descripcion   = "",
+                    base_datos    = base_datos,
+                    tabla_destino = catalog["tabla_destino"],
+                    destino       = catalog["destino"],
+                    estrategia    = catalog["estrategia"],
+                    schema_json   = catalog.get("schema", {}),
+                )
+                load_result["catalog_registrado"] = inserted
+            except Exception:
+                load_result["catalog_registrado"] = False
+
         st.session_state.carga_ejecutada = True
         st.session_state.load_result     = load_result
         st.rerun()
@@ -649,38 +766,127 @@ def _inject_main_css() -> None:
     <style>
         #MainMenu, footer, header { visibility: hidden; }
         .block-container { padding-top: 24px !important; padding-bottom: 24px !important; }
+
+        /* Sidebar */
         section[data-testid="stSidebar"] {
-            background: white;
-            border-right: 1px solid #E5E7EB;
+            background: #1C2F6E !important;
+            border-right: none;
             padding-top: 20px;
         }
         section[data-testid="stSidebar"] .block-container {
             padding-top: 12px !important;
         }
+        section[data-testid="stSidebar"] * {
+            color: #E8ECF8 !important;
+        }
+        section[data-testid="stSidebar"] .stSelectbox label,
+        section[data-testid="stSidebar"] .stTextInput label {
+            color: #A8B4D8 !important;
+            font-size: 12px !important;
+        }
+        section[data-testid="stSidebar"] input {
+            background: #243580 !important;
+            border: 1px solid #3A4E8C !important;
+            color: white !important;
+            border-radius: 8px !important;
+        }
+        section[data-testid="stSidebar"] input::placeholder {
+            color: #7A8EC0 !important;
+        }
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background: #243580 !important;
+            border: 1px solid #3A4E8C !important;
+            border-radius: 8px !important;
+            color: white !important;
+        }
+        section[data-testid="stSidebar"] hr {
+            border-color: rgba(255,255,255,0.12) !important;
+        }
+
+        /* Expander dentro del sidebar */
+        section[data-testid="stSidebar"] div[data-testid="stExpander"] {
+            background: rgba(255,255,255,0.06) !important;
+            border: 1px solid rgba(255,255,255,0.12) !important;
+            border-radius: 8px !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
+            color: #A8B4D8 !important;
+            font-size: 12px !important;
+        }
+
+        /* Botón primario en sidebar (Administrar catálogos) */
+        section[data-testid="stSidebar"] button[kind="primary"],
+        section[data-testid="stSidebar"] button[kind="secondary"] {
+            background: rgba(255,255,255,0.10) !important;
+            border: 1px solid rgba(255,255,255,0.20) !important;
+            color: white !important;
+            border-radius: 8px !important;
+            font-weight: 500 !important;
+        }
+        section[data-testid="stSidebar"] button[kind="primary"]:hover,
+        section[data-testid="stSidebar"] button[kind="secondary"]:hover {
+            background: rgba(255,255,255,0.18) !important;
+        }
+
+        /* Botón Administrar catálogos — acento amarillo */
+        section[data-testid="stSidebar"] button[kind="primary"] {
+            border-color: rgba(245,168,0,0.5) !important;
+            color: #F5A800 !important;
+        }
+
+        /* Línea amarilla top del sidebar */
+        section[data-testid="stSidebar"]::before {
+            content: '';
+            display: block;
+            height: 4px;
+            background: linear-gradient(90deg, #F5A800, #E52422);
+            position: absolute;
+            top: 0; left: 0; right: 0;
+        }
+
+        /* Métricas */
         div[data-testid="metric-container"] {
             background: white;
-            border: 1px solid #E5E7EB;
+            border: 1px solid #D1D9F0;
             border-radius: 10px;
             padding: 12px 16px;
         }
+
+        /* File uploader */
         div[data-testid="stFileUploader"] {
-            border: 2px dashed #C4B5FD !important;
+            border: 2px dashed #A8B4D8 !important;
             border-radius: 12px !important;
-            background: #FAFAFF !important;
+            background: #F7F9FF !important;
             padding: 16px !important;
         }
         div[data-testid="stFileUploader"]:hover {
-            border-color: #534AB7 !important;
-            background: #F5F3FF !important;
+            border-color: #1C2F6E !important;
+            background: #EEF1F8 !important;
         }
+
+        /* Tabla */
         .stDataFrame {
             border-radius: 10px;
-            border: 1px solid #E5E7EB;
+            border: 1px solid #D1D9F0;
             overflow: hidden;
         }
+
+        /* Expander */
         div[data-testid="stExpander"] {
-            border: 1px solid #E5E7EB !important;
+            border: 1px solid #D1D9F0 !important;
             border-radius: 8px !important;
+        }
+
+        /* Botón primario */
+        div[data-testid="stButton"] button[kind="primary"] {
+            background: #1C2F6E !important;
+            border: none !important;
+            border-radius: 8px !important;
+            color: white !important;
+            font-weight: 600 !important;
+        }
+        div[data-testid="stButton"] button[kind="primary"]:hover {
+            background: #15245A !important;
         }
     </style>
     """, unsafe_allow_html=True)

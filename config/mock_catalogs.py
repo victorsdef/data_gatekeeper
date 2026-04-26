@@ -5,8 +5,6 @@ Los catálogos reales vienen de la tabla catalogos_config en SingleStore.
 """
 from typing import Dict, List, Any
 
-PROYECTOS: Dict[str, Any] = {}
-
 
 def get_proyectos_list() -> List[Dict[str, str]]:
     return []

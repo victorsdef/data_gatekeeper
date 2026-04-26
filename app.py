@@ -26,8 +26,9 @@ st.set_page_config(
 # ------------------------------------------------------------------
 # Imports propios (después de set_page_config)
 # ------------------------------------------------------------------
-from views.login_view import render_login
-from views.main_view  import render_main_app
+from views.login_view          import render_login
+from views.main_view           import render_main_app
+from views.admin_catalogs_view import render_admin_view
 
 
 # ------------------------------------------------------------------
@@ -35,18 +36,19 @@ from views.main_view  import render_main_app
 # ------------------------------------------------------------------
 def _init_session() -> None:
     defaults = {
-        "authenticated":     False,
-        "user_info":         None,
+        "authenticated":       False,
+        "user_info":           None,
+        "current_view":        "upload",
         "selected_project_id": None,
-        "selected_catalog":  None,
-        "uploaded_df":       None,
-        "uploaded_bytes":    None,
-        "uploaded_name":     None,
-        "validation_result": None,
-        "current_step":      "upload",
-        "carga_ejecutada":   False,
-        "delimiter":         ",",
-        "encoding":          "utf-8",
+        "selected_catalog":    None,
+        "uploaded_df":         None,
+        "uploaded_bytes":      None,
+        "uploaded_name":       None,
+        "validation_result":   None,
+        "current_step":        "upload",
+        "carga_ejecutada":     False,
+        "delimiter":           ",",
+        "encoding":            "utf-8",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -61,6 +63,8 @@ def main() -> None:
 
     if not st.session_state.authenticated:
         render_login()
+    elif st.session_state.current_view == "admin":
+        render_admin_view()
     else:
         render_main_app()
 
