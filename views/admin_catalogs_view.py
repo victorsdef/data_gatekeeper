@@ -231,11 +231,12 @@ def _tab_registro() -> None:
 
         if st.session_state.get("adm_prev_db") != db_sel:
             for k in list(st.session_state.keys()):
-                if k.startswith("adm_chk_"):
+                if k.startswith("adm_chk_") or k.startswith("adm_cat_info_"):
                     del st.session_state[k]
             st.session_state.pop("adm_schema_key", None)
             st.session_state.pop("adm_selected_tables", None)
             st.session_state.pop("adm_active_table", None)
+            st.session_state.pop("adm_tbl_page", None)
             st.session_state.adm_prev_db = db_sel
 
         try:
@@ -244,6 +245,22 @@ def _tab_registro() -> None:
         except Exception as e:
             st.error(f"Error al listar tablas: {e}")
             return
+
+        # Cache de permisos por tabla registrada (roles: Público / Admin / etc.)
+        _ci_key = f"adm_cat_info_{db_sel}"
+        if _ci_key not in st.session_state:
+            try:
+                ci: Dict = {}
+                for cat in get_active_catalogs():
+                    if cat["base_datos"] == db_sel:
+                        perms = get_catalog_permissions(cat["catalog_id"])
+                        ci[(db_sel, cat["tabla_destino"])] = [
+                            p["valor"] for p in perms if p["tipo"] == "rol"
+                        ]
+                st.session_state[_ci_key] = ci
+            except Exception:
+                st.session_state[_ci_key] = {}
+        cat_info: Dict = st.session_state[_ci_key]
 
         if not all_tables:
             st.warning(f"No hay tablas en `{db_sel}`.")
@@ -284,11 +301,60 @@ def _tab_registro() -> None:
                 st.session_state.pop("adm_active_table", None)
                 st.rerun()
 
+        # Paginación: resetear si el filtro cambió
+        prev_search = st.session_state.get("adm_tbl_prev_search", "")
+        if search != prev_search:
+            st.session_state.adm_tbl_page = 0
+            st.session_state.adm_tbl_prev_search = search
+
+        page      = st.session_state.get("adm_tbl_page", 0)
+        page_size = 10
+        total_pgs = max(1, (len(filtered) + page_size - 1) // page_size)
+        page      = min(page, total_pgs - 1)
+        page_tables = filtered[page * page_size : (page + 1) * page_size]
+
         st.markdown("##### Tablas")
-        for t in filtered:
+        for t in page_tables:
             is_reg = (db_sel, t) in mapped
-            label  = f"✓  {t}" if is_reg else t
-            st.checkbox(label, key=f"adm_chk_{t}")
+            if is_reg:
+                roles = cat_info.get((db_sel, t), [])
+                badge_html = "".join(
+                    f'<span style="background:#EDE9FE;color:#534AB7;font-size:9px;font-weight:600;'
+                    f'padding:1px 5px;border-radius:10px;margin-right:2px;">{r}</span>'
+                    for r in roles
+                ) if roles else (
+                    '<span style="background:#D1FAE5;color:#065F46;font-size:9px;font-weight:600;'
+                    'padding:1px 5px;border-radius:10px;">Público</span>'
+                )
+                chk_col, lbl_col = st.columns([1, 8], gap="small")
+                with chk_col:
+                    st.checkbox("", key=f"adm_chk_{t}", label_visibility="collapsed")
+                with lbl_col:
+                    st.markdown(
+                        '<div style="display:flex;align-items:center;gap:5px;margin-top:-4px;">'
+                        f'<span style="color:#16A34A;font-size:12px;font-weight:500;">✓ {t}</span>'
+                        + badge_html
+                        + '</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.checkbox(t, key=f"adm_chk_{t}")
+
+        # Controles de paginación
+        if total_pgs > 1:
+            pg1, pg2, pg3 = st.columns([1, 2, 1])
+            with pg1:
+                if st.button("←", use_container_width=True, key="adm_tbl_prev",
+                             disabled=page == 0):
+                    st.session_state.adm_tbl_page = page - 1
+                    st.rerun()
+            with pg2:
+                st.caption(f"Página {page + 1} de {total_pgs}  ({len(filtered)} tablas)")
+            with pg3:
+                if st.button("→", use_container_width=True, key="adm_tbl_next",
+                             disabled=page >= total_pgs - 1):
+                    st.session_state.adm_tbl_page = page + 1
+                    st.rerun()
 
         selected = _sync_selected_tables(all_tables)
 
