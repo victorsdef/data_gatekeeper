@@ -70,6 +70,45 @@ def _render_active_table_selector(selected: List[str], key_suffix: str = "main")
     return active
 
 
+def _default_bulk_table_config(db: str, table: str) -> Dict[str, str]:
+    return {
+        "catalog_id": re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower()).strip(),
+        "nombre": table.replace("_", " ").title(),
+        "descripcion": "",
+    }
+
+
+def _sync_bulk_form_state(db: str, active_table: str) -> None:
+    configs = st.session_state.setdefault("adm_bulk_table_configs", {})
+    previous_table = st.session_state.get("adm_bulk_form_table")
+
+    if previous_table:
+        configs[previous_table] = {
+            "catalog_id": st.session_state.get("adm_bulk_form_cid", "").strip(),
+            "nombre": st.session_state.get("adm_bulk_form_nombre", "").strip(),
+            "descripcion": st.session_state.get("adm_bulk_form_desc", "").strip(),
+        }
+
+    if previous_table != active_table:
+        cfg = configs.get(active_table, _default_bulk_table_config(db, active_table))
+        st.session_state["adm_bulk_form_cid"] = cfg["catalog_id"]
+        st.session_state["adm_bulk_form_nombre"] = cfg["nombre"]
+        st.session_state["adm_bulk_form_desc"] = cfg["descripcion"]
+        st.session_state["adm_bulk_form_table"] = active_table
+
+
+def _persist_bulk_form_state() -> None:
+    current_table = st.session_state.get("adm_bulk_form_table")
+    if not current_table:
+        return
+    configs = st.session_state.setdefault("adm_bulk_table_configs", {})
+    configs[current_table] = {
+        "catalog_id": st.session_state.get("adm_bulk_form_cid", "").strip(),
+        "nombre": st.session_state.get("adm_bulk_form_nombre", "").strip(),
+        "descripcion": st.session_state.get("adm_bulk_form_desc", "").strip(),
+    }
+
+
 def _project_defaults_from_db(database: str) -> tuple[str, str]:
     project_id = re.sub(r"[^a-z0-9_]+", "_", database.lower()).strip("_")
     project_name = database.replace("_", " ").strip().title()
@@ -333,8 +372,25 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
     already_reg = [t for t in selected if (db, t) in mapped]
     to_register = [t for t in selected if (db, t) not in mapped]
     active_is_registered = (db, active_table) in mapped
+    _sync_bulk_form_state(db, active_table)
 
     st.markdown("##### Tabla activa")
+    if len(selected) > 1:
+        current_idx = selected.index(active_table)
+        nav1, nav2, nav3 = st.columns([1, 2, 1])
+        with nav1:
+            if st.button("← Tabla anterior", use_container_width=True, key="adm_bulk_prev_table", disabled=current_idx == 0):
+                _persist_bulk_form_state()
+                st.session_state.adm_active_table = selected[current_idx - 1]
+                st.rerun()
+        with nav2:
+            st.caption(f"Tabla {current_idx + 1} de {len(selected)} seleccionadas")
+        with nav3:
+            if st.button("Siguiente tabla →", use_container_width=True, key="adm_bulk_next_table", disabled=current_idx >= len(selected) - 1):
+                _persist_bulk_form_state()
+                st.session_state.adm_active_table = selected[current_idx + 1]
+                st.rerun()
+
     _render_active_table_editor(db, active_table, mapped)
 
     schema = _load_schema_into_state(db, active_table)
@@ -345,9 +401,9 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
             catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{active_table}".lower())
             _render_permission_manager_inline(catalog_id, f"pm_bulk_{catalog_id}")
         else:
-            st.markdown("##### Explorador de configuración")
-            active_key_prefix = f"bulk_{re.sub(r'[^a-z0-9_]', '_', active_table.lower())}"
-            _render_registro_form(db, active_table, schema, key_prefix=active_key_prefix)
+            st.markdown("##### Explorarador de configuración")
+            active_key_prefix = _bulk_table_prefix(active_table)
+            _render_registro_form(db, active_table, schema, key_prefix=active_key_prefix, submit_label="Guardar configuración de esta tabla")
 
     st.divider()
 
@@ -377,7 +433,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         return
 
     st.divider()
-    st.markdown("##### Configuración común")
+    st.markdown("##### Registro del lote")
 
     try:
         projects = get_all_projects()
@@ -411,6 +467,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         f"Registrar tablas seleccionadas ({len(to_register)})", type="primary",
         use_container_width=True, key="adm_bk_go", disabled=bool(project_errors)
     ):
+        _persist_bulk_form_state()
         if create_project:
             ensure_project_exists(bk_proj, bk_project_name)
         permisos = _collect_permisos("bk")
@@ -428,15 +485,16 @@ def _ejecutar_registro_masivo(
         progress.progress((i + 1) / len(tables), text=f"Procesando `{table}`...")
         try:
             schema     = build_schema_json(describe_table(db, table))
-            catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+            cfg = _get_bulk_table_config(db, table)
+            catalog_id = cfg["catalog_id"]
             if catalog_exists(catalog_id):
                 skipped.append(table)
                 continue
             save_catalog_config(
                 catalog_id    = catalog_id,
                 project_id    = project_id,
-                nombre        = table.replace("_", " ").title(),
-                descripcion   = f"Tabla {table} de {db}",
+                nombre        = cfg["nombre"],
+                descripcion   = cfg["descripcion"],
                 base_datos    = db,
                 tabla_destino = table,
                 destino       = destino,
@@ -596,6 +654,15 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             height=min(len(preview_df) * 35 + 38, 240),
         )
 
+
+def _bulk_table_prefix(table: str) -> str:
+    return f"bulk_{re.sub(r'[^a-z0-9_]', '_', table.lower())}"
+
+
+def _get_bulk_table_config(db: str, table: str) -> Dict[str, str]:
+    configs = st.session_state.get("adm_bulk_table_configs", {})
+    return configs.get(table, _default_bulk_table_config(db, table))
+
 def _load_schema_into_state(db: str, table: str) -> dict | None:
     schema_key = f"{db}.{table}"
     if st.session_state.get("adm_schema_key") != schema_key:
@@ -692,7 +759,13 @@ def _collect_permisos(key_prefix: str) -> List[Dict]:
     )
 
 
-def _render_registro_form(db_sel: str, tbl_sel: str, schema: dict, key_prefix: str) -> None:
+def _render_registro_form(
+    db_sel: str,
+    tbl_sel: str,
+    schema: dict,
+    key_prefix: str,
+    submit_label: str = "Registrar catálogo",
+) -> None:
     st.markdown("##### Explorador de configuración")
 
     try:
@@ -705,13 +778,18 @@ def _render_registro_form(db_sel: str, tbl_sel: str, schema: dict, key_prefix: s
 
     cid_default = re.sub(r"[^a-z0-9_]", "_", f"{db_sel}__{tbl_sel}".lower())
     catalog_id  = st.text_input(
-        "ID del catálogo", value=cid_default, key=f"{key_prefix}_cid",
+        "ID del catálogo", value=st.session_state.get(f"{key_prefix}_cid", cid_default), key=f"{key_prefix}_cid",
         help="Solo minúsculas, números y guiones bajos."
     )
     nombre      = st.text_input(
-        "Nombre legible", value=tbl_sel.replace("_", " ").title(), key=f"{key_prefix}_nombre"
+        "Nombre legible", value=st.session_state.get(f"{key_prefix}_nombre", tbl_sel.replace("_", " ").title()), key=f"{key_prefix}_nombre"
     )
-    descripcion = st.text_area("Descripción (opcional)", key=f"{key_prefix}_desc", height=56)
+    descripcion = st.text_area(
+        "Descripción (opcional)",
+        value=st.session_state.get(f"{key_prefix}_desc", ""),
+        key=f"{key_prefix}_desc",
+        height=56,
+    )
 
     c1, c2 = st.columns(2)
     with c1:
@@ -740,13 +818,22 @@ def _render_registro_form(db_sel: str, tbl_sel: str, schema: dict, key_prefix: s
     st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
 
     if st.button(
-        "Registrar catálogo", type="primary", use_container_width=True,
+        submit_label, type="primary", use_container_width=True,
         key=f"{key_prefix}_save", disabled=bool(errores)
     ):
         if catalog_exists(cid):
             st.error(f"Ya existe un catálogo con ID `{cid}`.")
             return
         try:
+            if key_prefix.startswith("bulk_"):
+                configs = st.session_state.setdefault("adm_bulk_table_configs", {})
+                configs[tbl_sel] = {
+                    "catalog_id": cid,
+                    "nombre": nombre.strip(),
+                    "descripcion": descripcion.strip(),
+                }
+                st.success(f"Configuración de **{tbl_sel}** guardada en memoria.")
+                return
             if create_project:
                 ensure_project_exists(proj_sel, proj_name)
             save_catalog_config(
