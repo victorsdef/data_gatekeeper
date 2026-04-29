@@ -461,7 +461,7 @@ def _render_upload_step(catalog: dict) -> None:
                     st.markdown(
                         f"<div style='font-size:12px; padding:4px 8px; background:var(--secondary-background-color);"
                         f"border-radius:6px; margin-bottom:4px;'>"
-                        f"📄 <b>{fname}</b> — {len(df_i):,} filas · {size_str}</div>",
+                        f"<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' style='vertical-align:middle;margin-right:4px;'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/></svg><b>{fname}</b> — {len(df_i):,} filas · {size_str}</div>",
                         unsafe_allow_html=True,
                     )
 
@@ -563,7 +563,7 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             border:1px solid #6EE7B7; border-radius:12px;
             display:flex; align-items:center; gap:16px;
         ">
-            <div style="font-size:32px;"></div>
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#065F46" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg>
             <div>
                 <div style="font-weight:600; font-size:15px; color:#065F46;">
                     Validación exitosa
@@ -591,7 +591,7 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             border:1px solid #FCA5A5; border-radius:12px;
             display:flex; align-items:center; gap:16px;
         ">
-            <div style="font-size:32px;"></div>
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#7F1D1D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
             <div>
                 <div style="font-weight:600; font-size:15px; color:#7F1D1D;">
                     Validación fallida — {result.error_count} error(es) encontrado(s)
@@ -696,7 +696,7 @@ def _render_result_step(catalog: dict) -> None:
         border:1px solid #86EFAC; border-radius:14px;
         text-align:center; margin-bottom:24px;
     ">
-        <div style="font-size:48px; margin-bottom:12px;">🎉</div>
+        <div style="margin-bottom:12px;"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#14532D" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg></div>
         <div style="font-weight:600; font-size:18px; color:#14532D;">
             Carga completada exitosamente{demo_note}
         </div>

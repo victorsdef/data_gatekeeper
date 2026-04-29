@@ -389,7 +389,14 @@ def _tab_registro() -> None:
 def _render_empty_state() -> None:
     st.markdown("""
     <div style="margin-top:80px; text-align:center; color:#9CA3AF;">
-        <div style="font-size:44px; margin-bottom:14px;">🗄️</div>
+        <div style="margin-bottom:14px;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"
+                 fill="none" stroke="#9CA3AF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                <path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/>
+                <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+        </div>
         <div style="font-size:15px; font-weight:600; margin-bottom:8px; color:#6B7280;">
             Selecciona tablas para continuar
         </div>
@@ -1145,8 +1152,10 @@ def _tab_activos() -> None:
         except Exception:
             permisos = []
 
+        _icon_user  = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
+        _icon_role  = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>'
         perm_text = ", ".join(
-            f"{'👤' if p['tipo'] == 'usuario' else '🎭'} {p['valor']}"
+            f"{_icon_user if p['tipo'] == 'usuario' else _icon_role}{p['valor']}"
             for p in permisos
         ) or "Todos los publicadores"
 
@@ -1161,9 +1170,12 @@ def _tab_activos() -> None:
                         border-radius:10px; margin-bottom:4px;
                         border-left:3px solid #534AB7;">
                 <div style="font-weight:600; font-size:14px;">{cat['nombre']}</div>
-                <div style="font-size:12px; color:#6B7280; margin-top:4px;">
-                    📁 <b>{cat['proyecto']}</b> &nbsp;|&nbsp;
-                    🗄️ <code>{cat['base_datos']}.{cat['tabla_destino']}</code>
+                <div style="font-size:12px; color:#6B7280; margin-top:4px; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="#6B7280"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                    <b>{cat['proyecto']}</b>
+                    <span style="margin:0 4px;">|</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
+                    <code>{cat['base_datos']}.{cat['tabla_destino']}</code>
                 </div>
                 <div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                     <span style="background:#E0E7FF;color:#3730A3;padding:1px 8px;
