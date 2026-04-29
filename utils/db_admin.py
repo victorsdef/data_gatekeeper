@@ -212,3 +212,42 @@ def get_all_usuarios_activos() -> List[str]:
         with conn.cursor() as cur:
             cur.execute("SELECT username FROM usuarios WHERE activo = 1 ORDER BY username")
             return [r[0] for r in cur.fetchall()]
+
+
+# ------------------------------------------------------------------
+# Hive
+# ------------------------------------------------------------------
+_HIVE_SYSTEM_DBS = {"information_schema", "sys", "default"}
+
+
+def _connect_hive():
+    try:
+        from pyhive import hive as pyhive_conn
+    except ImportError:
+        raise ImportError("Instala pyhive: pip install pyhive thrift thrift-sasl")
+    from config.settings import HIVE_HOST, HIVE_PORT, HIVE_USER
+    return pyhive_conn.Connection(host=HIVE_HOST, port=HIVE_PORT, username=HIVE_USER)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_hive_databases() -> List[str]:
+    with _connect_hive() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SHOW DATABASES")
+            rows = [r[0] for r in cur.fetchall()]
+    return sorted(db for db in rows if db.lower() not in _HIVE_SYSTEM_DBS)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_hive_tables(database: str) -> List[str]:
+    with _connect_hive() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SHOW TABLES IN {database}")
+            return sorted(r[0] for r in cur.fetchall())
+
+
+def describe_hive_table(database: str, table: str) -> List[Dict[str, str]]:
+    with _connect_hive() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DESCRIBE {database}.{table}")
+            return [{"Field": r[0], "Type": r[1], "Null": "YES"} for r in cur.fetchall()]

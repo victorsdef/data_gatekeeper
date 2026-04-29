@@ -8,6 +8,11 @@ xlrd==2.0.1
 python-dotenv==1.0.0
 singlestoredb==1.3.0
 
+# Hive support
+pyhive[hive]==0.7.0
+thrift==0.16.0
+thrift-sasl==0.4.3
+sasl==0.3.1
 
 # Data Gatekeeper — Python 3.14.4
 #streamlit>=1.40.0
@@ -17,3 +22,9 @@ singlestoredb==1.3.0
 #openpyxl>=3.1.5
 #xlrd>=2.0.1
 #python-dotenv>=1.0.0
+
+# Hive support (puede fallar en builds nuevos)
+#pyhive[hive]>=0.7.0
+#thrift>=0.16.0
+#thrift-sasl>=0.4.3
+#sasl>=0.3.1

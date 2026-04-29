@@ -34,6 +34,23 @@ Usuario AD
 
 ---
 
+## Stack tecnológico
+
+| Capa | Tecnología |
+|---|---|
+| Frontend / Backend | Streamlit 1.28.2 |
+| Proxy | Nginx (instalado en servidor, 80 → 8501) |
+| Autenticación | ldap3 → Active Directory / NTLM |
+| Procesamiento | pandas 2.0.3 (en memoria RAM) |
+| Validación | Motor propio `dg_validators/engine.py` (8 reglas) |
+| BD principal | SingleStore (metadatos + tablas de negocio) |
+| BD secundaria | Hive (tablas de negocio, particiones dinámicas) |
+| Análisis interactivo | Apache Spark + Apache Zeppelin (Docker) |
+| Cold storage | ZIP comprimido por catálogo/fecha/usuario en `audit_storage/` |
+| Python | 3.9.13 |
+
+---
+
 ## Estado de implementación
 
 ### Implementado y activo
@@ -49,9 +66,9 @@ Usuario AD
 | Lectura archivos | `utils/file_handler.py` | CSV, TXT y Excel con auto-detección de separador y encoding |
 | Motor de validación | `dg_validators/engine.py` | 8 tipos de reglas en memoria (ver sección aparte) |
 | Reporte de errores | `utils/report_builder.py` | Excel descargable con 2 hojas y colores por tipo de error |
-| UI Login | `views/login_view.py` | Login con branding Banco del Austro |
-| UI Principal | `views/main_view.py` | Flujo de 4 pasos: carga → validación → resultado |
-| UI Admin | `views/admin_catalogs_view.py` | Panel admin para registrar y desactivar catálogos |
+| UI Login | `views/login_view.py` | Login con branding Banco del Austro, iconos SVG inline |
+| UI Principal | `views/main_view.py` | Flujo de 4 pasos: carga → validación → resultado, iconos SVG |
+| UI Admin | `views/admin_catalogs_view.py` | Panel admin con wizard 2 pasos, Master-Detail, paginación |
 | Descubrimiento BD | `utils/db_admin.py` | `SHOW DATABASES` / `SHOW TABLES` / `DESCRIBE` con caché 5 min |
 | Escritura SingleStore | `utils/db_writer.py` | append / overwrite / reproceso con transacciones |
 | Escritura Hive | `utils/db_writer.py` | append / overwrite / reproceso por partición |
@@ -59,7 +76,8 @@ Usuario AD
 | Log de auditoría | `utils/db_writer.py` | Registro en `log_auditoria` tras cada carga |
 | DDL metadatos | `db/migrations/001_create_metadata_tables.sql` | Script DDL completo |
 | Seed inicial | `db/migrations/002_seed_initial_data.sql` | Datos de referencia |
-| Docker | `docker/docker-compose.yml` | SingleStore + Streamlit + volúmenes |
+| Docker completo | `docker/docker-compose.yml` | SingleStore + Hive + Spark + Zeppelin + Streamlit |
+| Script masivo | `scripts/populate_catalogs.py` | Auto-descubrimiento y registro masivo de tablas con `--dry-run` |
 
 ### Implementado pero desactivado
 
@@ -94,11 +112,15 @@ Login → Seleccionar Proyecto en sidebar
 
 ```
 Login → Botón "Administrar catálogos" en sidebar
-      → Tab "Registrar catálogo":
-           Seleccionar BD → Seleccionar tabla → Consultar esquema
-           → Ajustar tipos y nullable por columna
-           → Configurar: proyecto, ID, nombre, descripción, estrategia, destino
-           → Guardar en catalogos_config (INSERT IGNORE)
+      → Tab "Registrar catálogo" (wizard 2 pasos):
+           PASO 1: Seleccionar BD → Lista de tablas (10 por página, buscador)
+                   Tablas ya registradas aparecen en verde con badges de permisos
+                   Seleccionar tablas → Ver esquema (Master-Detail)
+                   → [Continuar]
+           PASO 2: Por cada tabla seleccionada:
+                   Ajustar tipos y nullable por columna
+                   Configurar: proyecto, ID, nombre, descripción, estrategia, destino
+                   → [Registrar catálogo]
       → Tab "Catálogos activos":
            Lista de catálogos con proyecto, BD, tabla, estrategia
            → Botón Desactivar con confirmación
@@ -112,7 +134,7 @@ Login → Botón "Administrar catálogos" en sidebar
 
 | Formato | Detección automática | Selección manual |
 |---|---|---|
-| CSV / TXT | `csv.Sniffer` detecta `,` `;` `|` `\t` | Expander si columnas no se ven bien |
+| CSV / TXT | `csv.Sniffer` detecta `,` `;` `\|` `\t` | Expander si columnas no se ven bien |
 | Excel `.xlsx/.xls` | Lee hoja 1 automáticamente | Expander si tiene más de 1 hoja |
 | Encoding | Intenta utf-8, latin-1, iso-8859-1, cp1252 | Selector manual disponible |
 
@@ -150,6 +172,20 @@ Aplicadas en orden; cualquier falla aborta el proceso y no escribe nada en BD:
 | `get_mapped_tables()` | Par (bd, tabla) ya registrados | Sin caché |
 | `save_catalog_config(...)` | `INSERT IGNORE` en catalogos_config | — |
 | `deactivate_catalog(id)` | `UPDATE SET activo=0` | — |
+
+### `views/admin_catalogs_view.py` — Panel de administración
+
+El panel admin implementa dos patrones de UX avanzados:
+
+**Wizard 2 pasos (registro de catálogos)**
+- Paso 1: selección de tablas + vista previa de esquema en layout Master-Detail (lista izquierda / detalle derecho)
+- Paso 2: configuración completa por tabla (tipos, nullable, proyecto, estrategia)
+- El estado del paso 1 se persiste en claves de sesión no-widget (`adm_step2_db`, `adm_step2_selected`) para sobrevivir reruns de Streamlit
+
+**Lista de tablas con contexto visual**
+- Paginación de 10 tablas por página con buscador; el contador de página se reinicia automáticamente al cambiar la búsqueda
+- Tablas ya registradas se muestran en verde con badges de permisos (Público / Admin)
+- Caché de permisos por BD en sesión para evitar N+1 queries
 
 ---
 
@@ -222,23 +258,24 @@ ruta_zip_auditoria      VARCHAR(1000)
 
 ## Variables de entorno
 
-`DEMO_MODE` y `REAL_CATALOGS` son independientes para transición gradual:
+`DEMO_MODE` y `REAL_CATALOGS` son independientes para facilitar la transición gradual:
 
 | Variable | Controla | Valores |
 |---|---|---|
 | `DEMO_MODE` | Login | `true` = demo / `false` = Active Directory |
+| `LDAP_DEMO_MODE` | Login LDAP (alias de DEMO_MODE) | `true` mientras no haya acceso al AD real |
 | `REAL_CATALOGS` | Catálogos | `true` = SingleStore / `false` = listas vacías |
 
 ### Escenarios
 
 **Desarrollo sin BD ni AD:**
-```
+```env
 DEMO_MODE=true
 REAL_CATALOGS=false
 ```
 
-**Desarrollo con BD real (estado actual):**
-```
+**Desarrollo con BD real:**
+```env
 DEMO_MODE=true
 REAL_CATALOGS=true
 SS_HOST=127.0.0.1
@@ -246,13 +283,47 @@ SS_PORT=3306
 SS_USER=root
 SS_PASSWORD=gatekeeper123
 SS_DATABASE=gatekeeper_meta
+HIVE_HOST=localhost
+HIVE_PORT=10000
+HIVE_DATABASE=default
+```
+
+**Docker (todos los servicios en contenedores):**
+```env
+DEMO_MODE=false
+LDAP_DEMO_MODE=true
+REAL_CATALOGS=true
+SS_HOST=singlestore
+SS_PORT=3306
+SS_USER=root
+SS_PASSWORD=gatekeeper123
+SS_DATABASE=gatekeeper_meta
+HIVE_HOST=hive
+HIVE_PORT=10000
+HIVE_DATABASE=default
+AUDIT_STORAGE_PATH=/app/audit_storage
+MAX_FILE_SIZE_MB=50
+MAX_ROWS_IN_MEMORY=500000
+LDAP_SERVER=ldap://ad.baustro.fin.ec
+LDAP_PORT=389
+LDAP_BASE_DN=DC=baustro,DC=fin,DC=ec
+LDAP_DOMAIN=BAUSTRO
+LDAP_USE_SSL=false
 ```
 
 **Producción completa:**
-```
+```env
 DEMO_MODE=false
+LDAP_DEMO_MODE=false
 REAL_CATALOGS=true
-SS_HOST=...   SS_PORT=3306   SS_USER=...   SS_PASSWORD=...   SS_DATABASE=gatekeeper_meta
+SS_HOST=...
+SS_PORT=3306
+SS_USER=...
+SS_PASSWORD=...
+SS_DATABASE=gatekeeper_meta
+HIVE_HOST=...
+HIVE_PORT=10000
+HIVE_DATABASE=default
 LDAP_SERVER=ldap://ad.baustro.fin.ec
 LDAP_PORT=389
 LDAP_DOMAIN=BAUSTRO
@@ -267,21 +338,46 @@ MAX_ROWS_IN_MEMORY=500000
 
 ## Instalación y ejecución
 
+### Desarrollo local
+
 ```bash
 # 1. Instalar dependencias
 pip install -r requirements.txt
 
-# 2. Configurar .env (copiar desde variables de entorno de arriba)
+# 2. Crear .env (ver sección de variables)
 
 # 3. Inicializar BD (primera vez)
-docker exec -i gatekeeper_singlestore singlestore -u root -pgatekeeper123 < docker/init_db/01_init.sql
+docker exec -i gatekeeper_singlestore singlestore -u root -pgatekeeper123 \
+  < docker/init_db/01_init.sql
 
 # 4. Ejecutar app
 streamlit run app.py
-
-# Docker (reconstruir y levantar)
-docker compose -f docker/docker-compose.yml up --build -d
 ```
+
+### Docker (stack completo)
+
+```bash
+# Levantar todos los servicios (SingleStore + Hive + Spark + Zeppelin + App)
+docker compose -f docker/docker-compose.yml up --build -d
+
+# Ver logs de la app
+docker logs -f gatekeeper_app
+
+# Apagar
+docker compose -f docker/docker-compose.yml down
+```
+
+### Puertos expuestos
+
+| Servicio | Puerto | URL |
+|---|---|---|
+| Streamlit (app) | 8501 | http://localhost:8501 |
+| SingleStore Studio | 8080 | http://localhost:8080 |
+| SingleStore MySQL | 3306 | `mysql -h localhost -P 3306` |
+| HiveServer2 Thrift | 10000 | Conexión PyHive |
+| Hive Web UI | 10002 | http://localhost:10002 |
+| Spark Master UI | 8081 | http://localhost:8081 |
+| Zeppelin UI | 8082 | http://localhost:8082 |
 
 **Usuarios demo:**
 - `vcastro / demo123` → rol Publicador
@@ -304,30 +400,53 @@ docker compose -f docker/docker-compose.yml up --build -d
 
 ---
 
+## Infraestructura Docker
+
+`docker/docker-compose.yml` levanta cinco servicios en la red `gatekeeper_net`:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  gatekeeper_net                                          │
+│                                                          │
+│  [singlestore :3306/:8080]  [hive :10000/:10002]        │
+│         │                          │                     │
+│         └──────────┬───────────────┘                     │
+│                    │                                     │
+│             [app :8501]   [spark :8081]                  │
+│                               │                          │
+│                         [zeppelin :8082]                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+| Servicio | Imagen | Volumen |
+|---|---|---|
+| `singlestore` | `ghcr.io/singlestore-labs/singlestoredb-dev:latest` | `singlestore_data` |
+| `hive` | `apache/hive:4.0.0` | `hive_warehouse` |
+| `spark` | `bitnami/spark:latest` | — |
+| `zeppelin` | `apache/zeppelin:0.11.0` | — |
+| `app` | Build local (`docker/Dockerfile`) | `audit_storage` |
+
+La app tiene `depends_on` con `condition: service_healthy` para SingleStore y `service_started` para Hive (Hive tarda ~90 s en arrancar; el app maneja errores de conexión iniciales con reintentos).
+
+---
+
 ## Pendiente antes de producción
 
 | Tarea | Detalle |
 |---|---|
-| **Activar AD** | Configurar variables LDAP en `.env` y `DEMO_MODE=false` |
+| **Activar AD** | Configurar variables LDAP en `.env` y `DEMO_MODE=false` + `LDAP_DEMO_MODE=false` |
 | **Ajustar grupos AD** | En `auth/ldap_auth.py` cambiar `GATEKEEPER_ADMIN` y `GATEKEEPER_PUBLICADOR` por los grupos reales del banco |
-| **Configurar Nginx** | Proxy inverso puerto 80 → 8501 (Nginx ya instalado en el servidor) |
-| **Hive (si aplica)** | `pip install pyhive thrift thrift-sasl` + variables `HIVE_*` en `.env` |
+| **Configurar Nginx** | Proxy inverso puerto 80 → 8501 (Nginx ya instalado en el servidor; no hay `nginx.conf` en el repo aún) |
+| **Hive en producción** | `pip install pyhive thrift thrift-sasl` + variables `HIVE_*` en `.env` |
 | **Usuarios iniciales** | Insertar registros en tabla `usuarios` con los roles correctos |
-
----
-
-## Lo que falta del documento de arquitectura
-
-Ver sección **Brechas respecto al documento original** más abajo.
+| **Evaluar despliegue** | Docker vs despliegue directo en servidor (pendiente decisión con arquitectos) |
 
 ---
 
 ## Brechas respecto al documento de arquitectura
 
-El documento original (`document_pdf.pdf`) especificó los siguientes puntos que **aún no están completamente cubiertos**:
-
 ### 1. Nginx — no configurado en el repositorio
-El PDF indica que Nginx ya está instalado en el servidor y actuará como proxy inverso. No existe un `nginx.conf` en el repositorio. Se necesita:
+El PDF indica que Nginx ya está instalado en el servidor y actuará como proxy inverso. No existe un `nginx.conf` en el repositorio. Configuración recomendada:
 ```nginx
 server {
     listen 80;
@@ -343,11 +462,11 @@ server {
 
 ### 2. pandera — no utilizado
 El PDF menciona pandera como motor de validación declarativa. Está en `requirements.txt` pero la validación real está en `dg_validators/engine.py` (motor custom). Opciones:
-- Migrar a pandera para una definición más estándar y mantenible
-- Quedarse con el engine custom (más control sobre el formato de errores)
+- Migrar a pandera para definición más estándar y mantenible
+- Mantener el engine custom (más control sobre el formato de errores)
 
 ### 3. Gestión de usuarios sin UI
-La tabla `usuarios` existe pero no hay pantalla para crear, editar o desactivar usuarios sin acceso SQL directo. El flujo espera que los usuarios sean gestionados manualmente.
+La tabla `usuarios` existe pero no hay pantalla para crear, editar o desactivar usuarios sin acceso SQL directo.
 
 ### 4. Kerberos / SSL en LDAP
 El PDF menciona "Kerberos LDAP". La implementación actual usa NTLM (LDAP simple). Si el AD del banco requiere SASL/Kerberos, `auth/ldap_auth.py` necesita ajuste.
@@ -360,7 +479,7 @@ El PDF menciona "Kerberos LDAP". La implementación actual usa NTLM (LDAP simple
 
 | Mejora | Descripción |
 |---|---|
-| **nginx.conf en el repo** | Agregar archivo de configuración Nginx al repositorio para no depender de configuración manual en el servidor |
+| **nginx.conf en el repo** | Agregar archivo de configuración Nginx para no depender de configuración manual en el servidor |
 | **Panel de historial de cargas** | Vista donde el usuario vea sus cargas pasadas (fecha, archivo, filas, estado) consultando `log_auditoria` |
 | **Gestión de usuarios en UI Admin** | Pantalla para que el Admin cree, active/desactive y cambie roles sin necesitar acceso SQL |
 
@@ -372,6 +491,7 @@ El PDF menciona "Kerberos LDAP". La implementación actual usa NTLM (LDAP simple
 | **Validación regex** | Agregar tipo de regla `regex` en `schema_json` para validar patrones (ej. código con formato `EC-[0-9]{4}`) |
 | **Dashboard de métricas** | Vista de estadísticas: cargas por día, tasa de éxito por catálogo, usuarios más activos |
 | **Preview de impacto antes de cargar** | Mostrar cuántas filas afectará la carga (en overwrite: cuántas se borrarán; en reproceso: el rango de fechas) |
+| **Notebooks en Zeppelin** | Configurar intérprete Spark en Zeppelin para exploración ad-hoc de las tablas de Hive |
 
 ### Prioridad baja
 
@@ -379,6 +499,5 @@ El PDF menciona "Kerberos LDAP". La implementación actual usa NTLM (LDAP simple
 |---|---|
 | **Notificaciones por correo** | Alerta automática si una carga falla (SMTP o webhook corporativo) |
 | **Exportar/importar configuración de catálogos** | Admin puede exportar catálogos como JSON para backup o migración |
-| **Regla de longitud mínima en UI** | El admin panel permite definir reglas `min_length` y `str_length` gráficamente, no solo en JSON |
-| **Soporte multi-idioma** | Mensajes de error en inglés/español según preferencia del usuario |
+| **Reglas de longitud en UI** | El admin panel permite definir reglas `min_length` y `str_length` gráficamente, no solo en JSON |
 | **Test suite** | Pruebas unitarias para `engine.py` y `file_handler.py` con archivos de muestra |

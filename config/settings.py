@@ -35,6 +35,14 @@ SS_PASSWORD: str = os.getenv("SS_PASSWORD", "")
 SS_DATABASE: str = os.getenv("SS_DATABASE", "gatekeeper_meta")
 
 # ------------------------------------------------------------------
+# Hive
+# ------------------------------------------------------------------
+HIVE_HOST:     str = os.getenv("HIVE_HOST",     "localhost")
+HIVE_PORT:     int = int(os.getenv("HIVE_PORT", "10000"))
+HIVE_USER:     str = os.getenv("HIVE_USER",     "hive")
+HIVE_DATABASE: str = os.getenv("HIVE_DATABASE", "default")
+
+# ------------------------------------------------------------------
 # Auditoría / Almacenamiento
 # ------------------------------------------------------------------
 AUDIT_STORAGE_PATH: str = os.getenv("AUDIT_STORAGE_PATH", "./audit_storage")

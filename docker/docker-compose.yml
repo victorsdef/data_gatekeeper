@@ -2,20 +2,62 @@ version: "3.9"
 
 services:
 
-  # ------------------------------------------------------------------
-  # SingleStore
-  # ------------------------------------------------------------------
+  hive:
+    image: apache/hive:4.0.0
+    container_name: gatekeeper_hive
+    environment:
+      SERVICE_NAME: hiveserver2
+    ports:
+      - "10000:10000"   # HiveServer2 Thrift
+      - "10002:10002"   # Hive Web UI
+      - "9083:9083"     # Hive Metastore (Spark conecta aquí)
+    volumes:
+      - hive_warehouse:/opt/hive/data/warehouse
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  spark:
+    image: apache/spark:3.5.3
+    container_name: gatekeeper_spark
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_CONF_DIR=/opt/spark/conf
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark-conf/hive-site.xml:/opt/spark/conf/hive-site.xml
+    depends_on:
+      - hive
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  zeppelin:
+    image: apache/zeppelin:0.11.0
+    container_name: gatekeeper_zeppelin
+    ports:
+      - "8082:8080"
+    depends_on:
+      - spark
+      - hive
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
   singlestore:
     image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
     container_name: gatekeeper_singlestore
     environment:
       ROOT_PASSWORD: "gatekeeper123"
     ports:
-      - "3306:3306"    # MySQL protocol
-      - "8080:8080"    # Studio web UI
+      - "3306:3306"
+      - "8080:8080"
     volumes:
       - singlestore_data:/data
-      - ./init_db:/init_db    # Scripts SQL de inicialización
+      - ./init_db:/init_db
     healthcheck:
       test: ["CMD", "singlestore", "-u", "root", "-pgatekeeper123", "-e", "SELECT 1"]
       interval: 10s
@@ -24,58 +66,32 @@ services:
     networks:
       - gatekeeper_net
 
-  # ------------------------------------------------------------------
-  # Hive Metastore + HiveServer2 (modo standalone, Derby embebido)
-  # ------------------------------------------------------------------
-  hive:
-    image: apache/hive:4.0.0
-    container_name: gatekeeper_hive
-    environment:
-      SERVICE_NAME: hiveserver2   # standalone no es válido; hiveserver2 usa Derby embebido
-    ports:
-      - "10000:10000"   # HiveServer2 Thrift (pyhive conecta aquí)
-      - "10002:10002"   # HiveServer2 Web UI
-    volumes:
-      - hive_warehouse:/opt/hive/data/warehouse
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:10002/ > /dev/null || exit 1"]
-      interval: 20s
-      timeout: 10s
-      retries: 10
-      start_period: 90s
-    networks:
-      - gatekeeper_net
-    restart: unless-stopped
-
-  # ------------------------------------------------------------------
-  # Data Gatekeeper (Streamlit)
-  # ------------------------------------------------------------------
   app:
     build:
-      context:  ..
+      context: ..
       dockerfile: docker/Dockerfile
     container_name: gatekeeper_app
     env_file:
       - ../.env
     environment:
-      SS_HOST: singlestore   # dentro de Docker, el host es el nombre del servicio, no 127.0.0.1
+      SS_HOST: singlestore
     ports:
       - "8501:8501"
     volumes:
-      - audit_storage:/app/audit_storage    # Archivos zip de auditoría
+      - audit_storage:/app/audit_storage
     depends_on:
       singlestore:
         condition: service_healthy
       hive:
-        condition: service_started   # Hive tarda ~90s; el app maneja errores de conexión
+        condition: service_started
     networks:
       - gatekeeper_net
     restart: unless-stopped
 
 volumes:
   singlestore_data:
-  audit_storage:
   hive_warehouse:
+  audit_storage:
 
 networks:
   gatekeeper_net:

@@ -20,6 +20,7 @@ import streamlit as st
 from utils.db_admin import (
     get_all_databases, get_tables_from_db, get_mapped_tables,
     describe_table, build_schema_json,
+    get_hive_databases, get_hive_tables, describe_hive_table,
     get_all_projects, get_active_catalogs,
     save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
     get_catalog_permissions, save_permissions, get_all_usuarios_activos,
@@ -204,19 +205,37 @@ def render_admin_view() -> None:
 # Tab 1: Wizard de 2 pasos
 # ------------------------------------------------------------------
 def _tab_registro() -> None:
-    try:
-        databases = get_all_databases()
-    except Exception as e:
-        st.error(f"Sin conexión a SingleStore: {e}")
-        return
-
-    if not databases:
-        st.warning("No hay bases de datos de negocio disponibles. Verifica permisos del usuario de SingleStore.")
-        return
-
     if st.session_state.get("adm_step", 1) == 2:
         _render_step2()
         return
+
+    # ── Selector de fuente ────────────────────────────────────────────
+    fuente = st.radio(
+        "Fuente de datos",
+        ["SingleStore", "Hive"],
+        horizontal=True,
+        key="adm_fuente",
+        label_visibility="collapsed",
+    )
+
+    if fuente == "SingleStore":
+        try:
+            databases = get_all_databases()
+        except Exception as e:
+            st.error(f"Sin conexión a SingleStore: {e}")
+            return
+        if not databases:
+            st.warning("No hay bases de datos disponibles en SingleStore.")
+            return
+    else:
+        try:
+            databases = get_hive_databases()
+        except Exception as e:
+            st.error(f"Sin conexión a Hive: {e}")
+            return
+        if not databases:
+            st.warning("No hay bases de datos disponibles en Hive.")
+            return
 
     # ── Paso 1: Explorador de tablas ──────────────────────────────────
     _render_step_indicator(current=1)
@@ -229,7 +248,8 @@ def _tab_registro() -> None:
             "Base de datos", databases, key="adm_db", label_visibility="collapsed"
         )
 
-        if st.session_state.get("adm_prev_db") != db_sel:
+        prev_key = f"adm_prev_db_{fuente}"
+        if st.session_state.get(prev_key) != db_sel:
             for k in list(st.session_state.keys()):
                 if k.startswith("adm_chk_") or k.startswith("adm_cat_info_"):
                     del st.session_state[k]
@@ -237,10 +257,13 @@ def _tab_registro() -> None:
             st.session_state.pop("adm_selected_tables", None)
             st.session_state.pop("adm_active_table", None)
             st.session_state.pop("adm_tbl_page", None)
-            st.session_state.adm_prev_db = db_sel
+            st.session_state[prev_key] = db_sel
 
         try:
-            all_tables = get_tables_from_db(db_sel)
+            if fuente == "SingleStore":
+                all_tables = get_tables_from_db(db_sel)
+            else:
+                all_tables = get_hive_tables(db_sel)
             mapped: Set[tuple] = get_mapped_tables()
         except Exception as e:
             st.error(f"Error al listar tablas: {e}")
@@ -380,6 +403,7 @@ def _tab_registro() -> None:
             st.session_state.adm_step = 2
             st.session_state["adm_step2_db"]       = db_sel
             st.session_state["adm_step2_selected"] = list(selected)
+            st.session_state["adm_step2_fuente"]   = st.session_state.get("adm_fuente", "SingleStore")
             st.rerun()
 
 
@@ -689,7 +713,8 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
     with c1:
         bk_est  = st.selectbox("Estrategia", _ESTRATEGIAS, key="adm_bk_est")
     with c2:
-        bk_dest = st.selectbox("Destino", _DESTINOS, key="adm_bk_dest")
+        _dest_default = 1 if st.session_state.get("adm_step2_fuente") == "Hive" else 0
+        bk_dest = st.selectbox("Destino", _DESTINOS, index=_dest_default, key="adm_bk_dest")
 
     _render_permisos_selector("bk")
 
@@ -909,7 +934,11 @@ def _load_schema_into_state(db: str, table: str) -> dict | None:
     schema_key = f"{db}.{table}"
     if st.session_state.get("adm_schema_key") != schema_key:
         try:
-            rows = describe_table(db, table)
+            fuente = st.session_state.get("adm_step2_fuente") or st.session_state.get("adm_fuente", "SingleStore")
+            if fuente == "Hive":
+                rows = describe_hive_table(db, table)
+            else:
+                rows = describe_table(db, table)
             st.session_state.adm_schema = build_schema_json(rows)
             st.session_state.adm_schema_key = schema_key
         except Exception as e:
@@ -1039,7 +1068,8 @@ def _render_registro_form(
         with c1:
             estrategia = st.selectbox("Estrategia", _ESTRATEGIAS, key=f"{key_prefix}_est")
         with c2:
-            destino = st.selectbox("Destino", _DESTINOS, key=f"{key_prefix}_dest")
+            _dest_idx = 1 if st.session_state.get("adm_step2_fuente") == "Hive" else 0
+            destino = st.selectbox("Destino", _DESTINOS, index=_dest_idx, key=f"{key_prefix}_dest")
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         _render_permisos_selector(key_prefix)
 
