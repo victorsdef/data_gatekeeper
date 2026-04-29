@@ -201,7 +201,7 @@ def render_admin_view() -> None:
 
 
 # ------------------------------------------------------------------
-# Tab 1: Explorer + registro unificado
+# Tab 1: Wizard de 2 pasos
 # ------------------------------------------------------------------
 def _tab_registro() -> None:
     try:
@@ -214,16 +214,21 @@ def _tab_registro() -> None:
         st.warning("No hay bases de datos de negocio disponibles. Verifica permisos del usuario de SingleStore.")
         return
 
+    if st.session_state.get("adm_step", 1) == 2:
+        _render_step2()
+        return
+
+    # ── Paso 1: Explorador de tablas ──────────────────────────────────
+    _render_step_indicator(current=1)
+
     col_left, col_right = st.columns([1, 2], gap="large")
 
-    # ── Panel izquierdo: selector de BD y lista de tablas con checkboxes ──
     with col_left:
         st.markdown("##### Explorador de tablas")
         db_sel = st.selectbox(
             "Base de datos", databases, key="adm_db", label_visibility="collapsed"
         )
 
-        # Limpiar selección y caché de esquema al cambiar de BD
         if st.session_state.get("adm_prev_db") != db_sel:
             for k in list(st.session_state.keys()):
                 if k.startswith("adm_chk_"):
@@ -244,7 +249,6 @@ def _tab_registro() -> None:
             st.warning(f"No hay tablas en `{db_sel}`.")
             return
 
-        # Stats
         reg_count  = sum(1 for t in all_tables if (db_sel, t) in mapped)
         disp_count = len(all_tables) - reg_count
         st.markdown(f"""
@@ -256,7 +260,6 @@ def _tab_registro() -> None:
         </div>
         """, unsafe_allow_html=True)
 
-        # Filtro de búsqueda
         search = st.text_input(
             "Filtrar tablas", placeholder="Buscar tabla...",
             key="adm_tbl_search", label_visibility="collapsed"
@@ -267,7 +270,6 @@ def _tab_registro() -> None:
             st.caption("Sin resultados.")
             return
 
-        # Botones seleccionar/limpiar (fuera de form → actualizan session_state directo)
         bc1, bc2 = st.columns(2)
         with bc1:
             if st.button("Sel. disponibles", use_container_width=True, key="adm_sel_all"):
@@ -286,7 +288,6 @@ def _tab_registro() -> None:
         for t in filtered:
             is_reg = (db_sel, t) in mapped
             label  = f"✓  {t}" if is_reg else t
-            # Las registradas no se deshabilitan para poder verlas en el panel derecho
             st.checkbox(label, key=f"adm_chk_{t}")
 
         selected = _sync_selected_tables(all_tables)
@@ -295,16 +296,25 @@ def _tab_registro() -> None:
             st.markdown("##### Seleccionadas")
             st.caption(f"{len(selected)} tabla(s) en la lista actual de registro")
 
-    # ── Panel derecho: adaptativo según selección ──
     with col_right:
         if not selected:
             _render_empty_state()
         else:
             active_table = _render_active_table_selector(selected, key_suffix="right")
-            if len(selected) == 1:
-                _render_single_panel(db_sel, active_table, mapped)
-            else:
-                _render_bulk_panel(db_sel, selected, mapped, active_table)
+            _render_schema_only(db_sel, active_table, mapped)
+
+    # ── Barra de navegación ───────────────────────────────────────────
+    st.divider()
+    _, btn_col = st.columns([3, 1])
+    with btn_col:
+        n   = len(selected) if selected else 0
+        lbl = f"Continuar con {n} tabla(s) →" if n else "Selecciona tablas para continuar"
+        if st.button(lbl, type="primary", use_container_width=True,
+                     disabled=not selected, key="adm_step1_next"):
+            st.session_state.adm_step = 2
+            st.session_state["adm_step2_db"]       = db_sel
+            st.session_state["adm_step2_selected"] = list(selected)
+            st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -323,6 +333,131 @@ def _render_empty_state() -> None:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------
+# Wizard: indicador de pasos
+# ------------------------------------------------------------------
+def _render_step_indicator(current: int) -> None:
+    steps = ["Selección de tablas", "Configuración y registro"]
+    parts = []
+    for i, name in enumerate(steps, start=1):
+        if i < current:
+            color, weight, prefix = "#16A34A", "600", "✓ "
+        elif i == current:
+            color, weight, prefix = "#534AB7", "700", ""
+        else:
+            color, weight, prefix = "#9CA3AF", "400", ""
+        parts.append(
+            f'<span style="color:{color};font-weight:{weight};">{prefix}Paso {i}: {name}</span>'
+        )
+    st.markdown(
+        '<div style="font-size:13px;margin-bottom:16px;display:flex;gap:0;">'
+        + "&nbsp;&nbsp;→&nbsp;&nbsp;".join(parts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ------------------------------------------------------------------
+# Wizard paso 1: esquema de tabla (sin form de registro)
+# ------------------------------------------------------------------
+def _render_schema_only(db: str, table: str, mapped: Set[tuple]) -> None:
+    already    = (db, table) in mapped
+    status_col = "#16A34A" if already else "#534AB7"
+    status_txt = "Ya registrada" if already else "Disponible"
+
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">'
+        '<span style="font-size:15px;font-weight:700;">'
+        '<code style="color:#6B7280;">' + db + '.</code>'
+        '<code style="color:' + status_col + ';">' + table + '</code>'
+        '</span>'
+        '<span style="background:' + ('#DCFCE7' if already else '#EDE9FE') + ';'
+        'color:' + status_col + ';font-size:11px;font-weight:600;'
+        'padding:2px 10px;border-radius:20px;'
+        'border:1px solid ' + status_col + '40;">' + status_txt + '</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    schema = _load_schema_into_state(db, table)
+    if schema is None:
+        return
+
+    columnas = schema.get("columnas", [])
+    st.markdown(f"**{len(columnas)} columna(s)**")
+
+    if already:
+        _render_schema_readonly(schema)
+    else:
+        with st.expander("Esquema — edita tipos y nulabilidad", expanded=True):
+            _render_schema_editor(schema, key_prefix="ex")
+
+
+# ------------------------------------------------------------------
+# Wizard paso 2: configuración y registro (ancho completo)
+# ------------------------------------------------------------------
+def _render_step2() -> None:
+    col_back, _ = st.columns([1, 5])
+    with col_back:
+        if st.button("← Volver", use_container_width=True, key="adm_step2_back"):
+            st.session_state.adm_step = 1
+            st.rerun()
+
+    _render_step_indicator(current=2)
+
+    db_sel   = st.session_state.get("adm_step2_db", "")
+    selected: List[str] = list(st.session_state.get("adm_step2_selected", []))
+
+    if not selected or not db_sel:
+        st.warning("No hay tablas seleccionadas. Vuelve al paso anterior.")
+        return
+
+    try:
+        mapped: Set[tuple] = get_mapped_tables()
+    except Exception as e:
+        st.error(f"Error al cargar tablas registradas: {e}")
+        return
+
+    if len(selected) == 1:
+        _render_config_only(db_sel, selected[0], mapped)
+    else:
+        active_table = _render_active_table_selector(selected, key_suffix="step2")
+        _render_bulk_panel(db_sel, selected, mapped, active_table, show_schema=False)
+
+
+# ------------------------------------------------------------------
+# Wizard paso 2: config de 1 sola tabla
+# ------------------------------------------------------------------
+def _render_config_only(db: str, table: str, mapped: Set[tuple]) -> None:
+    already    = (db, table) in mapped
+    status_col = "#16A34A" if already else "#534AB7"
+    status_txt = "Ya registrada" if already else "Disponible"
+
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">'
+        '<span style="font-size:15px;font-weight:700;">'
+        '<code style="color:#6B7280;">' + db + '.</code>'
+        '<code style="color:' + status_col + ';">' + table + '</code>'
+        '</span>'
+        '<span style="background:' + ('#DCFCE7' if already else '#EDE9FE') + ';'
+        'color:' + status_col + ';font-size:11px;font-weight:600;'
+        'padding:2px 10px;border-radius:20px;'
+        'border:1px solid ' + status_col + '40;">' + status_txt + '</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    schema = _load_schema_into_state(db, table)
+    if schema is None:
+        return
+
+    if already:
+        catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+        _render_permission_manager_inline(catalog_id, f"pm_{catalog_id}")
+    else:
+        _render_registro_form(db, table, schema, key_prefix="ex")
 
 
 # ------------------------------------------------------------------
@@ -368,62 +503,89 @@ def _render_single_panel(db: str, table: str, mapped: Set[tuple]) -> None:
 # ------------------------------------------------------------------
 # Panel derecho: múltiples tablas seleccionadas (registro en lote)
 # ------------------------------------------------------------------
-def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_table: str) -> None:
+def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_table: str, show_schema: bool = True) -> None:
     already_reg = [t for t in selected if (db, t) in mapped]
     to_register = [t for t in selected if (db, t) not in mapped]
     active_is_registered = (db, active_table) in mapped
     _sync_bulk_form_state(db, active_table)
 
-    st.markdown("##### Tabla activa")
-    if len(selected) > 1:
-        current_idx = selected.index(active_table)
-        nav1, nav2, nav3 = st.columns([1, 2, 1])
-        with nav1:
-            if st.button("← Tabla anterior", use_container_width=True, key="adm_bulk_prev_table", disabled=current_idx == 0):
-                _persist_bulk_form_state()
-                st.session_state.adm_active_table = selected[current_idx - 1]
-                st.rerun()
-        with nav2:
-            st.caption(f"Tabla {current_idx + 1} de {len(selected)} seleccionadas")
-        with nav3:
-            if st.button("Siguiente tabla →", use_container_width=True, key="adm_bulk_next_table", disabled=current_idx >= len(selected) - 1):
-                _persist_bulk_form_state()
-                st.session_state.adm_active_table = selected[current_idx + 1]
-                st.rerun()
-
-    _render_active_table_editor(db, active_table, mapped)
+    if show_schema:
+        _render_active_table_editor(db, active_table, mapped)
 
     schema = _load_schema_into_state(db, active_table)
     if schema is not None:
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        if active_is_registered:
-            st.markdown("##### Gestión de la tabla activa")
-            catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{active_table}".lower())
-            _render_permission_manager_inline(catalog_id, f"pm_bulk_{catalog_id}")
-        else:
-            st.markdown("##### Explorarador de configuración")
-            active_key_prefix = _bulk_table_prefix(active_table)
-            _render_registro_form(db, active_table, schema, key_prefix=active_key_prefix, submit_label="Guardar configuración de esta tabla")
+
+        # Master-Detail: lista de tablas izquierda, configuración derecha
+        cfg_left, cfg_right = st.columns([1, 2], gap="large")
+
+        with cfg_left:
+            st.markdown("**Tablas seleccionadas**")
+            for t in selected:
+                is_active = t == active_table
+                is_reg = (db, t) in mapped
+                label = f"• {t} ✓" if (is_active and is_reg) else f"• {t}" if is_active else f"{t} ✓" if is_reg else t
+                if st.button(label, key=f"bulk_nav_{t}", use_container_width=True,
+                             type="primary" if is_active else "secondary"):
+                    _persist_bulk_form_state()
+                    st.session_state.adm_active_table = t
+                    st.rerun()
+
+        with cfg_right:
+            if active_is_registered:
+                catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{active_table}".lower())
+                _render_permission_manager_inline(catalog_id, f"pm_bulk_{catalog_id}")
+            else:
+                active_key_prefix = _bulk_table_prefix(active_table)
+                _render_registro_form(db, active_table, schema, key_prefix=active_key_prefix,
+                                      submit_label="Guardar configuración de esta tabla", bulk_mode=True)
 
     st.divider()
 
-    # Resumen visual
-    st.markdown(f"""
-    <div style="padding:12px 16px; background:#F0F4FF; border-radius:8px; margin-bottom:16px;">
-        <div style="font-weight:600; font-size:14px; margin-bottom:6px;">
-            {len(selected)} tablas seleccionadas de <code>{db}</code>
-        </div>
-        <div style="font-size:12px;">
-            <span style="color:#534AB7; font-weight:600;">{len(to_register)} para registrar</span>
-            {"&nbsp;·&nbsp;<span style='color:#16A34A; font-weight:600;'>" + str(len(already_reg)) + " ya registradas (se omitirán)</span>" if already_reg else ""}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Resumen del lote con estado por tabla
+    configs_saved = st.session_state.get("adm_bulk_table_configs", {})
 
-    if to_register:
-        cols = st.columns(2)
-        for i, t in enumerate(to_register):
-            cols[i % 2].markdown(f"- `{t}`")
+    already_badge = (
+        "&nbsp;·&nbsp;"
+        '<span style="color:#16A34A; font-weight:600;">'
+        + str(len(already_reg))
+        + " ya registradas (se omitirán)</span>"
+        if already_reg else ""
+    )
+    st.markdown(
+        '<div style="padding:10px 14px; background:#F0F4FF; border-radius:8px; '
+        'border-left:3px solid #534AB7; margin-bottom:12px;">'
+        '<span style="font-weight:700; font-size:13px;">'
+        + str(len(selected)) + " tablas"
+        + '</span><span style="font-size:12px; color:#6B7280;"> de <code>' + db + "</code></span>"
+        '<div style="margin-top:4px; font-size:12px;">'
+        '<span style="color:#534AB7; font-weight:600;">' + str(len(to_register)) + " para registrar</span>"
+        + already_badge
+        + "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    for t in to_register:
+        is_active = t == active_table
+        is_saved  = t in configs_saved
+        icon   = "✓" if is_saved else "○"
+        color  = "#16A34A" if is_saved else "#9CA3AF"
+        border = "2px solid #534AB7" if is_active else ("1px solid #BBF7D0" if is_saved else "1px solid #E5E7EB")
+        bg     = "#F5F0FF" if is_active else ("#F0FFF4" if is_saved else "var(--secondary-background-color)")
+        tag    = (
+            '<span style="font-size:10px;color:#534AB7;font-weight:600;margin-left:auto;">● editando</span>'
+            if is_active else
+            '<span style="font-size:10px;color:#16A34A;font-weight:600;margin-left:auto;">guardada</span>'
+            if is_saved else ""
+        )
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;'
+            'background:' + bg + ';border-radius:7px;margin-bottom:5px;border:' + border + ';">'
+            '<span style="font-size:13px;color:' + color + ';">' + icon + "</span>"
+            '<code style="font-size:12px;color:#1C2F6E;">' + t + "</code>"
+            + tag + "</div>",
+            unsafe_allow_html=True,
+        )
 
     if already_reg:
         st.caption(f"Se omitirán (ya existen): {', '.join(already_reg)}")
@@ -433,7 +595,14 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         return
 
     st.divider()
-    st.markdown("##### Registro del lote")
+    st.markdown(
+        '<div style="padding:4px 0 12px;">'
+        '<span style="font-size:15px;font-weight:700;color:var(--text-color);">Registro del lote</span>'
+        '<div style="font-size:12px;color:#6B7280;margin-top:2px;">'
+        "Configuración compartida que se aplica a todas las tablas al registrar."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
 
     try:
         projects = get_all_projects()
@@ -765,16 +934,17 @@ def _render_registro_form(
     schema: dict,
     key_prefix: str,
     submit_label: str = "Registrar catálogo",
+    bulk_mode: bool = False,
 ) -> None:
     st.markdown("##### Explorador de configuración")
 
-    try:
-        projects = get_all_projects()
-    except Exception as e:
-        st.error(f"Error al cargar proyectos: {e}")
-        return
-
-    proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects)
+    if not bulk_mode:
+        try:
+            projects = get_all_projects()
+        except Exception as e:
+            st.error(f"Error al cargar proyectos: {e}")
+            return
+        proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects)
 
     cid_default = re.sub(r"[^a-z0-9_]", "_", f"{db_sel}__{tbl_sel}".lower())
     catalog_id  = st.text_input(
@@ -791,23 +961,24 @@ def _render_registro_form(
         height=56,
     )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        estrategia = st.selectbox("Estrategia", _ESTRATEGIAS, key=f"{key_prefix}_est")
-    with c2:
-        destino = st.selectbox("Destino", _DESTINOS, key=f"{key_prefix}_dest")
-
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-    _render_permisos_selector(key_prefix)
+    if not bulk_mode:
+        c1, c2 = st.columns(2)
+        with c1:
+            estrategia = st.selectbox("Estrategia", _ESTRATEGIAS, key=f"{key_prefix}_est")
+        with c2:
+            destino = st.selectbox("Destino", _DESTINOS, key=f"{key_prefix}_dest")
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        _render_permisos_selector(key_prefix)
 
     cid    = catalog_id.strip()
     errores: List[str] = []
-    if not proj_sel:
-        errores.append("El ID del proyecto no puede estar vacío.")
-    elif not re.match(r"^[a-z0-9_]+$", proj_sel):
-        errores.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
-    if not proj_name:
-        errores.append("El nombre del proyecto no puede estar vacío.")
+    if not bulk_mode:
+        if not proj_sel:
+            errores.append("El ID del proyecto no puede estar vacío.")
+        elif not re.match(r"^[a-z0-9_]+$", proj_sel):
+            errores.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
+        if not proj_name:
+            errores.append("El nombre del proyecto no puede estar vacío.")
     if not cid:
         errores.append("El ID no puede estar vacío.")
     elif not re.match(r"^[a-z0-9_]+$", cid):
@@ -815,25 +986,27 @@ def _render_registro_form(
     for e in errores:
         st.warning(e)
 
-    st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
+    if not bulk_mode:
+        st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
 
     if st.button(
         submit_label, type="primary", use_container_width=True,
         key=f"{key_prefix}_save", disabled=bool(errores)
     ):
+        if bulk_mode:
+            configs = st.session_state.setdefault("adm_bulk_table_configs", {})
+            configs[tbl_sel] = {
+                "catalog_id": cid,
+                "nombre": nombre.strip(),
+                "descripcion": descripcion.strip(),
+            }
+            st.success(f"Configuración de **{tbl_sel}** guardada en memoria.")
+            return
+
         if catalog_exists(cid):
             st.error(f"Ya existe un catálogo con ID `{cid}`.")
             return
         try:
-            if key_prefix.startswith("bulk_"):
-                configs = st.session_state.setdefault("adm_bulk_table_configs", {})
-                configs[tbl_sel] = {
-                    "catalog_id": cid,
-                    "nombre": nombre.strip(),
-                    "descripcion": descripcion.strip(),
-                }
-                st.success(f"Configuración de **{tbl_sel}** guardada en memoria.")
-                return
             if create_project:
                 ensure_project_exists(proj_sel, proj_name)
             save_catalog_config(

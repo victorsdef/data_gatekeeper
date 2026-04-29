@@ -193,10 +193,11 @@ def _render_sidebar() -> None:
                         if col.get("nullable") else ""
                     )
                     st.markdown(
-                        f"<div style='font-size:12px; padding:3px 0; display:flex;"
-                        f"justify-content:space-between; align-items:center;'>"
-                        f"<code style='color:#F5A800;'>{col['nombre']}</code>"
-                        f"<span style='color:#A8B4D8;'>{col['tipo']} {nullable_tag}</span></div>",
+                        f"<div style='font-size:12px; padding:4px 6px; display:flex;"
+                        f"justify-content:space-between; align-items:center;"
+                        f"border-bottom:1px solid rgba(255,255,255,0.06);'>"
+                        f"<span style='color:#F5A800; font-family:monospace; font-size:11px;'>{col['nombre']}</span>"
+                        f"<span style='color:#A8B4D8; font-size:10px;'>{col['tipo']} {nullable_tag}</span></div>",
                         unsafe_allow_html=True,
                     )
             else:
