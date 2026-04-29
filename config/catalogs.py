@@ -72,46 +72,53 @@ else:
                 rows = _fetchall_dict(cur)
                 return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
 
-    def get_catalogs_by_project(project_id: str) -> List[Dict[str, Any]]:
+    def get_catalogs_by_project(
+        project_id: str, username: str = "", rol: str = ""
+    ) -> List[Dict[str, Any]]:
         """
-        Retorna catálogos del proyecto desde `catalogos_config`.
-
-        Columnas esperadas:
-          - project_id, catalog_id, nombre, tabla_destino, estrategia, destino, schema_json
+        Retorna catálogos del proyecto filtrados por permisos del usuario.
+        - Admins ven todos los catálogos del proyecto.
+        - Sin permisos configurados: accesible para todos.
+        - Con permisos: solo si el rol o username del usuario coincide.
         """
         with _connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                      catalog_id,
-                      nombre,
-                      base_datos,
-                      tabla_destino,
-                      estrategia,
-                      destino,
-                      schema_json
-                    FROM catalogos_config
-                    WHERE project_id = %s AND activo = 1
-                    ORDER BY nombre
+                    SELECT DISTINCT
+                      c.catalog_id,
+                      c.nombre,
+                      c.base_datos,
+                      c.tabla_destino,
+                      c.estrategia,
+                      c.destino,
+                      c.schema_json
+                    FROM catalogos_config c
+                    LEFT JOIN permisos_catalogo p ON p.catalog_id = c.catalog_id
+                    WHERE c.project_id = %s AND c.activo = 1
+                      AND (
+                        %s = 'Admin'
+                        OR p.catalog_id IS NULL
+                        OR (p.tipo = 'rol'     AND p.valor = %s)
+                        OR (p.tipo = 'usuario' AND p.valor = %s)
+                      )
+                    ORDER BY c.nombre
                     """,
-                    (project_id,),
+                    (project_id, rol, rol, username),
                 )
                 rows = _fetchall_dict(cur)
-                catalogs: List[Dict[str, Any]] = []
-                for r in rows:
-                    catalogs.append(
-                        {
-                            "catalog_id":   str(r["catalog_id"]),
-                            "nombre":       str(r["nombre"]),
-                            "base_datos":   str(r["base_datos"]),
-                            "tabla_destino": str(r["tabla_destino"]),
-                            "estrategia":   str(r["estrategia"]),
-                            "destino":      str(r["destino"]),
-                            "schema":       _parse_schema(r.get("schema_json")),
-                        }
-                    )
-                return catalogs
+                return [
+                    {
+                        "catalog_id":    str(r["catalog_id"]),
+                        "nombre":        str(r["nombre"]),
+                        "base_datos":    str(r["base_datos"]),
+                        "tabla_destino": str(r["tabla_destino"]),
+                        "estrategia":    str(r["estrategia"]),
+                        "destino":       str(r["destino"]),
+                        "schema":        _parse_schema(r.get("schema_json")),
+                    }
+                    for r in rows
+                ]
 
     def get_catalog_by_id(project_id: str, catalog_id: str) -> Dict[str, Any]:
         with _connect() as conn:

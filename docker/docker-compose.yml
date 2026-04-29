@@ -25,6 +25,29 @@ services:
       - gatekeeper_net
 
   # ------------------------------------------------------------------
+  # Hive Metastore + HiveServer2 (modo standalone, Derby embebido)
+  # ------------------------------------------------------------------
+  hive:
+    image: apache/hive:4.0.0
+    container_name: gatekeeper_hive
+    environment:
+      SERVICE_NAME: hiveserver2   # standalone no es válido; hiveserver2 usa Derby embebido
+    ports:
+      - "10000:10000"   # HiveServer2 Thrift (pyhive conecta aquí)
+      - "10002:10002"   # HiveServer2 Web UI
+    volumes:
+      - hive_warehouse:/opt/hive/data/warehouse
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:10002/ > /dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
   # Data Gatekeeper (Streamlit)
   # ------------------------------------------------------------------
   app:
@@ -34,6 +57,8 @@ services:
     container_name: gatekeeper_app
     env_file:
       - ../.env
+    environment:
+      SS_HOST: singlestore   # dentro de Docker, el host es el nombre del servicio, no 127.0.0.1
     ports:
       - "8501:8501"
     volumes:
@@ -41,6 +66,8 @@ services:
     depends_on:
       singlestore:
         condition: service_healthy
+      hive:
+        condition: service_started   # Hive tarda ~90s; el app maneja errores de conexión
     networks:
       - gatekeeper_net
     restart: unless-stopped
@@ -48,6 +75,7 @@ services:
 volumes:
   singlestore_data:
   audit_storage:
+  hive_warehouse:
 
 networks:
   gatekeeper_net:

@@ -180,3 +180,35 @@ def deactivate_catalog(catalog_id: str) -> None:
                 (catalog_id,),
             )
         conn.commit()
+
+
+def get_catalog_permissions(catalog_id: str) -> List[Dict]:
+    """Retorna los permisos configurados para un catálogo."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tipo, valor FROM permisos_catalogo WHERE catalog_id = %s ORDER BY tipo, valor",
+                (catalog_id,),
+            )
+            return [{"tipo": r[0], "valor": r[1]} for r in cur.fetchall()]
+
+
+def save_permissions(catalog_id: str, permisos: List[Dict]) -> None:
+    """Reemplaza todos los permisos de un catálogo (DELETE + INSERT)."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM permisos_catalogo WHERE catalog_id = %s", (catalog_id,))
+            for p in permisos:
+                cur.execute(
+                    "INSERT IGNORE INTO permisos_catalogo (catalog_id, tipo, valor) VALUES (%s, %s, %s)",
+                    (catalog_id, p["tipo"], p["valor"]),
+                )
+        conn.commit()
+
+
+def get_all_usuarios_activos() -> List[str]:
+    """Retorna usernames activos de la tabla usuarios."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username FROM usuarios WHERE activo = 1 ORDER BY username")
+            return [r[0] for r in cur.fetchall()]

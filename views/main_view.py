@@ -6,21 +6,35 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 from typing import Optional
+import base64
+import io
+import zipfile
+from pathlib import Path
 
 from dg_validators.engine import validate_dataframe, ValidationResult
 from utils.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
 from utils.report_builder import build_error_report
 from utils.db_writer import execute_load
-import base64
-from pathlib import Path
-from utils.db_admin import (
-    get_all_databases, get_tables_from_db, describe_table, build_schema_json,
-    save_catalog_config, ensure_project_exists, catalog_exists,
-)
+from config.catalogs import get_proyectos_list, get_catalogs_by_project
+from config.settings import MAX_FILE_SIZE_MB
+
 
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
+
+
+def _build_audit_payload(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+    if not files:
+        return b"", "archivo"
+    if len(files) == 1:
+        return files[0][1], files[0][0]
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_name, file_bytes in files:
+            zf.writestr(file_name, file_bytes)
+    return buffer.getvalue(), "archivos_originales.zip"
 
 
 # ------------------------------------------------------------------
@@ -81,104 +95,71 @@ def _render_sidebar() -> None:
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("**Seleccionar destino**")
+        st.markdown("**Seleccionar catálogo**")
 
-        # Selector de base de datos con búsqueda
+        # Proyectos desde catalogos_config
         try:
-            databases = get_all_databases()
+            proyectos = get_proyectos_list()
         except Exception as e:
-            st.error(f"Sin conexión a SingleStore: {e}")
+            st.error(f"Sin conexión a la base de datos: {e}")
+            _render_sidebar_footer(user)
             return
 
-        if not databases:
-            st.warning("No hay bases de datos disponibles.")
+        if not proyectos:
+            st.info("No hay catálogos configurados. Contacta al administrador.")
+            _render_sidebar_footer(user)
             return
 
-        db_search = st.text_input(
-            "Buscar base de datos",
-            key="db_search",
-            placeholder="Escribe para filtrar...",
-        )
-        filtered_dbs = (
-            [db for db in databases if db_search.lower() in db.lower()]
-            if db_search else databases
+        proy_options = {p["id"]: p["nombre"] for p in proyectos}
+        proy_sel_id = st.selectbox(
+            "Proyecto",
+            options=list(proy_options.keys()),
+            format_func=lambda x: proy_options[x],
+            key="sidebar_proyecto_sel",
         )
 
-        if not filtered_dbs:
-            st.warning(f"Sin resultados para '{db_search}'.")
-            return
-
-        db_sel = st.selectbox(
-            f"Base de datos ({len(filtered_dbs)} de {len(databases)})",
-            options=filtered_dbs,
-            key="sidebar_db_sel",
-        )
-
-        # Selector de tabla con búsqueda
+        # Catálogos del proyecto filtrados por permisos del usuario
         try:
-            tables = get_tables_from_db(db_sel)
+            catalogs = get_catalogs_by_project(
+                proy_sel_id,
+                username=user.get("username", ""),
+                rol=user.get("rol", "Publicador"),
+            )
         except Exception as e:
-            st.error(f"Error al listar tablas: {e}")
+            st.error(f"Error al cargar catálogos: {e}")
+            _render_sidebar_footer(user)
             return
 
-        if not tables:
-            st.warning(f"No hay tablas en `{db_sel}`.")
+        if not catalogs:
+            st.warning(f"No hay catálogos en '{proy_options[proy_sel_id]}'.")
+            _render_sidebar_footer(user)
             return
 
-        tbl_search = st.text_input(
-            "Buscar tabla",
-            key="tbl_search",
-            placeholder="Escribe para filtrar...",
-        )
-        filtered_tables = (
-            [t for t in tables if tbl_search.lower() in t.lower()]
-            if tbl_search else tables
+        cat_options = {c["catalog_id"]: c["nombre"] for c in catalogs}
+        cat_sel_id = st.selectbox(
+            "Catálogo",
+            options=list(cat_options.keys()),
+            format_func=lambda x: cat_options[x],
+            key="sidebar_catalog_sel",
         )
 
-        if not filtered_tables:
-            st.warning(f"Sin resultados para '{tbl_search}'.")
+        selected_cat = next((c for c in catalogs if c["catalog_id"] == cat_sel_id), None)
+        if not selected_cat:
             return
 
-        tbl_sel = st.selectbox(
-            f"Tabla ({len(filtered_tables)} de {len(tables)})",
-            options=filtered_tables,
-            key="sidebar_tbl_sel",
-        )
+        # Resetear flujo si el catálogo cambió
+        if st.session_state.get("sidebar_catalog_key") != cat_sel_id:
+            for k in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name", "uploaded_name",
+                      "validation_result", "carga_ejecutada", "load_result"]:
+                st.session_state.pop(k, None)
+            st.session_state.current_step      = "upload"
+            st.session_state.sidebar_catalog_key = cat_sel_id
 
-        # Estrategia y destino
-        c1, c2 = st.columns(2)
-        with c1:
-            estrategia = st.selectbox(
-                "Estrategia",
-                options=["overwrite", "append", "reproceso"],
-                key="sidebar_estrategia",
-            )
-        with c2:
-            destino = st.selectbox(
-                "Destino",
-                options=["singlestore", "hive"],
-                key="sidebar_destino",
-            )
+        estrategia = selected_cat["estrategia"]
+        destino    = selected_cat["destino"]
+        schema     = selected_cat.get("schema", {})
 
-        # Cargar esquema cuando cambia la tabla
-        schema_key = f"{db_sel}.{tbl_sel}"
-        if st.session_state.get("sidebar_schema_key") != schema_key:
-            try:
-                rows = describe_table(db_sel, tbl_sel)
-                st.session_state.sidebar_schema     = build_schema_json(rows)
-                st.session_state.sidebar_schema_key = schema_key
-                # Limpiar flujo si cambia la tabla
-                for k in ["uploaded_df", "uploaded_bytes", "uploaded_name",
-                          "validation_result", "carga_ejecutada", "load_result"]:
-                    st.session_state.pop(k, None)
-                st.session_state.current_step = "upload"
-            except Exception as e:
-                st.error(f"Error al consultar esquema: {e}")
-                return
-
-        schema = st.session_state.get("sidebar_schema", {})
-
-        # Info de la tabla seleccionada
+        # Info del catálogo seleccionado (solo lectura)
         st.markdown(f"""
         <div style="margin-top:12px; padding:10px 12px;
                     background:rgba(255,255,255,0.07);
@@ -187,7 +168,7 @@ def _render_sidebar() -> None:
             <div style="color:white; font-weight:500; margin-bottom:6px;">
                 <code style="color:#F5A800; background:rgba(245,168,0,0.12);
                     padding:2px 6px; border-radius:4px; font-size:11px;">
-                    {db_sel}.{tbl_sel}
+                    {selected_cat['base_datos']}.{selected_cat['tabla_destino']}
                 </code>
             </div>
             <div>
@@ -204,40 +185,47 @@ def _render_sidebar() -> None:
 
         # Columnas esperadas
         with st.expander("Ver columnas esperadas", expanded=False):
-            for col in schema.get("columnas", []):
-                st.markdown(
-                    f"<div style='font-size:12px; padding:3px 0; display:flex;"
-                    f"justify-content:space-between;'>"
-                    f"<code style='color:#F5A800;'>{col['nombre']}</code>"
-                    f"<span style='color:#A8B4D8;'>{col['tipo']}</span></div>",
-                    unsafe_allow_html=True,
-                )
+            cols = schema.get("columnas", [])
+            if cols:
+                for col in cols:
+                    nullable_tag = (
+                        "<span style='color:#6EE7B7; font-size:10px;'>nullable</span>"
+                        if col.get("nullable") else ""
+                    )
+                    st.markdown(
+                        f"<div style='font-size:12px; padding:3px 0; display:flex;"
+                        f"justify-content:space-between; align-items:center;'>"
+                        f"<code style='color:#F5A800;'>{col['nombre']}</code>"
+                        f"<span style='color:#A8B4D8;'>{col['tipo']} {nullable_tag}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("Sin esquema configurado.")
 
-        # Construir catalog dict dinámicamente
         st.session_state.selected_catalog = {
-            "catalog_id":    f"{db_sel}__{tbl_sel}",
-            "nombre":        tbl_sel,
-            "base_datos":    db_sel,
-            "tabla_destino": tbl_sel,
+            "catalog_id":    cat_sel_id,
+            "nombre":        selected_cat["nombre"],
+            "base_datos":    selected_cat["base_datos"],
+            "tabla_destino": selected_cat["tabla_destino"],
             "estrategia":    estrategia,
             "destino":       destino,
             "schema":        schema,
         }
-        st.session_state.selected_project_id = db_sel
+        st.session_state.selected_project_id = proy_sel_id
 
-        st.divider()
+        _render_sidebar_footer(user)
 
-        # Navegación para Admin
-        if user.get("rol") == "Admin":
-            if st.button("Administrar catálogos", use_container_width=True, key="btn_admin"):
-                st.session_state.current_view = "admin"
-                st.rerun()
 
-        # Botón logout
-        if st.button("Cerrar sesión", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+def _render_sidebar_footer(user: dict) -> None:
+    st.divider()
+    if user.get("rol") == "Admin":
+        if st.button("Administrar catálogos", use_container_width=True, key="btn_admin"):
+            st.session_state.current_view = "admin"
             st.rerun()
+    if st.button("Cerrar sesión", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -246,7 +234,6 @@ def _render_sidebar() -> None:
 def _render_main_content() -> None:
     catalog = st.session_state.get("selected_catalog")
 
-    # Header
     st.markdown("""
     <div style="padding: 8px 0 24px;">
         <h2 style="font-size:20px; font-weight:600; margin:0; color:var(--text-color);">
@@ -262,7 +249,6 @@ def _render_main_content() -> None:
         st.info("Selecciona un proyecto y catálogo en el panel izquierdo.")
         return
 
-    # Paso indicator
     step = st.session_state.get("current_step", "upload")
     _render_step_indicator(step)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
@@ -366,7 +352,23 @@ def _render_upload_step(catalog: dict) -> None:
             ext = uploaded_files[0].name.rsplit(".", 1)[-1].lower()
             is_excel = ext in ("xlsx", "xls")
 
-            # Opciones de lectura basadas en el primer archivo
+            oversized = []
+            max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+            for uf in uploaded_files:
+                uf.seek(0, 2)
+                file_size = uf.tell()
+                uf.seek(0)
+                if file_size > max_bytes:
+                    oversized.append(f"{uf.name} ({file_size / 1024 / 1024:.1f} MB)")
+
+            if oversized:
+                st.error(
+                    "Estos archivos exceden el límite permitido de "
+                    f"{MAX_FILE_SIZE_MB} MB: {', '.join(oversized)}"
+                )
+                st.session_state.uploaded_df = None
+                return
+
             if not is_excel:
                 enc = st.session_state.get("encoding", "utf-8")
                 detected = detect_file_delimiter(first_bytes, enc)
@@ -423,19 +425,20 @@ def _render_upload_step(catalog: dict) -> None:
                             help="Selecciona la hoja que contiene los datos del catálogo.",
                         )
 
-            # Leer y concatenar todos los archivos
             dfs = []
-            all_bytes = []
+            original_files = []
             errores_lectura = []
+            selected_sheet_name = st.session_state.get("sheet_name") if is_excel else None
 
             for uf in uploaded_files:
                 fb = uf.read()
-                all_bytes.append(fb)
+                original_files.append((uf.name, fb))
                 df_i, err_i = read_uploaded_file(
                     file_bytes=fb,
                     filename=uf.name,
                     delimiter=st.session_state.get("delimiter", ","),
                     encoding=st.session_state.get("encoding", "utf-8"),
+                    sheet_name=selected_sheet_name,
                 )
                 if err_i:
                     errores_lectura.append(f"**{uf.name}**: {err_i}")
@@ -450,7 +453,6 @@ def _render_upload_step(catalog: dict) -> None:
                 st.session_state.uploaded_df = None
                 return
 
-            # Mostrar stats por archivo
             if len(dfs) > 1:
                 st.markdown("**Archivos cargados**")
                 for fname, df_i, size_i in dfs:
@@ -462,15 +464,16 @@ def _render_upload_step(catalog: dict) -> None:
                         unsafe_allow_html=True,
                     )
 
-            # Concatenar
-            combined_df = pd.concat([d for _, d, _ in dfs], ignore_index=True)
+            combined_df   = pd.concat([d for _, d, _ in dfs], ignore_index=True)
             combined_name = " + ".join(fname for fname, _, _ in dfs)
-            total_bytes = sum(len(b) for b in all_bytes)
+            total_bytes   = sum(len(file_bytes) for _, file_bytes in original_files)
+            audit_bytes, audit_name = _build_audit_payload(original_files)
 
             stats = get_file_stats(combined_df, b"x" * total_bytes)
-            st.session_state.uploaded_df    = combined_df
-            st.session_state.uploaded_bytes = all_bytes[0]
-            st.session_state.uploaded_name  = combined_name
+            st.session_state.uploaded_df          = combined_df
+            st.session_state.uploaded_audit_bytes = audit_bytes
+            st.session_state.uploaded_audit_name  = audit_name
+            st.session_state.uploaded_name        = combined_name
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Filas totales", f"{stats['filas']:,}")
@@ -493,8 +496,8 @@ def _render_upload_step(catalog: dict) -> None:
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if st.session_state.get("uploaded_df") is not None:
         if st.button("Continuar → Validar datos", type="primary", key="btn_to_validate"):
-            st.session_state.current_step       = "validate"
-            st.session_state.validation_result  = None
+            st.session_state.current_step      = "validate"
+            st.session_state.validation_result = None
             st.rerun()
 
 
@@ -542,7 +545,7 @@ def _render_validate_step(catalog: dict) -> None:
             st.rerun()
 
         if st.button("← Volver al archivo", use_container_width=True, key="btn_back_v"):
-            st.session_state.current_step = "upload"
+            st.session_state.current_step      = "upload"
             st.session_state.validation_result = None
             st.rerun()
 
@@ -616,7 +619,6 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             }
         )
 
-        # Botón exportar errores
         user = st.session_state.get("user_info") or {}
         xlsx_bytes = build_error_report(
             result=result,
@@ -634,14 +636,14 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
 
 
 # ------------------------------------------------------------------
-# Paso 3: Resultado / Confirmación
+# Paso 3: Resultado
 # ------------------------------------------------------------------
 def _render_result_step(catalog: dict) -> None:
     from datetime import datetime
 
     df: Optional[pd.DataFrame] = st.session_state.get("uploaded_df")
-    filename   = st.session_state.get("uploaded_name", "archivo")
-    file_bytes = st.session_state.get("uploaded_bytes") or b""
+    filename   = st.session_state.get("uploaded_audit_name") or st.session_state.get("uploaded_name", "archivo")
+    file_bytes = st.session_state.get("uploaded_audit_bytes") or b""
     user       = st.session_state.user_info or {}
     project_id = st.session_state.get("selected_project_id", "")
 
@@ -655,27 +657,6 @@ def _render_result_step(catalog: dict) -> None:
                 username=user.get("username", "—"),
                 project_id=project_id,
             )
-
-        # Guardar en catalogos_config si la carga fue exitosa y no es demo
-        if load_result.get("success") and not load_result.get("demo"):
-            try:
-                base_datos = catalog.get("base_datos", "")
-                ensure_project_exists(base_datos, base_datos)
-                inserted = save_catalog_config(
-                    catalog_id    = catalog["catalog_id"],
-                    project_id    = base_datos,
-                    nombre        = catalog["nombre"],
-                    descripcion   = "",
-                    base_datos    = base_datos,
-                    tabla_destino = catalog["tabla_destino"],
-                    destino       = catalog["destino"],
-                    estrategia    = catalog["estrategia"],
-                    schema_json   = catalog.get("schema", {}),
-                )
-                load_result["catalog_registrado"] = inserted
-            except Exception:
-                load_result["catalog_registrado"] = False
-
         st.session_state.carga_ejecutada = True
         st.session_state.load_result     = load_result
         st.rerun()
@@ -751,7 +732,7 @@ def _render_result_step(catalog: dict) -> None:
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
     if st.button("Nueva carga", type="primary", key="btn_nueva_carga"):
-        for key in ["uploaded_df", "uploaded_bytes", "uploaded_name",
+        for key in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name", "uploaded_name",
                     "validation_result", "carga_ejecutada", "load_result"]:
             st.session_state.pop(key, None)
         st.session_state.current_step = "upload"
@@ -814,7 +795,7 @@ def _inject_main_css() -> None:
             font-size: 12px !important;
         }
 
-        /* Botón primario en sidebar (Administrar catálogos) */
+        /* Botones en sidebar */
         section[data-testid="stSidebar"] button[kind="primary"],
         section[data-testid="stSidebar"] button[kind="secondary"] {
             background: rgba(255,255,255,0.10) !important;

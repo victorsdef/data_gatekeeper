@@ -1,37 +1,123 @@
 """
 views/admin_catalogs_view.py
-Panel de administración de catálogos — solo accesible para rol Admin.
-Permite explorar bases de datos, seleccionar tablas, revisar su esquema
-y registrar el catálogo directamente en catalogos_config.
+Panel de administración: explorar BDs, registrar catálogos y gestionar permisos.
+
+Flujo:
+  1. Admin elige BD → ve tablas con checkboxes
+  2. Selecciona 1 tabla → ve esquema editable + formulario de registro
+     Selecciona N tablas → ve config común + botón "Registrar N tablas"
+  3. Las tablas ya registradas aparecen marcadas (✓) y solo permiten gestionar permisos
+  4. Tab "Catálogos activos" lista todo lo registrado en gatekeeper_meta
 """
 from __future__ import annotations
-import base64
-import json
 import re
+import base64
 from pathlib import Path
+from typing import Dict, List, Set
+import pandas as pd
 import streamlit as st
+
+from utils.db_admin import (
+    get_all_databases, get_tables_from_db, get_mapped_tables,
+    describe_table, build_schema_json,
+    get_all_projects, get_active_catalogs,
+    save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
+    get_catalog_permissions, save_permissions, get_all_usuarios_activos,
+)
+
+_TIPOS       = ["str", "int", "float", "bool"]
+_ESTRATEGIAS = ["overwrite", "append", "reproceso"]
+_DESTINOS    = ["singlestore", "hive"]
+_ROLES       = ["Publicador", "Admin"]
+
 
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
 
-from utils.db_admin import (
-    get_all_databases,
-    get_tables_from_db,
-    get_mapped_tables,
-    describe_table,
-    build_schema_json,
-    get_all_projects,
-    get_active_catalogs,
-    save_catalog_config,
-    deactivate_catalog,
-)
 
-_ESTRATEGIAS = ["overwrite", "append", "reproceso"]
-_DESTINOS    = ["singlestore", "hive"]
-_TIPOS       = ["str", "int", "float", "bool"]
+def _sync_selected_tables(all_tables: List[str]) -> List[str]:
+    selected = [t for t in all_tables if st.session_state.get(f"adm_chk_{t}", False)]
+    st.session_state.adm_selected_tables = selected
+
+    active_table = st.session_state.get("adm_active_table")
+    if selected:
+        if active_table not in selected:
+            st.session_state.adm_active_table = selected[-1]
+    else:
+        st.session_state.pop("adm_active_table", None)
+
+    return selected
 
 
+def _render_active_table_selector(selected: List[str], key_suffix: str = "main") -> str:
+    if not selected:
+        return ""
+    current = st.session_state.get("adm_active_table")
+    if current not in selected:
+        current = selected[0]
+        st.session_state.adm_active_table = current
+
+    selected_idx = selected.index(current)
+    active = st.selectbox(
+        "Tabla activa",
+        options=selected,
+        index=selected_idx,
+        key=f"adm_active_table_selector_{key_suffix}",
+    )
+    if active != st.session_state.get("adm_active_table"):
+        st.session_state.adm_active_table = active
+    return active
+
+
+def _project_defaults_from_db(database: str) -> tuple[str, str]:
+    project_id = re.sub(r"[^a-z0-9_]+", "_", database.lower()).strip("_")
+    project_name = database.replace("_", " ").strip().title()
+    return project_id or "nuevo_proyecto", project_name or "Nuevo Proyecto"
+
+
+def _render_project_inputs(db_name: str, key_prefix: str, projects: List[Dict]) -> tuple[str, str, bool]:
+    suggested_id, suggested_name = _project_defaults_from_db(db_name)
+    existing_map = {p["id"]: p["nombre"] for p in projects}
+
+    options = ["Crear o usar sugerido"]
+    if existing_map:
+        options.append("Usar proyecto existente")
+
+    mode = st.radio(
+        "Proyecto",
+        options,
+        key=f"{key_prefix}_project_mode",
+        horizontal=True,
+    )
+
+    if mode == "Usar proyecto existente" and existing_map:
+        selected_project_id = st.selectbox(
+            "Proyecto existente",
+            list(existing_map.keys()),
+            format_func=lambda x: existing_map[x],
+            key=f"{key_prefix}_project_existing",
+        )
+        return selected_project_id, existing_map[selected_project_id], False
+
+    project_id = st.text_input(
+        "ID del proyecto",
+        value=st.session_state.get(f"{key_prefix}_project_id_default", suggested_id),
+        key=f"{key_prefix}_project_id",
+        help="Se generó a partir del nombre de la base de datos, pero puedes cambiarlo.",
+    ).strip()
+    project_name = st.text_input(
+        "Nombre del proyecto",
+        value=st.session_state.get(f"{key_prefix}_project_name_default", suggested_name),
+        key=f"{key_prefix}_project_name",
+        help="Puedes dejar el sugerido o escribir un nombre más amigable.",
+    ).strip()
+    return project_id, project_name, True
+
+
+# ------------------------------------------------------------------
+# Entry point
+# ------------------------------------------------------------------
 def render_admin_view() -> None:
     _inject_admin_css()
 
@@ -51,222 +137,661 @@ def render_admin_view() -> None:
         </div>
         """, unsafe_allow_html=True)
         st.divider()
-        if st.button("← Volver a carga de archivos", use_container_width=True):
+        if st.button("← Volver al portal", use_container_width=True):
             st.session_state.current_view = "upload"
             st.rerun()
 
     st.markdown("""
-    <div style="padding: 8px 0 24px;">
+    <div style="padding: 8px 0 20px;">
         <h2 style="font-size:20px; font-weight:600; margin:0; color:var(--text-color);">
             Administración de catálogos
         </h2>
         <p style="font-size:13px; color:#6B7280; margin-top:4px;">
-            Explora la base de datos, selecciona una tabla y regístrala como catálogo de ingesta.
+            Usa el explorador de tablas y el explorador de configuración para mapear
+            catálogos en gatekeeper_meta y habilitarlos para los publicadores.
         </p>
     </div>
     """, unsafe_allow_html=True)
 
-    tab_crear, tab_listar = st.tabs(["Registrar catálogo", "Catálogos activos"])
+    tab1, tab2 = st.tabs(["Registrar catálogos", "Catálogos activos"])
 
-    with tab_crear:
-        _render_crear_tab()
-
-    with tab_listar:
-        _render_listar_tab()
+    with tab1:
+        _tab_registro()
+    with tab2:
+        _tab_activos()
 
 
 # ------------------------------------------------------------------
-# Tab 1: Crear / registrar catálogo
+# Tab 1: Explorer + registro unificado
 # ------------------------------------------------------------------
-def _render_crear_tab() -> None:
-    col_izq, col_der = st.columns([1, 1], gap="large")
+def _tab_registro() -> None:
+    try:
+        databases = get_all_databases()
+    except Exception as e:
+        st.error(f"Sin conexión a SingleStore: {e}")
+        return
 
-    with col_izq:
-        st.markdown("##### 1. Seleccionar tabla origen")
+    if not databases:
+        st.warning("No hay bases de datos de negocio disponibles. Verifica permisos del usuario de SingleStore.")
+        return
 
-        # Selector de base de datos
+    col_left, col_right = st.columns([1, 2], gap="large")
+
+    # ── Panel izquierdo: selector de BD y lista de tablas con checkboxes ──
+    with col_left:
+        st.markdown("##### Explorador de tablas")
+        db_sel = st.selectbox(
+            "Base de datos", databases, key="adm_db", label_visibility="collapsed"
+        )
+
+        # Limpiar selección y caché de esquema al cambiar de BD
+        if st.session_state.get("adm_prev_db") != db_sel:
+            for k in list(st.session_state.keys()):
+                if k.startswith("adm_chk_"):
+                    del st.session_state[k]
+            st.session_state.pop("adm_schema_key", None)
+            st.session_state.pop("adm_selected_tables", None)
+            st.session_state.pop("adm_active_table", None)
+            st.session_state.adm_prev_db = db_sel
+
         try:
-            databases = get_all_databases()
+            all_tables = get_tables_from_db(db_sel)
+            mapped: Set[tuple] = get_mapped_tables()
         except Exception as e:
-            st.error(f"No se pudo conectar a SingleStore: {e}")
+            st.error(f"Error al listar tablas: {e}")
             return
 
-        if not databases:
-            st.warning("No hay bases de datos disponibles (verifica permisos del usuario).")
+        if not all_tables:
+            st.warning(f"No hay tablas en `{db_sel}`.")
             return
 
-        db_sel = st.selectbox("Base de datos", options=databases, key="admin_db_sel")
+        # Stats
+        reg_count  = sum(1 for t in all_tables if (db_sel, t) in mapped)
+        disp_count = len(all_tables) - reg_count
+        st.markdown(f"""
+        <div style="font-size:12px; color:#6B7280; margin:8px 0 10px;">
+            <span style="color:#16A34A; font-weight:600;">✓ {reg_count} registradas</span>
+            &nbsp;·&nbsp;
+            <span style="color:#534AB7; font-weight:600;">{disp_count} disponibles</span>
+            &nbsp;·&nbsp; {len(all_tables)} total
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Selector de tabla — excluye las ya registradas en catalogos_config
-        try:
-            all_tables    = get_tables_from_db(db_sel)
-            mapped_tables = get_mapped_tables()
-        except Exception as e:
-            st.error(f"Error al listar tablas de `{db_sel}`: {e}")
-            return
-
-        available = [t for t in all_tables if (db_sel, t) not in mapped_tables]
-        already   = [t for t in all_tables if (db_sel, t) in mapped_tables]
-
-        if already:
-            st.caption(f"{len(already)} tabla(s) ya registrada(s): {', '.join(already)}")
-
-        if not available:
-            st.success(f"Todas las tablas de `{db_sel}` ya están registradas como catálogos.")
-            return
-
-        tbl_sel = st.selectbox("Tabla", options=available, key="admin_tbl_sel")
-
-        # Botón para cargar el esquema
-        if st.button("Consultar esquema", type="primary", use_container_width=True, key="btn_describe"):
-            try:
-                rows = describe_table(db_sel, tbl_sel)
-                st.session_state.admin_describe_rows = rows
-                st.session_state.admin_schema_json   = build_schema_json(rows)
-                st.session_state.admin_catalog_id    = f"{db_sel}__{tbl_sel}".lower()
-            except Exception as e:
-                st.error(f"Error al consultar esquema: {e}")
-                return
-
-        # Mostrar columnas detectadas
-        describe_rows = st.session_state.get("admin_describe_rows")
-        if describe_rows:
-            st.markdown("**Columnas detectadas**")
-            schema = st.session_state.get("admin_schema_json", {})
-            columnas = schema.get("columnas", [])
-
-            for i, col in enumerate(columnas):
-                c1, c2, c3 = st.columns([3, 2, 2])
-                with c1:
-                    st.markdown(
-                        f"<div style='padding:6px 0; font-size:13px;'>"
-                        f"<code style='color:#534AB7'>{col['nombre']}</code></div>",
-                        unsafe_allow_html=True,
-                    )
-                with c2:
-                    nuevo_tipo = st.selectbox(
-                        "Tipo",
-                        options=_TIPOS,
-                        index=_TIPOS.index(col["tipo"]) if col["tipo"] in _TIPOS else 0,
-                        key=f"admin_tipo_{i}",
-                        label_visibility="collapsed",
-                    )
-                    columnas[i]["tipo"] = nuevo_tipo
-                with c3:
-                    nullable = st.checkbox(
-                        "Nullable",
-                        value=col["nullable"],
-                        key=f"admin_null_{i}",
-                    )
-                    columnas[i]["nullable"] = nullable
-
-            schema["columnas"] = columnas
-            st.session_state.admin_schema_json = schema
-
-    with col_der:
-        if not st.session_state.get("admin_describe_rows"):
-            st.info("Selecciona una base de datos y tabla, luego haz clic en **Consultar esquema**.")
-            return
-
-        st.markdown("##### 2. Configurar catálogo")
-
-        # Proyectos
-        try:
-            projects = get_all_projects()
-        except Exception as e:
-            st.error(f"Error al cargar proyectos: {e}")
-            return
-
-        if not projects:
-            st.warning("No hay proyectos registrados. Crea al menos uno en la BD.")
-            return
-
-        proj_nombres = [p["nombre"] for p in projects]
-        proj_ids     = [p["id"]     for p in projects]
-        proj_idx = st.selectbox(
-            "Proyecto",
-            options=range(len(proj_nombres)),
-            format_func=lambda i: proj_nombres[i],
-            key="admin_proj_idx",
+        # Filtro de búsqueda
+        search = st.text_input(
+            "Filtrar tablas", placeholder="Buscar tabla...",
+            key="adm_tbl_search", label_visibility="collapsed"
         )
-        selected_project_id = proj_ids[proj_idx]
+        filtered = [t for t in all_tables if not search or search.lower() in t.lower()]
 
-        catalog_id = st.text_input(
-            "ID del catálogo",
-            value=st.session_state.get("admin_catalog_id", ""),
-            key="admin_catalog_id_input",
-            help="Identificador único. Se auto-genera como base_datos__tabla, pero puedes cambiarlo.",
-        )
+        if not filtered:
+            st.caption("Sin resultados.")
+            return
 
-        nombre = st.text_input(
-            "Nombre del catálogo",
-            value=st.session_state.get("admin_tbl_sel", "").replace("_", " ").title(),
-            key="admin_nombre",
-        )
-
-        descripcion = st.text_area(
-            "Descripción (opcional)",
-            key="admin_descripcion",
-            height=68,
-        )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            estrategia = st.selectbox("Estrategia de ingesta", options=_ESTRATEGIAS, key="admin_estrategia")
-        with c2:
-            destino = st.selectbox("Destino", options=_DESTINOS, key="admin_destino")
-
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-        # Preview del schema_json
-        with st.expander("Ver schema_json generado"):
-            st.json(st.session_state.get("admin_schema_json", {}))
-
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-        # Validaciones antes de guardar
-        errores = []
-        if not catalog_id.strip():
-            errores.append("El ID del catálogo no puede estar vacío.")
-        if not nombre.strip():
-            errores.append("El nombre del catálogo no puede estar vacío.")
-        if not re.match(r"^[\w]+$", catalog_id.strip()):
-            errores.append("El ID solo puede contener letras, números y guiones bajos.")
-
-        if errores:
-            for e in errores:
-                st.warning(e)
-
-        if st.button("Guardar catálogo", type="primary", use_container_width=True,
-                     key="btn_guardar_catalog", disabled=bool(errores)):
-            try:
-                db_sel  = st.session_state.get("admin_db_sel", "")
-                tbl_sel = st.session_state.get("admin_tbl_sel", "")
-                save_catalog_config(
-                    catalog_id    = catalog_id.strip(),
-                    project_id    = selected_project_id,
-                    nombre        = nombre.strip(),
-                    descripcion   = descripcion.strip(),
-                    base_datos    = db_sel,
-                    tabla_destino = tbl_sel,
-                    destino       = destino,
-                    estrategia    = estrategia,
-                    schema_json   = st.session_state.get("admin_schema_json", {}),
-                )
-                st.success(f"Catálogo **{nombre.strip()}** registrado correctamente.")
-                # Limpiar estado del formulario
-                for key in ["admin_describe_rows", "admin_schema_json", "admin_catalog_id"]:
-                    st.session_state.pop(key, None)
+        # Botones seleccionar/limpiar (fuera de form → actualizan session_state directo)
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            if st.button("Sel. disponibles", use_container_width=True, key="adm_sel_all"):
+                for t in filtered:
+                    if (db_sel, t) not in mapped:
+                        st.session_state[f"adm_chk_{t}"] = True
                 st.rerun()
-            except Exception as e:
-                st.error(f"Error al guardar: {e}")
+        with bc2:
+            if st.button("Limpiar", use_container_width=True, key="adm_sel_clear"):
+                for t in all_tables:
+                    st.session_state[f"adm_chk_{t}"] = False
+                st.session_state.pop("adm_active_table", None)
+                st.rerun()
+
+        st.markdown("##### Tablas")
+        for t in filtered:
+            is_reg = (db_sel, t) in mapped
+            label  = f"✓  {t}" if is_reg else t
+            # Las registradas no se deshabilitan para poder verlas en el panel derecho
+            st.checkbox(label, key=f"adm_chk_{t}")
+
+        selected = _sync_selected_tables(all_tables)
+
+        if selected:
+            st.markdown("##### Seleccionadas")
+            st.caption(f"{len(selected)} tabla(s) en la lista actual de registro")
+
+    # ── Panel derecho: adaptativo según selección ──
+    with col_right:
+        if not selected:
+            _render_empty_state()
+        else:
+            active_table = _render_active_table_selector(selected, key_suffix="right")
+            if len(selected) == 1:
+                _render_single_panel(db_sel, active_table, mapped)
+            else:
+                _render_bulk_panel(db_sel, selected, mapped, active_table)
 
 
 # ------------------------------------------------------------------
-# Tab 2: Listar catálogos activos
+# Estado vacío
 # ------------------------------------------------------------------
-def _render_listar_tab() -> None:
-    st.markdown("##### Catálogos registrados")
+def _render_empty_state() -> None:
+    st.markdown("""
+    <div style="margin-top:80px; text-align:center; color:#9CA3AF;">
+        <div style="font-size:44px; margin-bottom:14px;">🗄️</div>
+        <div style="font-size:15px; font-weight:600; margin-bottom:8px; color:#6B7280;">
+            Selecciona tablas para continuar
+        </div>
+        <div style="font-size:13px; line-height:1.8; color:#9CA3AF;">
+            <b>1 tabla</b> → ver esquema y registrarla individualmente<br>
+            <b>Varias tablas</b> → registrarlas en lote con una configuración común
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------
+# Panel derecho: 1 tabla seleccionada
+# ------------------------------------------------------------------
+def _render_single_panel(db: str, table: str, mapped: Set[tuple]) -> None:
+    already    = (db, table) in mapped
+    status_col = "#16A34A" if already else "#534AB7"
+    status_txt = "Ya registrada" if already else "Disponible"
+
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+        <span style="font-size:15px; font-weight:700;">
+            <code style="color:#6B7280;">{db}.</code><code style="color:{status_col};">{table}</code>
+        </span>
+        <span style="background:{'#DCFCE7' if already else '#EDE9FE'};
+                     color:{status_col}; font-size:11px; font-weight:600;
+                     padding:2px 10px; border-radius:20px;
+                     border:1px solid {status_col}40;">{status_txt}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    schema = _load_schema_into_state(db, table)
+    if schema is None:
+        return
+    columnas = schema.get("columnas", [])
+    st.markdown(f"**{len(columnas)} columnas**")
+
+    if already:
+        # Esquema solo lectura + gestión de permisos
+        _render_schema_readonly(schema)
+        st.divider()
+        catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+        _render_permission_manager_inline(catalog_id, f"pm_{catalog_id}")
+    else:
+        # Esquema editable + formulario de registro
+        with st.expander("Esquema — edita tipos y nulabilidad", expanded=True):
+            _render_schema_editor(schema, key_prefix="ex")
+        st.divider()
+        _render_registro_form(db, table, schema, key_prefix="ex")
+
+
+# ------------------------------------------------------------------
+# Panel derecho: múltiples tablas seleccionadas (registro en lote)
+# ------------------------------------------------------------------
+def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_table: str) -> None:
+    already_reg = [t for t in selected if (db, t) in mapped]
+    to_register = [t for t in selected if (db, t) not in mapped]
+    active_is_registered = (db, active_table) in mapped
+
+    st.markdown("##### Tabla activa")
+    _render_active_table_editor(db, active_table, mapped)
+
+    schema = _load_schema_into_state(db, active_table)
+    if schema is not None:
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        if active_is_registered:
+            st.markdown("##### Gestión de la tabla activa")
+            catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{active_table}".lower())
+            _render_permission_manager_inline(catalog_id, f"pm_bulk_{catalog_id}")
+        else:
+            st.markdown("##### Explorador de configuración")
+            active_key_prefix = f"bulk_{re.sub(r'[^a-z0-9_]', '_', active_table.lower())}"
+            _render_registro_form(db, active_table, schema, key_prefix=active_key_prefix)
+
+    st.divider()
+
+    # Resumen visual
+    st.markdown(f"""
+    <div style="padding:12px 16px; background:#F0F4FF; border-radius:8px; margin-bottom:16px;">
+        <div style="font-weight:600; font-size:14px; margin-bottom:6px;">
+            {len(selected)} tablas seleccionadas de <code>{db}</code>
+        </div>
+        <div style="font-size:12px;">
+            <span style="color:#534AB7; font-weight:600;">{len(to_register)} para registrar</span>
+            {"&nbsp;·&nbsp;<span style='color:#16A34A; font-weight:600;'>" + str(len(already_reg)) + " ya registradas (se omitirán)</span>" if already_reg else ""}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if to_register:
+        cols = st.columns(2)
+        for i, t in enumerate(to_register):
+            cols[i % 2].markdown(f"- `{t}`")
+
+    if already_reg:
+        st.caption(f"Se omitirán (ya existen): {', '.join(already_reg)}")
+
+    if not to_register:
+        st.info("Todas las tablas seleccionadas ya están registradas. Desmarque las verdes o vaya a **Catálogos activos** para gestionar sus permisos.")
+        return
+
+    st.divider()
+    st.markdown("##### Configuración común")
+
+    try:
+        projects = get_all_projects()
+    except Exception as e:
+        st.error(f"Error al cargar proyectos: {e}")
+        return
+
+    bk_proj, bk_project_name, create_project = _render_project_inputs(db, "adm_bk", projects)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        bk_est  = st.selectbox("Estrategia", _ESTRATEGIAS, key="adm_bk_est")
+    with c2:
+        bk_dest = st.selectbox("Destino", _DESTINOS, key="adm_bk_dest")
+
+    _render_permisos_selector("bk")
+
+    project_errors: List[str] = []
+    if not bk_proj:
+        project_errors.append("El ID del proyecto no puede estar vacío.")
+    elif not re.match(r"^[a-z0-9_]+$", bk_proj):
+        project_errors.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
+    if not bk_project_name:
+        project_errors.append("El nombre del proyecto no puede estar vacío.")
+    for err in project_errors:
+        st.warning(err)
+
+    st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
+
+    if st.button(
+        f"Registrar tablas seleccionadas ({len(to_register)})", type="primary",
+        use_container_width=True, key="adm_bk_go", disabled=bool(project_errors)
+    ):
+        if create_project:
+            ensure_project_exists(bk_proj, bk_project_name)
+        permisos = _collect_permisos("bk")
+        _ejecutar_registro_masivo(db, to_register, bk_proj, bk_est, bk_dest, permisos)
+
+
+def _ejecutar_registro_masivo(
+    db: str, tables: List[str], project_id: str,
+    estrategia: str, destino: str, permisos: List[Dict],
+) -> None:
+    progress = st.progress(0, text="Iniciando registro...")
+    ok, skipped, failed = [], [], []
+
+    for i, table in enumerate(tables):
+        progress.progress((i + 1) / len(tables), text=f"Procesando `{table}`...")
+        try:
+            schema     = build_schema_json(describe_table(db, table))
+            catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+            if catalog_exists(catalog_id):
+                skipped.append(table)
+                continue
+            save_catalog_config(
+                catalog_id    = catalog_id,
+                project_id    = project_id,
+                nombre        = table.replace("_", " ").title(),
+                descripcion   = f"Tabla {table} de {db}",
+                base_datos    = db,
+                tabla_destino = table,
+                destino       = destino,
+                estrategia    = estrategia,
+                schema_json   = schema,
+            )
+            save_permissions(catalog_id, permisos)
+            ok.append(table)
+        except Exception as e:
+            failed.append(f"{table}: {e}")
+
+    progress.empty()
+
+    if ok:
+        st.success(f"{len(ok)} catálogo(s) registrado(s): {', '.join(ok)}")
+    if skipped:
+        st.info(f"{len(skipped)} ya existían (ignorados): {', '.join(skipped)}")
+    if failed:
+        st.error(f"{len(failed)} error(es) al registrar:")
+        for msg in failed:
+            st.caption(f"• {msg}")
+
+    # Limpiar selección y forzar recarga
+    for k in list(st.session_state.keys()):
+        if k.startswith("adm_chk_"):
+            st.session_state[k] = False
+    st.rerun()
+
+
+# ------------------------------------------------------------------
+# Componentes reutilizables
+# ------------------------------------------------------------------
+def _render_schema_readonly(schema: dict) -> None:
+    for col in schema.get("columnas", []):
+        null_tag = (
+            "<span style='color:#6EE7B7;font-size:10px;margin-left:4px;'>nullable</span>"
+            if col.get("nullable") else ""
+        )
+        st.markdown(
+            f"<div style='font-size:12px;padding:3px 8px;background:#F8F9FA;"
+            f"border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;'>"
+            f"<code style='color:#534AB7'>{col['nombre']}</code>"
+            f"<span style='color:#6B7280'>{col['tipo']}{null_tag}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_schema_editor(schema: dict, key_prefix: str) -> None:
+    columnas = schema.get("columnas", [])
+    schema_cache_key = st.session_state.get("adm_schema_key", "default")
+    state_key = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
+    active_key = f"{key_prefix}_active_col_{hash(schema_cache_key)}"
+    filter_key = f"{key_prefix}_filter_col_{hash(schema_cache_key)}"
+
+    if state_key not in st.session_state:
+        st.session_state[state_key] = [
+            {
+                "nombre": col["nombre"],
+                "tipo": col["tipo"] if col["tipo"] in _TIPOS else "str",
+                "nullable": col.get("nullable", True),
+                "reglas": col.get("reglas", []),
+            }
+            for col in columnas
+        ]
+
+    rows = st.session_state[state_key]
+    if not rows:
+        st.info("Sin columnas para editar.")
+        return
+
+    if active_key not in st.session_state or st.session_state[active_key] not in [r["nombre"] for r in rows]:
+        st.session_state[active_key] = rows[0]["nombre"]
+
+    left, right = st.columns([1.1, 1.6], gap="large")
+
+    with left:
+        st.markdown("**Columnas**")
+        st.text_input(
+            "Buscar columna",
+            placeholder="Buscar columna...",
+            key=filter_key,
+            label_visibility="collapsed",
+        )
+        query = st.session_state.get(filter_key, "").strip().lower()
+        filtered_rows = [r for r in rows if not query or query in r["nombre"].lower()]
+
+        if not filtered_rows:
+            st.caption("Sin coincidencias.")
+        else:
+            for row in filtered_rows:
+                is_active = st.session_state.get(active_key) == row["nombre"]
+                label = f"• {row['nombre']}" if is_active else row["nombre"]
+                if st.button(
+                    label,
+                    key=f"{active_key}_btn_{row['nombre']}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                ):
+                    st.session_state[active_key] = row["nombre"]
+                    st.rerun()
+
+    with right:
+        active_name = st.session_state.get(active_key, rows[0]["nombre"])
+        current_idx = next((i for i, r in enumerate(rows) if r["nombre"] == active_name), 0)
+        current = rows[current_idx]
+
+        st.markdown(
+            f"""
+            <div style="text-align:center; padding:8px 10px; background:#F6F8FC; border:1px solid #D1D9F0;
+                        border-radius:10px; font-size:14px; font-weight:700; color:#1C2F6E;">
+                {current['nombre']}
+                <div style="font-size:11px; font-weight:500; color:#6B7280; margin-top:3px;">
+                    Columna {current_idx + 1} de {len(rows)}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        if st.button("← Anterior", use_container_width=True, key=f"{active_key}_prev", disabled=current_idx == 0):
+            st.session_state[active_key] = rows[current_idx - 1]["nombre"]
+            st.rerun()
+        if st.button("Siguiente →", use_container_width=True, key=f"{active_key}_next", disabled=current_idx >= len(rows) - 1):
+            st.session_state[active_key] = rows[current_idx + 1]["nombre"]
+            st.rerun()
+
+        new_tipo = st.selectbox(
+            "Tipo",
+            _TIPOS,
+            index=_TIPOS.index(current["tipo"]) if current["tipo"] in _TIPOS else 0,
+            key=f"{active_key}_tipo_{current['nombre']}",
+        )
+        new_nullable = st.checkbox(
+            "Nullable",
+            value=bool(current.get("nullable", True)),
+            key=f"{active_key}_nullable_{current['nombre']}",
+        )
+
+        rows[current_idx]["tipo"] = new_tipo
+        rows[current_idx]["nullable"] = new_nullable
+        st.session_state[state_key] = rows
+
+        preview_df = pd.DataFrame([
+            {
+                "Columna": row["nombre"],
+                "Tipo": row["tipo"],
+                "Nullable": "Sí" if row["nullable"] else "No",
+            }
+            for row in rows
+        ])
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        st.dataframe(
+            preview_df,
+            use_container_width=True,
+            hide_index=True,
+            height=min(len(preview_df) * 35 + 38, 240),
+        )
+
+def _load_schema_into_state(db: str, table: str) -> dict | None:
+    schema_key = f"{db}.{table}"
+    if st.session_state.get("adm_schema_key") != schema_key:
+        try:
+            rows = describe_table(db, table)
+            st.session_state.adm_schema = build_schema_json(rows)
+            st.session_state.adm_schema_key = schema_key
+        except Exception as e:
+            st.error(f"Error al consultar esquema: {e}")
+            return None
+    return st.session_state.get("adm_schema", {})
+
+
+def _render_active_table_editor(db: str, table: str, mapped: Set[tuple]) -> None:
+    already = (db, table) in mapped
+    badge_bg = "#DCFCE7" if already else "#EDE9FE"
+    badge_fg = "#16A34A" if already else "#534AB7"
+    badge_text = "Ya registrada" if already else "Lista para registrar"
+
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+        <span style="font-size:14px; font-weight:700;">
+            <code style="color:#6B7280;">{db}.</code><code style="color:{badge_fg};">{table}</code>
+        </span>
+        <span style="background:{badge_bg}; color:{badge_fg}; font-size:11px; font-weight:600;
+                     padding:2px 10px; border-radius:20px; border:1px solid {badge_fg}40;">
+            {badge_text}
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    schema = _load_schema_into_state(db, table)
+    if schema is None:
+        return
+
+    st.caption(f"{len(schema.get('columnas', []))} columna(s)")
+    if already:
+        _render_schema_readonly(schema)
+    else:
+        with st.expander("Esquema — edita tipos y nulabilidad", expanded=True):
+            _render_schema_editor(schema, key_prefix="bulk")
+
+
+def _collect_schema(schema: dict, key_prefix: str) -> dict:
+    orig = schema.get("columnas", [])
+    schema_cache_key = st.session_state.get("adm_schema_key", "default")
+    state_key = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
+    rows = st.session_state.get(state_key)
+    if not rows:
+        return schema
+
+    reglas_por_columna = {
+        col.get("nombre"): col.get("reglas", [])
+        for col in orig
+    }
+    return {
+        "columnas": [
+            {
+                "nombre": str(row["nombre"]),
+                "tipo": str(row["tipo"]),
+                "nullable": bool(row["nullable"]),
+                "reglas": reglas_por_columna.get(row["nombre"], row.get("reglas", [])),
+            }
+            for row in rows
+        ]
+    }
+
+
+def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None) -> None:
+    current    = current or []
+    init_roles = [p["valor"] for p in current if p["tipo"] == "rol"]
+    init_users = [p["valor"] for p in current if p["tipo"] == "usuario"]
+
+    st.markdown("**Permisos de acceso**")
+    st.caption("Sin selección = accesible para todos los publicadores")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.multiselect("Roles", _ROLES, default=init_roles, key=f"{key_prefix}_roles")
+    with c2:
+        try:
+            users = get_all_usuarios_activos()
+        except Exception:
+            users = []
+        st.multiselect("Usuarios específicos", users, default=init_users, key=f"{key_prefix}_users")
+
+
+def _collect_permisos(key_prefix: str) -> List[Dict]:
+    roles = st.session_state.get(f"{key_prefix}_roles", [])
+    users = st.session_state.get(f"{key_prefix}_users", [])
+    return (
+        [{"tipo": "rol",     "valor": r} for r in roles] +
+        [{"tipo": "usuario", "valor": u} for u in users]
+    )
+
+
+def _render_registro_form(db_sel: str, tbl_sel: str, schema: dict, key_prefix: str) -> None:
+    st.markdown("##### Explorador de configuración")
+
+    try:
+        projects = get_all_projects()
+    except Exception as e:
+        st.error(f"Error al cargar proyectos: {e}")
+        return
+
+    proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects)
+
+    cid_default = re.sub(r"[^a-z0-9_]", "_", f"{db_sel}__{tbl_sel}".lower())
+    catalog_id  = st.text_input(
+        "ID del catálogo", value=cid_default, key=f"{key_prefix}_cid",
+        help="Solo minúsculas, números y guiones bajos."
+    )
+    nombre      = st.text_input(
+        "Nombre legible", value=tbl_sel.replace("_", " ").title(), key=f"{key_prefix}_nombre"
+    )
+    descripcion = st.text_area("Descripción (opcional)", key=f"{key_prefix}_desc", height=56)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        estrategia = st.selectbox("Estrategia", _ESTRATEGIAS, key=f"{key_prefix}_est")
+    with c2:
+        destino = st.selectbox("Destino", _DESTINOS, key=f"{key_prefix}_dest")
+
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+    _render_permisos_selector(key_prefix)
+
+    cid    = catalog_id.strip()
+    errores: List[str] = []
+    if not proj_sel:
+        errores.append("El ID del proyecto no puede estar vacío.")
+    elif not re.match(r"^[a-z0-9_]+$", proj_sel):
+        errores.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
+    if not proj_name:
+        errores.append("El nombre del proyecto no puede estar vacío.")
+    if not cid:
+        errores.append("El ID no puede estar vacío.")
+    elif not re.match(r"^[a-z0-9_]+$", cid):
+        errores.append("El ID solo puede tener minúsculas, números y guiones bajos.")
+    for e in errores:
+        st.warning(e)
+
+    st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
+
+    if st.button(
+        "Registrar catálogo", type="primary", use_container_width=True,
+        key=f"{key_prefix}_save", disabled=bool(errores)
+    ):
+        if catalog_exists(cid):
+            st.error(f"Ya existe un catálogo con ID `{cid}`.")
+            return
+        try:
+            if create_project:
+                ensure_project_exists(proj_sel, proj_name)
+            save_catalog_config(
+                catalog_id    = cid,
+                project_id    = proj_sel,
+                nombre        = nombre.strip(),
+                descripcion   = descripcion.strip(),
+                base_datos    = db_sel,
+                tabla_destino = tbl_sel,
+                destino       = destino,
+                estrategia    = estrategia,
+                schema_json   = _collect_schema(schema, key_prefix),
+            )
+            save_permissions(cid, _collect_permisos(key_prefix))
+            st.success(f"Catálogo **{nombre.strip()}** registrado correctamente.")
+            st.session_state.pop("adm_schema_key", None)
+            st.session_state[f"adm_chk_{tbl_sel}"] = False
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
+
+
+def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
+    st.markdown("##### Gestionar permisos")
+    try:
+        current = get_catalog_permissions(catalog_id)
+    except Exception:
+        current = []
+    _render_permisos_selector(key_prefix, current=current)
+    if st.button("Actualizar permisos", key=f"{key_prefix}_upd", use_container_width=True):
+        try:
+            save_permissions(catalog_id, _collect_permisos(key_prefix))
+            st.success("Permisos actualizados.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+
+# ------------------------------------------------------------------
+# Tab 2: Catálogos activos
+# ------------------------------------------------------------------
+def _tab_activos() -> None:
+    search = st.text_input(
+        "Buscar", placeholder="Nombre, base de datos o tabla...",
+        key="adm_ac_search", label_visibility="collapsed"
+    )
 
     try:
         catalogs = get_active_catalogs()
@@ -274,72 +799,115 @@ def _render_listar_tab() -> None:
         st.error(f"Error al cargar catálogos: {e}")
         return
 
+    if search:
+        q        = search.lower()
+        catalogs = [c for c in catalogs if
+                    q in c["nombre"].lower() or
+                    q in c["base_datos"].lower() or
+                    q in c["tabla_destino"].lower()]
+
     if not catalogs:
-        st.info("No hay catálogos activos registrados.")
+        st.info("No hay catálogos activos." if not search else f"Sin resultados para '{search}'.")
         return
 
-    st.markdown(
-        f"<div style='font-size:13px; color:#6B7280; margin-bottom:12px;'>"
-        f"{len(catalogs)} catálogo(s) activo(s)</div>",
-        unsafe_allow_html=True,
-    )
+    st.caption(f"{len(catalogs)} catálogo(s) activo(s)")
 
     for cat in catalogs:
-        with st.container():
-            col1, col2 = st.columns([5, 1])
-            with col1:
+        cid = cat["catalog_id"]
+        try:
+            permisos = get_catalog_permissions(cid)
+        except Exception:
+            permisos = []
+
+        perm_text = ", ".join(
+            f"{'👤' if p['tipo'] == 'usuario' else '🎭'} {p['valor']}"
+            for p in permisos
+        ) or "Todos los publicadores"
+
+        manage_key  = f"adm_ac_perm_{cid}"
+        confirm_key = f"adm_ac_conf_{cid}"
+
+        col_card, col_btns = st.columns([5, 2])
+
+        with col_card:
+            st.markdown(f"""
+            <div style="padding:12px 16px; background:var(--secondary-background-color);
+                        border-radius:10px; margin-bottom:4px;
+                        border-left:3px solid #534AB7;">
+                <div style="font-weight:600; font-size:14px;">{cat['nombre']}</div>
+                <div style="font-size:12px; color:#6B7280; margin-top:4px;">
+                    📁 <b>{cat['proyecto']}</b> &nbsp;|&nbsp;
+                    🗄️ <code>{cat['base_datos']}.{cat['tabla_destino']}</code>
+                </div>
+                <div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span style="background:#E0E7FF;color:#3730A3;padding:1px 8px;
+                                 border-radius:20px;font-size:11px;">{cat['estrategia'].upper()}</span>
+                    <span style="background:#D1FAE5;color:#065F46;padding:1px 8px;
+                                 border-radius:20px;font-size:11px;">{cat['destino'].upper()}</span>
+                    <span style="font-size:11px;color:#6B7280;">Acceso: {perm_text}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col_btns:
+            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+            if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
+                st.session_state[manage_key] = not st.session_state.get(manage_key, False)
+                st.rerun()
+            if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
+                st.session_state[confirm_key] = True
+
+        # Panel de permisos inline
+        if st.session_state.get(manage_key):
+            with st.container():
                 st.markdown(f"""
-                <div style="
-                    padding:12px 16px;
-                    background:var(--secondary-background-color);
-                    border-radius:10px;
-                    margin-bottom:8px;
-                    border-left: 3px solid #534AB7;
-                ">
-                    <div style="font-weight:600; font-size:14px;">{cat['nombre']}</div>
-                    <div style="font-size:12px; color:#6B7280; margin-top:4px;">
-                        <span style="margin-right:16px;">📁 <b>Proyecto:</b> {cat['proyecto']}</span>
-                        <span style="margin-right:16px;">🗄 <b>BD:</b> {cat['base_datos']}</span>
-                        <span><b>Tabla:</b> <code>{cat['tabla_destino']}</code></span>
-                    </div>
-                    <div style="font-size:12px; color:#6B7280; margin-top:4px;">
-                        <span style="
-                            background:#E0E7FF; color:#3730A3;
-                            padding:1px 8px; border-radius:20px; font-size:11px;
-                            margin-right:8px;
-                        ">{cat['estrategia'].upper()}</span>
-                        <span style="
-                            background:#D1FAE5; color:#065F46;
-                            padding:1px 8px; border-radius:20px; font-size:11px;
-                        ">{cat['destino'].upper()}</span>
-                    </div>
+                <div style="padding:10px 14px; background:#F0F4FF;
+                            border:1px solid #C7D2FE; border-radius:8px; margin-bottom:8px;">
+                    <span style="font-size:13px; font-weight:600; color:#1C2F6E;">
+                        Permisos — {cat['nombre']}
+                    </span>
                 </div>
                 """, unsafe_allow_html=True)
-            with col2:
-                st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-                if st.button("Desactivar", key=f"deact_{cat['catalog_id']}", type="secondary"):
-                    st.session_state[f"confirm_deact_{cat['catalog_id']}"] = True
-
-            # Confirmación antes de desactivar
-            if st.session_state.get(f"confirm_deact_{cat['catalog_id']}"):
-                st.warning(
-                    f"¿Seguro que quieres desactivar **{cat['nombre']}**? "
-                    f"Los usuarios no podrán subir archivos a este catálogo."
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("Confirmar", key=f"yes_deact_{cat['catalog_id']}", type="primary"):
+                pk = f"ac_{cid}"
+                _render_permisos_selector(pk, current=permisos)
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("Guardar", type="primary", key=f"save_perm_{cid}",
+                                 use_container_width=True):
                         try:
-                            deactivate_catalog(cat["catalog_id"])
-                            st.session_state.pop(f"confirm_deact_{cat['catalog_id']}", None)
-                            st.success(f"Catálogo **{cat['nombre']}** desactivado.")
+                            save_permissions(cid, _collect_permisos(pk))
+                            st.success("Permisos actualizados.")
+                            st.session_state[manage_key] = False
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error: {e}")
-                with c2:
-                    if st.button("Cancelar", key=f"no_deact_{cat['catalog_id']}"):
-                        st.session_state.pop(f"confirm_deact_{cat['catalog_id']}", None)
+                with bc2:
+                    if st.button("Cancelar", key=f"cancel_perm_{cid}",
+                                 use_container_width=True):
+                        st.session_state[manage_key] = False
                         st.rerun()
+
+        # Confirmación de desactivación
+        if st.session_state.get(confirm_key):
+            st.warning(
+                f"¿Desactivar **{cat['nombre']}**? "
+                "Los publicadores perderán acceso inmediatamente."
+            )
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                if st.button("Confirmar", type="primary", key=f"yes_deact_{cid}",
+                             use_container_width=True):
+                    try:
+                        deactivate_catalog(cid)
+                        st.session_state.pop(confirm_key, None)
+                        st.success("Catálogo desactivado.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            with dc2:
+                if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -365,14 +933,18 @@ def _inject_admin_css() -> None:
         }
         section[data-testid="stSidebar"] * { color: #E8ECF8 !important; }
         section[data-testid="stSidebar"] hr { border-color: #2E4090 !important; }
+        section[data-testid="stSidebar"] button {
+            background: rgba(255,255,255,0.10) !important;
+            border: 1px solid rgba(255,255,255,0.20) !important;
+            color: white !important;
+            border-radius: 8px !important;
+        }
 
         div[data-testid="stTabs"] button {
             font-size: 14px;
             font-weight: 500;
-            color: #1C2F6E !important;
         }
         div[data-testid="stTabs"] button[aria-selected="true"] {
-            color: #1C2F6E !important;
             border-bottom: 2px solid #F5A800 !important;
         }
         div[data-testid="stExpander"] {
@@ -388,6 +960,9 @@ def _inject_admin_css() -> None:
         }
         div[data-testid="stButton"] button[kind="primary"]:hover {
             background: #15245A !important;
+        }
+        div[data-testid="stCheckbox"] label {
+            font-size: 13px !important;
         }
     </style>
     """, unsafe_allow_html=True)
