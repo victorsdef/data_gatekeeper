@@ -23,10 +23,12 @@ CREATE TABLE IF NOT EXISTS catalogos_config (
 );
 
 CREATE TABLE IF NOT EXISTS usuarios (
-    username        VARCHAR(100)    NOT NULL,
-    rol             VARCHAR(50)     NOT NULL,
-    activo          TINYINT(1)      NOT NULL DEFAULT 1,
-    ultimo_acceso   DATETIME,
+    username      VARCHAR(100) NOT NULL,
+    nombre        VARCHAR(200),
+    email         VARCHAR(200),
+    rol           VARCHAR(50)  NOT NULL DEFAULT 'Publicador',
+    activo        TINYINT(1)   NOT NULL DEFAULT 1,
+    ultimo_acceso DATETIME,
     PRIMARY KEY (username)
 );
 
@@ -52,3 +54,7 @@ CREATE TABLE IF NOT EXISTS log_auditoria (
     ruta_zip_auditoria      VARCHAR(1000),
     PRIMARY KEY (id)
 );
+
+-- Admin del sistema (siempre existe, independiente de LDAP)
+INSERT IGNORE INTO usuarios (username, nombre, email, rol)
+VALUES ('admin', 'Administrador', 'admin@baustro.fin.ec', 'Admin');

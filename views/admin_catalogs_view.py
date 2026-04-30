@@ -25,6 +25,7 @@ from utils.db_admin import (
     save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
     get_catalog_permissions, save_permissions, get_all_usuarios_activos,
 )
+from utils.user_service import get_all_usuarios, update_user_rol, toggle_user_activo
 
 _TIPOS       = ["str", "int", "float", "bool"]
 _ESTRATEGIAS = ["overwrite", "append", "reproceso"]
@@ -193,12 +194,14 @@ def render_admin_view() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["Registrar catálogos", "Catálogos activos"])
+    tab1, tab2, tab3 = st.tabs(["Registrar catálogos", "Catálogos activos", "Usuarios"])
 
     with tab1:
         _tab_registro()
     with tab2:
         _tab_activos()
+    with tab3:
+        _tab_usuarios()
 
 
 # ------------------------------------------------------------------
@@ -1276,6 +1279,101 @@ def _tab_activos() -> None:
                 if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
                     st.session_state.pop(confirm_key, None)
                     st.rerun()
+
+
+# ------------------------------------------------------------------
+# Tab 3: Gestión de usuarios
+# ------------------------------------------------------------------
+def _render_user_list(usuarios: list, system_admin: str) -> None:
+    if not usuarios:
+        st.caption("Sin usuarios en este grupo.")
+        return
+    for u in usuarios:
+        uname        = u["username"]
+        es_sys_admin = uname == system_admin.lower()
+        activo       = bool(u["activo"])
+        rol_actual   = u["rol"] or "Publicador"
+        nombre       = u["nombre"] or uname
+        email        = u["email"] or "—"
+        ultimo       = str(u["ultimo_acceso"])[:16] if u["ultimo_acceso"] else "Nunca"
+
+        rol_color = "#1C2F6E" if rol_actual == "Admin" else "#534AB7"
+        act_color = "#16A34A" if activo else "#9CA3AF"
+        act_text  = "Activo" if activo else "Inactivo"
+
+        st.markdown(
+            f'<div style="padding:10px 14px;background:var(--secondary-background-color);'
+            f'border-radius:10px;border-left:3px solid {rol_color};margin-bottom:8px;">'
+            f'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px;">'
+            f'<span style="font-weight:700;font-size:14px;">{uname}</span>'
+            f'<span style="background:{"#DCFCE7" if activo else "#F3F4F6"};color:{act_color};'
+            f'font-size:10px;font-weight:600;padding:1px 8px;border-radius:20px;">{act_text}</span>'
+            + (f'<span style="font-size:10px;color:#F5A800;font-weight:600;">⭐ sistema</span>' if es_sys_admin else "")
+            + f'</div><span style="font-size:12px;color:#6B7280;">{nombre} · {email}<br>Último acceso: {ultimo}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        if not es_sys_admin:
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                nuevo_rol = st.selectbox(
+                    "Rol", ["Publicador", "Admin"],
+                    index=0 if rol_actual == "Publicador" else 1,
+                    key=f"usr_rol_{uname}",
+                    label_visibility="collapsed",
+                )
+                if nuevo_rol != rol_actual:
+                    try:
+                        update_user_rol(uname, nuevo_rol)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            with c2:
+                if st.button("✓" if activo else "✗", key=f"usr_act_{uname}",
+                             use_container_width=True, help="Activar/Desactivar"):
+                    try:
+                        toggle_user_activo(uname, not activo)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+
+def _tab_usuarios() -> None:
+    from config.settings import SYSTEM_ADMIN_USERNAME
+
+    st.markdown("""
+    <div style="padding:4px 0 16px;">
+        <p style="font-size:13px; color:#6B7280; margin:0;">
+            Usuarios registrados automáticamente al iniciar sesión.
+            Cambia el rol o desactiva el acceso desde aquí.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    try:
+        usuarios = get_all_usuarios()
+    except Exception as e:
+        st.error(f"Error al cargar usuarios: {e}")
+        return
+
+    if not usuarios:
+        st.info("Aún no hay usuarios registrados.")
+        return
+
+    admins      = [u for u in usuarios if u["rol"] == "Admin"]
+    publicadores = [u for u in usuarios if u["rol"] != "Admin"]
+
+    st.caption(f"{len(admins)} admin(s) · {len(publicadores)} publicador(es)")
+
+    col_pub, col_adm = st.columns(2)
+
+    with col_pub:
+        st.markdown("##### Publicadores")
+        _render_user_list(publicadores, SYSTEM_ADMIN_USERNAME)
+
+    with col_adm:
+        st.markdown("##### Admins")
+        _render_user_list(admins, SYSTEM_ADMIN_USERNAME)
 
 
 # ------------------------------------------------------------------

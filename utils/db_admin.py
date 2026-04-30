@@ -7,6 +7,9 @@ import json
 import re
 from typing import Any, Dict, List
 import streamlit as st
+from config.settings import (
+    TBL_PROYECTOS, TBL_CATALOGOS, TBL_USUARIOS, TBL_PERMISOS, TBL_LOG_AUDITORIA,
+)
 
 _SYSTEM_DBS = {
     "information_schema", "memsql", "cluster", "mysql",
@@ -82,7 +85,7 @@ def get_mapped_tables() -> set:
     """Retorna un set de (base_datos, tabla_destino) ya registrados en catalogos_config."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT base_datos, tabla_destino FROM catalogos_config WHERE activo = 1")
+            cur.execute(f"SELECT base_datos, tabla_destino FROM {TBL_CATALOGOS} WHERE activo = 1")
             return {(r[0], r[1]) for r in cur.fetchall()}
 
 
@@ -92,7 +95,7 @@ def ensure_project_exists(project_id: str, nombre: str) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"INSERT IGNORE INTO `{SS_DATABASE}`.proyectos (project_id, nombre, activo) VALUES (%s, %s, 1)",
+                f"INSERT IGNORE INTO `{SS_DATABASE}`.{TBL_PROYECTOS} (project_id, nombre, activo) VALUES (%s, %s, 1)",
                 (project_id, nombre),
             )
         conn.commit()
@@ -101,14 +104,14 @@ def ensure_project_exists(project_id: str, nombre: str) -> None:
 def get_all_projects() -> List[Dict]:
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT project_id, nombre FROM proyectos WHERE activo = 1 ORDER BY nombre")
+            cur.execute(f"SELECT project_id, nombre FROM {TBL_PROYECTOS} WHERE activo = 1 ORDER BY nombre")
             return [{"id": r[0], "nombre": r[1]} for r in cur.fetchall()]
 
 
 def get_active_catalogs() -> List[Dict]:
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(f"""
                 SELECT
                     c.catalog_id,
                     c.nombre,
@@ -117,8 +120,8 @@ def get_active_catalogs() -> List[Dict]:
                     c.estrategia,
                     c.destino,
                     COALESCE(p.nombre, c.project_id) AS proyecto
-                FROM catalogos_config c
-                LEFT JOIN proyectos p ON p.project_id = c.project_id
+                FROM {TBL_CATALOGOS} c
+                LEFT JOIN {TBL_PROYECTOS} p ON p.project_id = c.project_id
                 WHERE c.activo = 1
                 ORDER BY proyecto, c.nombre
             """)
@@ -130,7 +133,7 @@ def catalog_exists(catalog_id: str) -> bool:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM catalogos_config WHERE catalog_id = %s LIMIT 1",
+                f"SELECT 1 FROM {TBL_CATALOGOS} WHERE catalog_id = %s LIMIT 1",
                 (catalog_id,),
             )
             return cur.fetchone() is not None
@@ -156,7 +159,7 @@ def save_catalog_config(
 
     from config.settings import SS_DATABASE
     sql = f"""
-        INSERT IGNORE INTO `{SS_DATABASE}`.catalogos_config
+        INSERT IGNORE INTO `{SS_DATABASE}`.{TBL_CATALOGOS}
             (catalog_id, project_id, nombre, descripcion, base_datos,
              tabla_destino, destino, estrategia, schema_json, activo)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
@@ -176,7 +179,7 @@ def deactivate_catalog(catalog_id: str) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE catalogos_config SET activo = 0 WHERE catalog_id = %s",
+                f"UPDATE {TBL_CATALOGOS} SET activo = 0 WHERE catalog_id = %s",
                 (catalog_id,),
             )
         conn.commit()
@@ -187,7 +190,7 @@ def get_catalog_permissions(catalog_id: str) -> List[Dict]:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT tipo, valor FROM permisos_catalogo WHERE catalog_id = %s ORDER BY tipo, valor",
+                f"SELECT tipo, valor FROM {TBL_PERMISOS} WHERE catalog_id = %s ORDER BY tipo, valor",
                 (catalog_id,),
             )
             return [{"tipo": r[0], "valor": r[1]} for r in cur.fetchall()]
@@ -197,10 +200,10 @@ def save_permissions(catalog_id: str, permisos: List[Dict]) -> None:
     """Reemplaza todos los permisos de un catálogo (DELETE + INSERT)."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM permisos_catalogo WHERE catalog_id = %s", (catalog_id,))
+            cur.execute(f"DELETE FROM {TBL_PERMISOS} WHERE catalog_id = %s", (catalog_id,))
             for p in permisos:
                 cur.execute(
-                    "INSERT IGNORE INTO permisos_catalogo (catalog_id, tipo, valor) VALUES (%s, %s, %s)",
+                    f"INSERT IGNORE INTO {TBL_PERMISOS} (catalog_id, tipo, valor) VALUES (%s, %s, %s)",
                     (catalog_id, p["tipo"], p["valor"]),
                 )
         conn.commit()
@@ -210,7 +213,7 @@ def get_all_usuarios_activos() -> List[str]:
     """Retorna usernames activos de la tabla usuarios."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT username FROM usuarios WHERE activo = 1 ORDER BY username")
+            cur.execute(f"SELECT username FROM {TBL_USUARIOS} WHERE activo = 1 ORDER BY username")
             return [r[0] for r in cur.fetchall()]
 
 

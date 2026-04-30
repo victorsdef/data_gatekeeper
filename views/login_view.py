@@ -6,6 +6,7 @@ import base64
 from pathlib import Path
 import streamlit as st
 from auth.ldap_auth import authenticate_user
+from utils.user_service import get_or_register_user
 from config.settings import DEMO_MODE
 
 def _logo_b64() -> str:
@@ -69,6 +70,14 @@ def render_login() -> None:
                 with st.spinner("Verificando credenciales..."):
                     user_info = authenticate_user(username, password)
                 if user_info:
+                    try:
+                        user_info = get_or_register_user(
+                            user_info["username"],
+                            user_info["nombre"],
+                            user_info["email"],
+                        )
+                    except Exception:
+                        pass  # Si la BD falla, seguimos con los datos del LDAP
                     st.session_state.authenticated = True
                     st.session_state.user_info = user_info
                     st.rerun()

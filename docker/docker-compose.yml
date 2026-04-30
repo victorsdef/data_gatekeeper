@@ -47,6 +47,38 @@ services:
       - gatekeeper_net
     restart: unless-stopped
 
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: gatekeeper_ldap
+    environment:
+      LDAP_ORGANISATION: "Banco del Austro"
+      LDAP_DOMAIN: baustro.fin.ec
+      LDAP_ADMIN_PASSWORD: admin123
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+      - ./ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom
+    ports:
+      - "389:389"
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  ldap-admin:
+    image: osixia/phpldapadmin:0.9.0
+    container_name: gatekeeper_ldap_admin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: ldap
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8083:80"
+    depends_on:
+      - ldap
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
   singlestore:
     image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
     container_name: gatekeeper_singlestore
@@ -84,6 +116,8 @@ services:
         condition: service_healthy
       hive:
         condition: service_started
+      ldap:
+        condition: service_started
     networks:
       - gatekeeper_net
     restart: unless-stopped
@@ -92,6 +126,8 @@ volumes:
   singlestore_data:
   hive_warehouse:
   audit_storage:
+  ldap_data:
+  ldap_config:
 
 networks:
   gatekeeper_net:

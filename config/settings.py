@@ -24,6 +24,18 @@ LDAP_PORT:   int   = int(os.getenv("LDAP_PORT", "389"))
 LDAP_BASE_DN: str  = os.getenv("LDAP_BASE_DN",  "DC=baustro,DC=fin,DC=ec")
 LDAP_DOMAIN: str   = os.getenv("LDAP_DOMAIN",   "BAUSTRO")
 LDAP_USE_SSL: bool = os.getenv("LDAP_USE_SSL", "false").lower() == "true"
+# NTLM = Active Directory real | SIMPLE = OpenLDAP / servidor de pruebas
+# ------------------------------------------------------------------
+# Admin del sistema (independiente de LDAP, siempre funciona)
+# ------------------------------------------------------------------
+SYSTEM_ADMIN_USERNAME: str = os.getenv("SYSTEM_ADMIN_USERNAME", "admin")
+SYSTEM_ADMIN_PASSWORD: str = os.getenv("SYSTEM_ADMIN_PASSWORD", "")
+
+LDAP_AUTH_METHOD: str    = os.getenv("LDAP_AUTH_METHOD",    "NTLM")
+LDAP_USERS_OU: str       = os.getenv("LDAP_USERS_OU",       "ou=users,DC=baustro,DC=fin,DC=ec")
+LDAP_GROUPS_OU: str      = os.getenv("LDAP_GROUPS_OU",      "ou=groups,DC=baustro,DC=fin,DC=ec")
+LDAP_ADMIN_DN: str       = os.getenv("LDAP_ADMIN_DN",       "cn=admin,DC=baustro,DC=fin,DC=ec")
+LDAP_ADMIN_PASSWORD: str = os.getenv("LDAP_ADMIN_PASSWORD", "")
 
 # ------------------------------------------------------------------
 # SingleStore
@@ -41,6 +53,15 @@ HIVE_HOST:     str = os.getenv("HIVE_HOST",     "localhost")
 HIVE_PORT:     int = int(os.getenv("HIVE_PORT", "10000"))
 HIVE_USER:     str = os.getenv("HIVE_USER",     "hive")
 HIVE_DATABASE: str = os.getenv("HIVE_DATABASE", "default")
+
+# ------------------------------------------------------------------
+# Tablas de metadatos (gatekeeper_meta)
+# ------------------------------------------------------------------
+TBL_PROYECTOS:       str = "proyectos"
+TBL_CATALOGOS:       str = "catalogos_config"
+TBL_USUARIOS:        str = "usuarios"
+TBL_PERMISOS:        str = "permisos_catalogo"
+TBL_LOG_AUDITORIA:   str = "log_auditoria"
 
 # ------------------------------------------------------------------
 # Auditoría / Almacenamiento
