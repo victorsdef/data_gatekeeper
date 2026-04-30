@@ -24,6 +24,8 @@ from utils.db_admin import (
     get_all_projects, get_active_catalogs,
     save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
     get_catalog_permissions, save_permissions, get_all_usuarios_activos,
+    update_catalog_config,
+    get_catalog_schema,
 )
 from utils.user_service import get_all_usuarios, update_user_rol, toggle_user_activo
 
@@ -354,7 +356,7 @@ def _tab_registro() -> None:
                 )
                 chk_col, lbl_col = st.columns([1, 8], gap="small")
                 with chk_col:
-                    st.checkbox("", key=f"adm_chk_{t}", label_visibility="collapsed")
+                    st.checkbox("", key=f"adm_chk_{t}", label_visibility="collapsed", disabled=True, value=False)
                 with lbl_col:
                     st.markdown(
                         '<div style="display:flex;align-items:center;gap:5px;margin-top:-4px;">'
@@ -892,6 +894,20 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             st.session_state[active_key] = rows[current_idx + 1]["nombre"]
             st.rerun()
 
+        new_nombre = st.text_input(
+            "Nombre de columna",
+            value=current["nombre"],
+            key=f"{active_key}_edit_nombre_{current_idx}",
+        )
+        if st.button("Renombrar", key=f"{active_key}_rename_{current_idx}", use_container_width=True):
+            new_nombre = new_nombre.strip()
+            existing = {r["nombre"] for i, r in enumerate(rows) if i != current_idx}
+            if new_nombre and new_nombre not in existing:
+                rows[current_idx]["nombre"] = new_nombre
+                st.session_state[state_key] = rows
+                st.session_state[active_key] = new_nombre
+                st.rerun()
+
         new_tipo = st.selectbox(
             "Tipo",
             _TIPOS,
@@ -923,6 +939,18 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             hide_index=True,
             height=min(len(preview_df) * 35 + 38, 240),
         )
+
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        if st.button("➕ Agregar columna", key=f"{active_key}_add_col", use_container_width=True):
+            existing_names = {r["nombre"] for r in rows}
+            i = 1
+            while f"nueva_columna_{i}" in existing_names:
+                i += 1
+            new_col = {"nombre": f"nueva_columna_{i}", "tipo": "str", "nullable": True, "reglas": []}
+            rows.append(new_col)
+            st.session_state[state_key] = rows
+            st.session_state[active_key] = new_col["nombre"]
+            st.rerun()
 
 
 def _bulk_table_prefix(table: str) -> str:
@@ -1178,107 +1206,196 @@ def _tab_activos() -> None:
 
     st.caption(f"{len(catalogs)} catálogo(s) activo(s)")
 
+    # Group by project preserving order
+    from collections import defaultdict
+    by_project: Dict[str, List] = defaultdict(list)
     for cat in catalogs:
-        cid = cat["catalog_id"]
-        try:
-            permisos = get_catalog_permissions(cid)
-        except Exception:
-            permisos = []
+        by_project[cat["proyecto"]].append(cat)
 
-        _icon_user  = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
-        _icon_role  = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>'
-        perm_text = ", ".join(
-            f"{_icon_user if p['tipo'] == 'usuario' else _icon_role}{p['valor']}"
-            for p in permisos
-        ) or "Todos los publicadores"
+    for project_name, group in by_project.items():
+        with st.expander(f"📁 {project_name}  —  {len(group)} catálogo(s)", expanded=False):
+            for cat in group:
+                cid = cat["catalog_id"]
+                try:
+                    permisos = get_catalog_permissions(cid)
+                except Exception:
+                    permisos = []
 
-        manage_key  = f"adm_ac_perm_{cid}"
-        confirm_key = f"adm_ac_conf_{cid}"
+                _icon_user = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
+                _icon_role = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>'
+                perm_text = ", ".join(
+                    f"{_icon_user if p['tipo'] == 'usuario' else _icon_role}{p['valor']}"
+                    for p in permisos
+                ) or "Todos los publicadores"
 
-        col_card, col_btns = st.columns([5, 2])
+                manage_key  = f"adm_ac_perm_{cid}"
+                confirm_key = f"adm_ac_conf_{cid}"
+                edit_key    = f"adm_ac_edit_{cid}"
 
-        with col_card:
-            st.markdown(f"""
-            <div style="padding:12px 16px; background:var(--secondary-background-color);
-                        border-radius:10px; margin-bottom:4px;
-                        border-left:3px solid #534AB7;">
-                <div style="font-weight:600; font-size:14px;">{cat['nombre']}</div>
-                <div style="font-size:12px; color:#6B7280; margin-top:4px; display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="#6B7280"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
-                    <b>{cat['proyecto']}</b>
-                    <span style="margin:0 4px;">|</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>
-                    <code>{cat['base_datos']}.{cat['tabla_destino']}</code>
-                </div>
-                <div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                    <span style="background:#E0E7FF;color:#3730A3;padding:1px 8px;
-                                 border-radius:20px;font-size:11px;">{cat['estrategia'].upper()}</span>
-                    <span style="background:#D1FAE5;color:#065F46;padding:1px 8px;
-                                 border-radius:20px;font-size:11px;">{cat['destino'].upper()}</span>
-                    <span style="font-size:11px;color:#6B7280;">Acceso: {perm_text}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                col_card, col_btns = st.columns([5, 2])
 
-        with col_btns:
-            st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-            if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
-                st.session_state[manage_key] = not st.session_state.get(manage_key, False)
-                st.rerun()
-            if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
-                st.session_state[confirm_key] = True
+                with col_card:
+                    st.markdown(
+                        '<div style="padding:12px 16px;background:var(--secondary-background-color);'
+                        'border-radius:10px;margin-bottom:4px;border-left:3px solid #534AB7;">'
+                        f'<div style="font-weight:600;font-size:14px;">{cat["nombre"]}</div>'
+                        '<div style="font-size:12px;color:#6B7280;margin-top:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;">'
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>'
+                        f'<code>{cat["base_datos"]}.{cat["tabla_destino"]}</code>'
+                        '</div>'
+                        '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+                        f'<span style="background:#E0E7FF;color:#3730A3;padding:1px 8px;border-radius:20px;font-size:11px;">{cat["estrategia"].upper()}</span>'
+                        f'<span style="background:#D1FAE5;color:#065F46;padding:1px 8px;border-radius:20px;font-size:11px;">{cat["destino"].upper()}</span>'
+                        f'<span style="font-size:11px;color:#6B7280;">Acceso: {perm_text}</span>'
+                        '</div></div>',
+                        unsafe_allow_html=True,
+                    )
 
-        # Panel de permisos inline
-        if st.session_state.get(manage_key):
-            with st.container():
-                st.markdown(f"""
-                <div style="padding:10px 14px; background:#F0F4FF;
-                            border:1px solid #C7D2FE; border-radius:8px; margin-bottom:8px;">
-                    <span style="font-size:13px; font-weight:600; color:#1C2F6E;">
-                        Permisos — {cat['nombre']}
-                    </span>
-                </div>
-                """, unsafe_allow_html=True)
-                pk = f"ac_{cid}"
-                _render_permisos_selector(pk, current=permisos)
-                bc1, bc2 = st.columns(2)
-                with bc1:
-                    if st.button("Guardar", type="primary", key=f"save_perm_{cid}",
-                                 use_container_width=True):
-                        try:
-                            save_permissions(cid, _collect_permisos(pk))
-                            st.success("Permisos actualizados.")
-                            st.session_state[manage_key] = False
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                with bc2:
-                    if st.button("Cancelar", key=f"cancel_perm_{cid}",
-                                 use_container_width=True):
+                with col_btns:
+                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                    if st.button("Editar", key=f"btn_edit_{cid}", use_container_width=True):
+                        st.session_state[edit_key] = not st.session_state.get(edit_key, False)
                         st.session_state[manage_key] = False
                         st.rerun()
-
-        # Confirmación de desactivación
-        if st.session_state.get(confirm_key):
-            st.warning(
-                f"¿Desactivar **{cat['nombre']}**? "
-                "Los publicadores perderán acceso inmediatamente."
-            )
-            dc1, dc2 = st.columns(2)
-            with dc1:
-                if st.button("Confirmar", type="primary", key=f"yes_deact_{cid}",
-                             use_container_width=True):
-                    try:
-                        deactivate_catalog(cid)
-                        st.session_state.pop(confirm_key, None)
-                        st.success("Catálogo desactivado.")
+                    if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
+                        st.session_state[manage_key] = not st.session_state.get(manage_key, False)
+                        st.session_state[edit_key] = False
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-            with dc2:
-                if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
-                    st.session_state.pop(confirm_key, None)
-                    st.rerun()
+                    if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
+                        st.session_state[confirm_key] = True
+
+                if st.session_state.get(edit_key):
+                    with st.container():
+                        st.markdown(
+                            '<div style="padding:10px 14px;background:#FFF7ED;'
+                            'border:1px solid #FED7AA;border-radius:8px;margin-bottom:12px;">'
+                            f'<span style="font-size:13px;font-weight:600;color:#92400E;">Editar — {cat["nombre"]}</span>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                        ek = f"ed_{cid}"
+                        ed_nombre = st.text_input(
+                            "Nombre", value=cat["nombre"], key=f"{ek}_nombre"
+                        )
+                        ed_desc = st.text_area(
+                            "Descripción", value=cat.get("descripcion") or "", key=f"{ek}_desc", height=60
+                        )
+                        ec1, ec2 = st.columns(2)
+                        with ec1:
+                            ed_est = st.selectbox(
+                                "Estrategia", _ESTRATEGIAS,
+                                index=_ESTRATEGIAS.index(cat["estrategia"]) if cat["estrategia"] in _ESTRATEGIAS else 0,
+                                key=f"{ek}_est",
+                            )
+                        with ec2:
+                            ed_dest = st.selectbox(
+                                "Destino", _DESTINOS,
+                                index=_DESTINOS.index(cat["destino"]) if cat["destino"] in _DESTINOS else 0,
+                                key=f"{ek}_dest",
+                            )
+
+                        st.markdown("**Columnas del esquema**")
+                        st.caption("Puedes editar nombre, tipo y nulabilidad. Usa la última fila vacía para agregar columnas.")
+
+                        schema_init_key = f"{ek}_schema_init"
+                        if schema_init_key not in st.session_state:
+                            try:
+                                raw = get_catalog_schema(cid)
+                                st.session_state[schema_init_key] = [
+                                    {"nombre": c["nombre"], "tipo": c["tipo"], "nullable": bool(c.get("nullable", True))}
+                                    for c in raw.get("columnas", [])
+                                ]
+                            except Exception as e:
+                                st.error(f"Error al cargar esquema: {e}")
+                                st.session_state[schema_init_key] = []
+
+                        init_rows = st.session_state[schema_init_key]
+                        init_df = pd.DataFrame(init_rows) if init_rows else pd.DataFrame(columns=["nombre", "tipo", "nullable"])
+
+                        edited_df = st.data_editor(
+                            init_df,
+                            column_config={
+                                "nombre":   st.column_config.TextColumn("Columna", required=True),
+                                "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
+                                "nullable": st.column_config.CheckboxColumn("Nullable"),
+                            },
+                            use_container_width=True,
+                            num_rows="dynamic",
+                            hide_index=True,
+                            key=f"{ek}_schema_editor",
+                        )
+
+                        bc1, bc2 = st.columns(2)
+                        with bc1:
+                            if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True):
+                                try:
+                                    new_schema = {
+                                        "columnas": [
+                                            {
+                                                "nombre": str(r.get("nombre", "")).strip(),
+                                                "tipo": str(r.get("tipo", "str")),
+                                                "nullable": bool(r.get("nullable", True)),
+                                                "reglas": [],
+                                            }
+                                            for _, r in edited_df.iterrows()
+                                            if str(r.get("nombre", "")).strip()
+                                        ]
+                                    }
+                                    update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
+                                    st.success("Catálogo actualizado.")
+                                    st.session_state.pop(schema_init_key, None)
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        with bc2:
+                            if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
+                                st.session_state.pop(schema_init_key, None)
+                                st.session_state[edit_key] = False
+                                st.rerun()
+
+                if st.session_state.get(manage_key):
+                    with st.container():
+                        st.markdown(
+                            '<div style="padding:10px 14px;background:#F0F4FF;'
+                            'border:1px solid #C7D2FE;border-radius:8px;margin-bottom:8px;">'
+                            f'<span style="font-size:13px;font-weight:600;color:#1C2F6E;">Permisos — {cat["nombre"]}</span>'
+                            '</div>',
+                            unsafe_allow_html=True,
+                        )
+                        pk = f"ac_{cid}"
+                        _render_permisos_selector(pk, current=permisos)
+                        bc1, bc2 = st.columns(2)
+                        with bc1:
+                            if st.button("Guardar", type="primary", key=f"save_perm_{cid}", use_container_width=True):
+                                try:
+                                    save_permissions(cid, _collect_permisos(pk))
+                                    st.success("Permisos actualizados.")
+                                    st.session_state[manage_key] = False
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                        with bc2:
+                            if st.button("Cancelar", key=f"cancel_perm_{cid}", use_container_width=True):
+                                st.session_state[manage_key] = False
+                                st.rerun()
+
+                if st.session_state.get(confirm_key):
+                    st.warning(f"¿Desactivar **{cat['nombre']}**? Los publicadores perderán acceso inmediatamente.")
+                    dc1, dc2 = st.columns(2)
+                    with dc1:
+                        if st.button("Confirmar", type="primary", key=f"yes_deact_{cid}", use_container_width=True):
+                            try:
+                                deactivate_catalog(cid)
+                                st.session_state.pop(confirm_key, None)
+                                st.success("Catálogo desactivado.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                    with dc2:
+                        if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
+                            st.session_state.pop(confirm_key, None)
+                            st.rerun()
 
 
 # ------------------------------------------------------------------

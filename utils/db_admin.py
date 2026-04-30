@@ -115,6 +115,7 @@ def get_active_catalogs() -> List[Dict]:
                 SELECT
                     c.catalog_id,
                     c.nombre,
+                    c.descripcion,
                     c.base_datos,
                     c.tabla_destino,
                     c.estrategia,
@@ -127,6 +128,42 @@ def get_active_catalogs() -> List[Dict]:
             """)
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def get_catalog_schema(catalog_id: str) -> Dict:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT schema_json FROM {TBL_CATALOGOS} WHERE catalog_id = %s", (catalog_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                return {"columnas": []}
+            data = row[0]
+            if isinstance(data, (dict, list)):
+                return data if isinstance(data, dict) else {"columnas": data}
+            return json.loads(data)
+
+
+def update_catalog_config(
+    catalog_id: str,
+    nombre: str,
+    descripcion: str,
+    estrategia: str,
+    destino: str,
+    schema_json: Dict | None = None,
+) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            if schema_json is not None:
+                cur.execute(
+                    f"UPDATE {TBL_CATALOGOS} SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s, schema_json=%s WHERE catalog_id=%s",
+                    (nombre, descripcion, estrategia, destino, json.dumps(schema_json, ensure_ascii=False), catalog_id),
+                )
+            else:
+                cur.execute(
+                    f"UPDATE {TBL_CATALOGOS} SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s WHERE catalog_id=%s",
+                    (nombre, descripcion, estrategia, destino, catalog_id),
+                )
+        conn.commit()
 
 
 def catalog_exists(catalog_id: str) -> bool:
