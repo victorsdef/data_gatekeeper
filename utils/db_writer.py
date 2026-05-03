@@ -47,6 +47,10 @@ def execute_load(
         error    : str | None
         demo     : bool  — True si corrió en modo demo (sin BD real)
     """
+    # Drop pandas unnamed/empty trailing columns (e.g. "Unnamed: 4" from CSV/Excel)
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed[:\s]*\d*$", na=False)]
+    df = df.loc[:, df.columns.str.strip() != ""]
+
     tabla      = catalog["tabla_destino"]
     base_datos = catalog["base_datos"]
     estrategia = catalog["estrategia"]
