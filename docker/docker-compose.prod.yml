@@ -1,0 +1,158 @@
+# ------------------------------------------------------------------
+# Data Gatekeeper — Docker Compose SIMULACIÓN DE PRODUCCIÓN
+# ------------------------------------------------------------------
+# Simula localmente la infraestructura real del banco:
+#
+#   Servicio real          Simulado por
+#   ─────────────────────────────────────────────────────────
+#   SingleStore  10.16.190.51:3306    →  contenedor singlestore
+#   Hive         10.16.190.21:10000   →  contenedor hive
+#   LDAP / AD    austro.grpfin:389    →  contenedor ldap
+#
+# Sin Spark, Zeppelin ni ldap-admin (herramientas de desarrollo).
+# Las credenciales vienen de docker/.env.
+#
+# Uso:
+#   docker compose -f docker/docker-compose.prod.yml up -d --build
+#   docker compose -f docker/docker-compose.prod.yml logs -f app
+#   docker compose -f docker/docker-compose.prod.yml down
+#
+# Primera vez (inicializar la BD):
+#   docker exec -i gatekeeper_singlestore singlestore \
+#     -uroot -pgatekeeper123 < docker/init_db/00_create_db.sql
+#   docker exec -i gatekeeper_singlestore singlestore \
+#     -uroot -pgatekeeper123 gatekeeper_meta < docker/init_db/01_init.sql
+# ------------------------------------------------------------------
+
+version: "3.9"
+
+services:
+
+  # ── Simula SingleStore 10.16.190.51 ─────────────────────────────
+  singlestore:
+    image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+    container_name: gatekeeper_singlestore
+    environment:
+      ROOT_PASSWORD: "${SS_PASSWORD}"
+    ports:
+      - "3307:3306"    # 3306 ocupado en el host → accede por localhost:3307
+      - "8080:8080"    # SingleStore Studio
+    volumes:
+      - singlestore_data:/data
+      - ./init_db:/init_db
+    healthcheck:
+      test: ["CMD", "singlestore", "-uroot", "-p${SS_PASSWORD}", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      gatekeeper_net:
+        aliases:
+          - singlestore-sim   # alias interno opcional
+    restart: unless-stopped
+
+  # ── Simula Hive 10.16.190.21 ────────────────────────────────────
+  hive:
+    image: apache/hive:4.0.0
+    container_name: gatekeeper_hive
+    environment:
+      SERVICE_NAME: hiveserver2
+    ports:
+      - "10000:10000"  # HiveServer2 Thrift — puerto real del banco
+      - "10002:10002"  # Hive Web UI
+      - "9083:9083"    # Hive Metastore
+    volumes:
+      - hive_warehouse:/opt/hive/data/warehouse
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 10000 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  # ── Simula AD austro.grpfin ─────────────────────────────────────
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: gatekeeper_ldap
+    environment:
+      LDAP_ORGANISATION: "Banco del Austro"
+      LDAP_DOMAIN: baustro.fin.ec
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD}"
+      LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+      - ./ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom
+    ports:
+      - "389:389"      # puerto LDAP real del banco
+    networks:
+      gatekeeper_net:
+        aliases:
+          - austro.grpfin   # el app puede resolver el dominio real dentro de Docker
+    restart: unless-stopped
+
+  # ── LDAP Admin UI (phpLDAPadmin) ────────────────────────────────
+  ldap-admin:
+    image: osixia/phpldapadmin:0.9.0
+    container_name: gatekeeper_ldap_admin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: ldap
+      PHPLDAPADMIN_HTTPS: "false"
+    ports:
+      - "8083:80"
+    depends_on:
+      - ldap
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+  # ── Aplicación ──────────────────────────────────────────────────
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: gatekeeper_app
+    env_file:
+      - .env            # carga todas las variables del banco
+    environment:
+      # Redirige los hosts reales a los contenedores simulados
+      SS_HOST: singlestore          # en vez de 10.16.190.51
+      HIVE_HOST: hive               # en vez de 10.16.190.21
+      LDAP_SERVER: ldap://ldap      # en vez de ldap://austro.grpfin
+      LDAP_AUTH_METHOD: SIMPLE      # OpenLDAP no soporta NTLM (solo el AD real usa NTLM)
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../audit_storage:/app/audit_storage
+    depends_on:
+      singlestore:
+        condition: service_healthy
+      hive:
+        condition: service_started
+      ldap:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - gatekeeper_net
+    restart: unless-stopped
+
+# ── Volúmenes ──────────────────────────────────────────────────────
+volumes:
+  singlestore_data:
+  hive_warehouse:
+  ldap_data:
+  ldap_config:
+
+# ── Red interna ────────────────────────────────────────────────────
+networks:
+  gatekeeper_net:
+    driver: bridge

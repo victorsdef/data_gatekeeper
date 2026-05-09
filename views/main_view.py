@@ -223,6 +223,9 @@ def _render_sidebar_footer(user: dict) -> None:
         if st.button("Administrar catálogos", use_container_width=True, key="btn_admin"):
             st.session_state.current_view = "admin"
             st.rerun()
+    if st.button("Historial de cargas", use_container_width=True, key="btn_history"):
+        st.session_state.current_view = "history"
+        st.rerun()
     if st.button("Cerrar sesión", use_container_width=True):
         for key in list(st.session_state.keys()):
             del st.session_state[key]

@@ -312,6 +312,55 @@ def _save_cold_storage(
 
 
 # ------------------------------------------------------------------
+# Consulta de log de auditoría (para la vista de historial)
+# ------------------------------------------------------------------
+def get_audit_log(
+    username_filter: str | None = None,
+    fecha_desde: str | None = None,
+    fecha_hasta: str | None = None,
+    estado: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """
+    Retorna registros de log_auditoria como lista de dicts.
+    username_filter=None → todos los usuarios (solo Admins deberían pasar None).
+    """
+    conditions = ["1=1"]
+    params: list = []
+
+    if username_filter:
+        conditions.append("usuario_ad = %s")
+        params.append(username_filter)
+    if fecha_desde:
+        conditions.append("DATE(timestamp_carga) >= %s")
+        params.append(fecha_desde)
+    if fecha_hasta:
+        conditions.append("DATE(timestamp_carga) <= %s")
+        params.append(fecha_hasta)
+    if estado:
+        conditions.append("estado_carga = %s")
+        params.append(estado)
+
+    where = " AND ".join(conditions)
+    sql = f"""
+        SELECT
+            id, timestamp_carga, usuario_ad, project_id, id_catalogo,
+            nombre_archivo_original, filas_procesadas, estrategia_usada,
+            destino, estado_carga, ruta_zip_auditoria
+        FROM log_auditoria
+        WHERE {where}
+        ORDER BY timestamp_carga DESC
+        LIMIT {int(limit)}
+    """
+
+    with _connect_ss() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# ------------------------------------------------------------------
 # Log de auditoría
 # ------------------------------------------------------------------
 def _save_audit_log(

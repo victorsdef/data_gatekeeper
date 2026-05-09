@@ -29,6 +29,7 @@ st.set_page_config(
 from views.login_view          import render_login
 from views.main_view           import render_main_app
 from views.admin_catalogs_view import render_admin_view
+from views.history_view        import render_history_view
 
 
 # ------------------------------------------------------------------
@@ -65,6 +66,8 @@ def main() -> None:
         render_login()
     elif st.session_state.current_view == "admin":
         render_admin_view()
+    elif st.session_state.current_view == "history":
+        render_history_view()
     else:
         render_main_app()
 
