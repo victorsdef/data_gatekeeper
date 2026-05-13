@@ -290,4 +290,16 @@ def describe_hive_table(database: str, table: str) -> List[Dict[str, str]]:
     with _connect_hive() as conn:
         with conn.cursor() as cur:
             cur.execute(f"DESCRIBE {database}.{table}")
-            return [{"Field": r[0], "Type": r[1], "Null": "YES"} for r in cur.fetchall()]
+            raw = cur.fetchall()
+
+    seen: set = set()
+    result = []
+    for r in raw:
+        col_name = (r[0] or "").strip()
+        # Fila vacía o header de partición (#) → fin de columnas reales
+        if not col_name or col_name.startswith("#"):
+            break
+        if col_name not in seen:
+            seen.add(col_name)
+            result.append({"Field": col_name, "Type": r[1] or "string", "Null": "YES"})
+    return result

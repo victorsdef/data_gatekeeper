@@ -729,7 +729,7 @@ def _render_result_step(catalog: dict) -> None:
         "estrategia_usada": catalog["estrategia"],
         "destino":          catalog["destino"],
         "tabla_destino":    catalog["tabla_destino"],
-        "estado_carga":     "Éxito",
+        "estado_carga":     "Exito",
         "zip_auditoria":    load_result.get("zip_path") or "—",
         "modo_demo":        is_demo,
     }, expanded=True)

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libldap2-dev \
     libsasl2-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar dependencias Python

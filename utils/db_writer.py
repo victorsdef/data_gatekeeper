@@ -246,33 +246,51 @@ def _hive_insert(
     overwrite: bool,
     partition: Optional[Dict[str, str]] = None,
 ) -> None:
-    mode = "OVERWRITE" if overwrite else "INTO"
-    partition_clause = ""
+    cols = list(df.columns)
+
     if partition:
+        data_cols = [c for c in cols if c not in partition]
         parts = ", ".join(f"{k}='{v}'" for k, v in partition.items())
         partition_clause = f"PARTITION ({parts})"
+    else:
+        data_cols = cols
+        partition_clause = ""
 
     def _fmt(v: Any) -> str:
         if isinstance(v, str):
             return "'" + v.replace("'", "''") + "'"
-        if pd.isna(v):
-            return "NULL"
+        try:
+            if pd.isna(v):
+                return "NULL"
+        except (TypeError, ValueError):
+            pass
         return str(v)
 
-    batch_size = 100
-    rows_vals = [
-        "(" + ", ".join(_fmt(v) for v in row) + ")"
-        for row in df.itertuples(index=False, name=None)
-    ]
+    col_select = ", ".join(f"`{c}`" for c in data_cols)
+    all_rows   = list(df[data_cols].itertuples(index=False, name=None))
 
-    first = True
-    for i in range(0, len(rows_vals), batch_size):
-        batch = rows_vals[i: i + batch_size]
-        union = " UNION ALL ".join(f"SELECT * FROM (VALUES {v}) AS t" for v in batch)
-        op    = ("OVERWRITE" if (overwrite and first) else "INTO")
-        sql   = f"INSERT {op} TABLE {tabla} {partition_clause} {union}"
+    # HiveQL: INSERT INTO/OVERWRITE TABLE t [PARTITION (...)]
+    #         SELECT cols FROM (SELECT v1 AS col1, v2 AS col2
+    #                           UNION ALL SELECT v1, v2 ...) _tmp
+    # La primera fila lleva alias de columna; el resto no los necesita.
+    first_batch = True
+    for i in range(0, len(all_rows), 100):
+        batch = all_rows[i: i + 100]
+
+        first_vals = ", ".join(
+            f"{_fmt(v)} AS `{c}`" for v, c in zip(batch[0], data_cols)
+        )
+        union_parts = [f"SELECT {first_vals}"]
+        for row in batch[1:]:
+            union_parts.append("SELECT " + ", ".join(_fmt(v) for v in row))
+
+        op  = "OVERWRITE" if (overwrite and first_batch) else "INTO"
+        sql = (
+            f"INSERT {op} TABLE {tabla} {partition_clause} "
+            f"SELECT {col_select} FROM ({' UNION ALL '.join(union_parts)}) _tmp"
+        )
         cur.execute(sql)
-        first = False
+        first_batch = False
 
 
 # ------------------------------------------------------------------

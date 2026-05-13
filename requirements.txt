@@ -1,7 +1,6 @@
 # Data Gatekeeper — Python 3.9.13
 streamlit==1.28.2
 pandas==2.0.3
-pandera==0.14.5
 ldap3==2.9.1
 openpyxl==3.1.2
 xlrd==2.0.1

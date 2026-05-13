@@ -1,0 +1,32 @@
+# Entornos virtuales
+venv/
+.venv/
+data_gatekeeper/venv/
+
+# Auditoría (se monta como volumen)
+audit_storage/
+
+# Git y herramientas de desarrollo
+.git/
+.gitignore
+.dockerignore
+
+# Wiki / memoria
+memory/
+
+# Variables de entorno locales (el compose inyecta las suyas)
+.env
+.env.*
+!.env.example
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp

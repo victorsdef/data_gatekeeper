@@ -1,3 +1,5 @@
+CREATE DATABASE IF NOT EXISTS gatekeeper_meta;
+
 USE gatekeeper_meta;
 
 CREATE TABLE IF NOT EXISTS proyectos (

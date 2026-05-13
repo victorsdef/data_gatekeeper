@@ -264,6 +264,11 @@ def _tab_registro() -> None:
             st.session_state.pop("adm_tbl_page", None)
             st.session_state[prev_key] = db_sel
 
+        if st.button("↺ Refrescar tablas", key="adm_refresh_tables", use_container_width=True):
+            get_tables_from_db.clear()
+            get_hive_tables.clear()
+            st.rerun()
+
         try:
             if fuente == "SingleStore":
                 all_tables = get_tables_from_db(db_sel)
@@ -837,8 +842,8 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
         st.info("Sin columnas para editar.")
         return
 
-    if active_key not in st.session_state or st.session_state[active_key] not in [r["nombre"] for r in rows]:
-        st.session_state[active_key] = rows[0]["nombre"]
+    if active_key not in st.session_state or not isinstance(st.session_state[active_key], int) or st.session_state[active_key] >= len(rows):
+        st.session_state[active_key] = 0
 
     left, right = st.columns([1.1, 1.6], gap="large")
 
@@ -851,26 +856,28 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             label_visibility="collapsed",
         )
         query = st.session_state.get(filter_key, "").strip().lower()
-        filtered_rows = [r for r in rows if not query or query in r["nombre"].lower()]
+        filtered_rows = [
+            (i, r) for i, r in enumerate(rows)
+            if not query or query in r["nombre"].lower()
+        ]
 
         if not filtered_rows:
             st.caption("Sin coincidencias.")
         else:
-            for row in filtered_rows:
-                is_active = st.session_state.get(active_key) == row["nombre"]
+            for orig_idx, row in filtered_rows:
+                is_active = st.session_state.get(active_key) == orig_idx
                 label = f"• {row['nombre']}" if is_active else row["nombre"]
                 if st.button(
                     label,
-                    key=f"{active_key}_btn_{row['nombre']}",
+                    key=f"{active_key}_btn_{orig_idx}",
                     use_container_width=True,
                     type="primary" if is_active else "secondary",
                 ):
-                    st.session_state[active_key] = row["nombre"]
+                    st.session_state[active_key] = orig_idx
                     st.rerun()
 
     with right:
-        active_name = st.session_state.get(active_key, rows[0]["nombre"])
-        current_idx = next((i for i, r in enumerate(rows) if r["nombre"] == active_name), 0)
+        current_idx = st.session_state.get(active_key, 0)
         current = rows[current_idx]
 
         st.markdown(
@@ -888,10 +895,10 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
 
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
         if st.button("← Anterior", use_container_width=True, key=f"{active_key}_prev", disabled=current_idx == 0):
-            st.session_state[active_key] = rows[current_idx - 1]["nombre"]
+            st.session_state[active_key] = current_idx - 1
             st.rerun()
         if st.button("Siguiente →", use_container_width=True, key=f"{active_key}_next", disabled=current_idx >= len(rows) - 1):
-            st.session_state[active_key] = rows[current_idx + 1]["nombre"]
+            st.session_state[active_key] = current_idx + 1
             st.rerun()
 
         new_nombre = st.text_input(

@@ -346,13 +346,14 @@ docker compose -f docker/docker-compose.yml up -d --build
 
 | Servicio | Puerto host | URL |
 |---|---|---|
-| **App Streamlit** | 8501 | http://localhost:8501 |
+| **Nginx (entrada principal)** | 80 | http://localhost |
 | **SingleStore Studio** | 8080 | http://localhost:8080 |
 | **SingleStore MySQL** | 3307 | `mysql -h localhost -P 3307 -uroot -pgatekeeper123` |
 | **Hive Web UI** | 10002 | http://localhost:10002 |
 | **phpLDAPadmin** | 8083 | http://localhost:8083 |
 | **LDAP** | 389 | ldap://localhost:389 |
 
+> La app ya no expone el puerto 8501 directamente; la entrada siempre es **http://localhost** (Nginx en puerto 80).
 > Si Docker corre en un servidor remoto, reemplaza `localhost` por la IP del servidor.
 
 ### Login en phpLDAPadmin (http://localhost:8083)
