@@ -43,7 +43,7 @@ def render_login() -> None:
             st.markdown("<p class='field-label'>Usuario</p>", unsafe_allow_html=True)
             username = st.text_input(
                 label="usuario",
-                placeholder="Ej: vcastro",
+                placeholder="Baxxxxxx",
                 label_visibility="collapsed",
             )
 
