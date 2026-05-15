@@ -1,7 +1,6 @@
 """
 utils/db_writer.py
 Escritura en BD (SingleStore / Hive), cold storage y auditoría.
-En DEMO_MODE omite la escritura en BD y el log; solo ejecuta cold storage.
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from config.settings import (
-    DEMO_MODE,
     AUDIT_STORAGE_PATH,
     SS_HOST, SS_PORT, SS_USER, SS_PASSWORD, SS_DATABASE,
 )
@@ -36,16 +34,15 @@ def execute_load(
 ) -> Dict[str, Any]:
     """
     Pipeline completo de carga:
-      1. Escritura en BD según estrategia (omitida en DEMO_MODE)
+      1. Escritura en BD según estrategia
       2. ZIP del archivo original en cold storage
-      3. Log de auditoría en SingleStore (omitido en DEMO_MODE)
+      3. Log de auditoría en SingleStore
 
     Returns:
         success  : bool
         rows     : int
         zip_path : str | None
         error    : str | None
-        demo     : bool  — True si corrió en modo demo (sin BD real)
     """
     # Drop pandas unnamed/empty trailing columns (e.g. "Unnamed: 4" from CSV/Excel)
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed[:\s]*\d*$", na=False)]
@@ -64,19 +61,35 @@ def execute_load(
 
     try:
         # 1. Escritura en BD
-        if not DEMO_MODE:
-            if destino == "singlestore":
-                _write_singlestore(df, base_datos, tabla, estrategia)
-            elif destino == "hive":
-                _write_hive(df, base_datos, tabla, estrategia)
-            else:
-                raise ValueError(f"Destino desconocido: '{destino}'")
+        if destino == "singlestore":
+            _write_singlestore(df, base_datos, tabla, estrategia)
+        elif destino == "hive":
+            _write_hive(df, base_datos, tabla, estrategia)
+        else:
+            raise ValueError(f"Destino desconocido: '{destino}'")
 
         # 2. Cold storage (funciona en ambos modos)
         zip_path = _save_cold_storage(file_bytes, filename, catalog_id, username)
 
         # 3. Auditoría
-        if not DEMO_MODE:
+        _save_audit_log(
+            username=username,
+            project_id=project_id,
+            catalog_id=catalog_id,
+            filename=filename,
+            rows=rows,
+            estrategia=estrategia,
+            destino=destino,
+            estado="Exito",
+            errores_json=None,
+            zip_path=zip_path,
+        )
+
+        success = True
+
+    except Exception as exc:
+        error_msg = str(exc)
+        try:
             _save_audit_log(
                 username=username,
                 project_id=project_id,
@@ -85,38 +98,18 @@ def execute_load(
                 rows=rows,
                 estrategia=estrategia,
                 destino=destino,
-                estado="Exito",
-                errores_json=None,
-                zip_path=zip_path,
+                estado="Fallo",
+                errores_json={"error": error_msg},
+                zip_path=None,
             )
-
-        success = True
-
-    except Exception as exc:
-        error_msg = str(exc)
-        if not DEMO_MODE:
-            try:
-                _save_audit_log(
-                    username=username,
-                    project_id=project_id,
-                    catalog_id=catalog_id,
-                    filename=filename,
-                    rows=rows,
-                    estrategia=estrategia,
-                    destino=destino,
-                    estado="Fallo",
-                    errores_json={"error": error_msg},
-                    zip_path=None,
-                )
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     return {
         "success":  success,
         "rows":     rows,
         "zip_path": zip_path,
         "error":    error_msg,
-        "demo":     DEMO_MODE,
     }
 
 

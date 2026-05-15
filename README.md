@@ -42,7 +42,7 @@ Usuario AD
 | Proxy | Nginx (instalado en servidor, 80 → 8501) |
 | Autenticación | ldap3 → Active Directory / NTLM o SIMPLE (OpenLDAP) |
 | Procesamiento | pandas 2.0.3 (en memoria RAM) |
-| Validación | Motor propio `dg_validators/engine.py` (8 reglas) |
+| Validación | Motor propio `dg_validators/engine.py` (actual) |
 | BD principal | SingleStore (metadatos + tablas de negocio) |
 | BD secundaria | Hive (tablas de negocio, particiones dinámicas) |
 | Cold storage | ZIP comprimido por catálogo/fecha/usuario en `audit_storage/` |
@@ -57,13 +57,11 @@ Usuario AD
 | Componente | Archivo | Descripción |
 |---|---|---|
 | Entry point | `app.py` | Inicializa sesión y enruta a login, main, admin e historial |
-| Configuración | `config/settings.py` | Carga `DEMO_MODE`, `REAL_CATALOGS`, LDAP, SingleStore, auditoría |
-| Login demo | `auth/ldap_auth.py` | Usuarios hardcodeados (`DEMO_MODE=true`) |
+| Configuración | `config/settings.py` | Carga LDAP, SingleStore, Hive y auditoría |
 | Login LDAP NTLM | `auth/ldap_auth.py` | Autenticación contra Active Directory via NTLM |
 | Login LDAP SIMPLE | `auth/ldap_auth.py` | Autenticación contra OpenLDAP local (simulación) |
 | Admin del sistema | `auth/ldap_auth.py` | Usuario `admin` siempre disponible, independiente de LDAP |
 | Catálogos reales | `config/catalogs.py` | Lee proyectos y catálogos desde `catalogos_config` |
-| Fallback mock | `config/mock_catalogs.py` | Retorna listas vacías cuando `REAL_CATALOGS=false` |
 | Lectura archivos | `utils/file_handler.py` | CSV, TXT y Excel con auto-detección de separador y encoding |
 | Motor de validación | `dg_validators/engine.py` | 8 tipos de reglas en memoria con evaluación lazy |
 | Reporte de errores | `utils/report_builder.py` | Excel descargable con 2 hojas y colores por tipo de error |
@@ -87,10 +85,10 @@ Usuario AD
 
 | Componente | Archivo | Qué necesita |
 |---|---|---|
-| Login con Active Directory | `auth/ldap_auth.py` | `DEMO_MODE=false` + `LDAP_AUTH_METHOD=NTLM` + vars LDAP en `.env` |
-| Escritura en BD y auditoría | `utils/db_writer.py` | `DEMO_MODE=false` + variables SS en `.env` + tablas creadas |
+| Login con Active Directory | `auth/ldap_auth.py` | `LDAP_AUTH_METHOD=NTLM` + vars LDAP en `.env` |
+| Escritura en BD y auditoría | `utils/db_writer.py` | Variables SS en `.env` + tablas creadas |
 | Escritura en Hive | `utils/db_writer.py` | Variables `HIVE_*` en `.env` + `pip install pyhive` |
-| Historial en producción | `views/history_view.py` | `DEMO_MODE=false` (en demo muestra mensaje informativo) |
+| Historial de auditoría | `views/history_view.py` | Consulta registros reales desde `log_auditoria` |
 
 ### ❌ Pendiente
 
@@ -154,8 +152,6 @@ Vista de auditoría accesible desde el sidebar para todos los roles:
 
 **Exportación**: botón para descargar el historial filtrado como CSV.
 
-En `DEMO_MODE=true` muestra un mensaje informativo (no hay BD real que consultar).
-
 ---
 
 ### `utils/file_handler.py` — Lectura de archivos
@@ -180,6 +176,28 @@ En `DEMO_MODE=true` muestra un mensaje informativo (no hay BD real que consultar
 | Longitud exacta `str_length` | El texto debe tener entre `min` y `max` caracteres | No (lazy) |
 
 Las reglas lazy capturan **todos** los errores en una pasada; el usuario recibe la lista completa para corregir el archivo de una vez.
+
+### Estrategia de validación y escalamiento
+
+La implementación actual usa el **motor propio** en [dg_validators/engine.py](dg_validators/engine.py) como estrategia principal. Se mantiene así porque:
+
+- ya está integrado con la UI actual y con el formato de errores por fila, columna, regla y detalle;
+- permite control fino sobre abortos estructurales y reglas lazy;
+- reduce el costo de adaptación en comparación con una migración inmediata.
+
+Las estrategias aceptadas para la evolución del proyecto son estas:
+
+| Estrategia | Estado | Cuándo usarla |
+|---|---|---|
+| **Motor propio + pandas** | **Actual / recomendada** | Para catálogos manuales y volúmenes que caben cómodamente en RAM |
+| **Pandera** | Alternativa futura | Si se prioriza mantenibilidad declarativa, reutilización de esquemas y estandarización técnica |
+| **PySpark** | Estrategia de escalamiento | Solo si el volumen de archivos o el consumo de memoria deja de ser razonable para `pandas` |
+
+Decisión técnica actual:
+
+- **Hoy**: se mantiene el motor propio.
+- **Futuro opcional**: `pandera` puede adoptarse si el costo de migración se justifica.
+- **Escalamiento**: `PySpark` no reemplaza el flujo actual; se activaría solo ante presión real de RAM o tiempos de proceso.
 
 ### `utils/db_writer.py` — Estrategias de ingesta
 
@@ -263,22 +281,12 @@ ruta_zip_auditoria      VARCHAR(1000)
 
 | Variable | Controla | Valores |
 |---|---|---|
-| `DEMO_MODE` | Login + escritura en BD | `true` = demo / `false` = real |
-| `REAL_CATALOGS` | Fuente de catálogos | `true` = SingleStore / `false` = vacío |
 | `LDAP_AUTH_METHOD` | Protocolo LDAP | `NTLM` = AD real / `SIMPLE` = OpenLDAP |
 
 ### Escenarios de configuración
 
-**Desarrollo sin BD ni AD:**
-```env
-DEMO_MODE=true
-REAL_CATALOGS=false
-```
-
 **Simulación con Docker (docker-compose.prod.yml):**
 ```env
-DEMO_MODE=false
-REAL_CATALOGS=true
 LDAP_AUTH_METHOD=SIMPLE        # OpenLDAP no soporta NTLM
 SS_HOST=singlestore            # override en compose → contenedor
 HIVE_HOST=hive                 # override en compose → contenedor
@@ -287,8 +295,6 @@ LDAP_SERVER=ldap://ldap        # override en compose → contenedor
 
 **Producción real (servicios del banco):**
 ```env
-DEMO_MODE=false
-REAL_CATALOGS=true
 LDAP_AUTH_METHOD=NTLM
 SS_HOST=10.16.190.51
 SS_PORT=3306
@@ -307,7 +313,6 @@ LDAP_DOMAIN=BAUSTRO
 
 ```bash
 pip install -r requirements.txt
-# Crear .env con DEMO_MODE=true, REAL_CATALOGS=false
 streamlit run app.py
 ```
 
@@ -360,7 +365,7 @@ docker compose -f docker/docker-compose.yml up -d --build
 - Login DN: `cn=admin,dc=baustro,dc=fin,dc=ec`
 - Password: `admin123`
 
-### Usuarios disponibles en la simulación
+### Usuarios disponibles en la simulación LDAP
 
 | Usuario | Contraseña | Rol |
 |---|---|---|
@@ -452,7 +457,7 @@ El AD real del banco usa NTLM. El contenedor OpenLDAP de simulación usa SIMPLE.
 
 | Tarea | Detalle |
 |---|---|
-| **Activar AD real** | `DEMO_MODE=false` + `LDAP_AUTH_METHOD=NTLM` + ajustar grupos en `auth/ldap_auth.py` |
+| **Activar AD real** | `LDAP_AUTH_METHOD=NTLM` + ajustar grupos en `auth/ldap_auth.py` |
 | **Nginx en el servidor** | Crear `nginx.conf` y apuntar proxy 80 → 8501 |
 | **Gestión de usuarios en UI** | Vista en panel admin para cambiar roles y activar/desactivar |
 

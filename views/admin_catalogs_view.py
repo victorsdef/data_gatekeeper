@@ -33,6 +33,14 @@ _TIPOS       = ["str", "int", "float", "bool"]
 _ESTRATEGIAS = ["overwrite", "append", "reproceso"]
 _DESTINOS    = ["singlestore", "hive"]
 _ROLES       = ["Publicador", "Admin"]
+_REGLA_TIPOS = ["isin", "gte", "lte", "min_length", "str_length"]
+_REGLA_LABELS = {
+    "isin":       "Dominio (valores permitidos)",
+    "gte":        "Valor mínimo (≥)",
+    "lte":        "Valor máximo (≤)",
+    "min_length": "Longitud mínima de texto",
+    "str_length": "Longitud entre mín y máx",
+}
 
 
 def _logo_b64() -> str:
@@ -41,12 +49,30 @@ def _logo_b64() -> str:
 
 
 def _sync_selected_tables(all_tables: List[str]) -> List[str]:
-    selected = [t for t in all_tables if st.session_state.get(f"adm_chk_{t}", False)]
+    adm_sel_set = st.session_state.setdefault("adm_sel_set", set())
+
+    # Sincroniza solo los checkboxes renderizados (página actual) al set persistente
+    for t in all_tables:
+        chk_key = f"adm_chk_{t}"
+        if chk_key in st.session_state:
+            if st.session_state[chk_key]:
+                adm_sel_set.add(t)
+            else:
+                adm_sel_set.discard(t)
+
+    # La selección viene del set persistente, no de los widgets (sobrevive paginación)
+    selected = [t for t in all_tables if t in adm_sel_set]
+
+    prev_selected = set(st.session_state.get("adm_selected_tables") or [])
+    newly_checked = [t for t in selected if t not in prev_selected]
+
     st.session_state.adm_selected_tables = selected
 
     active_table = st.session_state.get("adm_active_table")
     if selected:
-        if active_table not in selected:
+        if newly_checked:
+            st.session_state.adm_active_table = newly_checked[-1]
+        elif active_table not in selected:
             st.session_state.adm_active_table = selected[-1]
     else:
         st.session_state.pop("adm_active_table", None)
@@ -262,6 +288,7 @@ def _tab_registro() -> None:
             st.session_state.pop("adm_selected_tables", None)
             st.session_state.pop("adm_active_table", None)
             st.session_state.pop("adm_tbl_page", None)
+            st.session_state.pop("adm_sel_set", None)
             st.session_state[prev_key] = db_sel
 
         if st.button("↺ Refrescar tablas", key="adm_refresh_tables", use_container_width=True):
@@ -323,14 +350,17 @@ def _tab_registro() -> None:
         bc1, bc2 = st.columns(2)
         with bc1:
             if st.button("Sel. disponibles", use_container_width=True, key="adm_sel_all"):
+                _sel = st.session_state.setdefault("adm_sel_set", set())
                 for t in filtered:
                     if (db_sel, t) not in mapped:
                         st.session_state[f"adm_chk_{t}"] = True
+                        _sel.add(t)
                 st.rerun()
         with bc2:
             if st.button("Limpiar", use_container_width=True, key="adm_sel_clear"):
                 for t in all_tables:
                     st.session_state[f"adm_chk_{t}"] = False
+                st.session_state.pop("adm_sel_set", None)
                 st.session_state.pop("adm_active_table", None)
                 st.rerun()
 
@@ -347,6 +377,12 @@ def _tab_registro() -> None:
         page_tables = filtered[page * page_size : (page + 1) * page_size]
 
         st.markdown("##### Tablas")
+        _adm_sel = st.session_state.setdefault("adm_sel_set", set())
+        for t in page_tables:
+            if (db_sel, t) not in mapped:
+                chk_key = f"adm_chk_{t}"
+                if chk_key not in st.session_state:
+                    st.session_state[chk_key] = t in _adm_sel
         for t in page_tables:
             is_reg = (db_sel, t) in mapped
             if is_reg:
@@ -805,159 +841,242 @@ def _ejecutar_registro_masivo(
 # Componentes reutilizables
 # ------------------------------------------------------------------
 def _render_schema_readonly(schema: dict) -> None:
-    for col in schema.get("columnas", []):
-        null_tag = (
-            "<span style='color:#6EE7B7;font-size:10px;margin-left:4px;'>nullable</span>"
-            if col.get("nullable") else ""
+    cols = schema.get("columnas", [])
+    if not cols:
+        st.caption("Sin columnas definidas.")
+        return
+
+    from collections import Counter
+    tipo_counts = Counter(c["tipo"] for c in cols)
+    nullable_n  = sum(1 for c in cols if c.get("nullable"))
+
+    tipo_badges = "".join(
+        f'<span style="background:#EDE9FE;color:#534AB7;font-size:10px;font-weight:600;'
+        f'padding:1px 7px;border-radius:20px;margin-right:4px;">{t} ×{n}</span>'
+        for t, n in sorted(tipo_counts.items())
+    )
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 0 10px;">'
+        f'<span style="font-size:12px;color:#6B7280;font-weight:500;">{len(cols)} columnas</span>'
+        f'<span style="color:#D1D9F0;">|</span>'
+        f'{tipo_badges}'
+        f'<span style="background:#D1FAE5;color:#065F46;font-size:10px;font-weight:600;'
+        f'padding:1px 7px;border-radius:20px;">{nullable_n} nullable</span>'
+        f'<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:600;'
+        f'padding:1px 7px;border-radius:20px;">{len(cols)-nullable_n} requerido</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    rows_html = "".join(
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'padding:6px 10px;background:{"#F8FAFF" if i%2==0 else "white"};'
+        f'border-radius:6px;margin-bottom:2px;">'
+        f'<code style="font-size:12px;color:#1C2F6E;">{col["nombre"]}</code>'
+        f'<div style="display:flex;align-items:center;gap:6px;">'
+        f'<span style="background:#EDE9FE;color:#534AB7;font-size:10px;font-weight:600;'
+        f'padding:1px 8px;border-radius:20px;">{col["tipo"]}</span>'
+        + (
+            '<span style="background:#D1FAE5;color:#065F46;font-size:10px;font-weight:500;'
+            'padding:1px 8px;border-radius:20px;">nullable</span>'
+            if col.get("nullable") else
+            '<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:500;'
+            'padding:1px 8px;border-radius:20px;">requerido</span>'
         )
-        st.markdown(
-            f"<div style='font-size:12px;padding:3px 8px;background:#F8F9FA;"
-            f"border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;'>"
-            f"<code style='color:#534AB7'>{col['nombre']}</code>"
-            f"<span style='color:#6B7280'>{col['tipo']}{null_tag}</span></div>",
-            unsafe_allow_html=True,
+        + '</div></div>'
+        for i, col in enumerate(cols)
+    )
+    st.markdown(
+        f'<div style="border:1px solid #E5E9F5;border-radius:8px;overflow:hidden;padding:4px;">'
+        + rows_html
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_rules_editor(col_names: list, state_key: str) -> None:
+    """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
+    if not col_names:
+        return
+    if state_key not in st.session_state:
+        st.session_state[state_key] = {}
+    rules: dict = st.session_state[state_key]
+
+    st.markdown(
+        '<div style="font-size:12px;font-weight:600;color:#6B7280;'
+        'padding:8px 0 4px;border-top:1px solid #E5E9F5;margin-top:8px;">'
+        'Reglas de calidad</div>',
+        unsafe_allow_html=True,
+    )
+    sel_col = st.selectbox(
+        "Columna",
+        col_names,
+        key=f"{state_key}_sel",
+        label_visibility="collapsed",
+    )
+    col_rules = list(rules.get(sel_col, []))
+
+    if col_rules:
+        for i, regla in enumerate(col_rules):
+            t = regla.get("tipo", "")
+            if t == "isin":
+                desc = "Dominio: " + ", ".join(str(v) for v in regla.get("valor", []))
+            elif t == "gte":
+                desc = f"Valor minimo: {regla.get('valor', '')}"
+            elif t == "lte":
+                desc = f"Valor maximo: {regla.get('valor', '')}"
+            elif t == "min_length":
+                desc = f"Longitud minima: {regla.get('valor', '')}"
+            elif t == "str_length":
+                desc = f"Longitud entre {regla.get('min','')} y {regla.get('max','')}"
+            else:
+                desc = str(regla)
+            rc1, rc2 = st.columns([8, 1])
+            with rc1:
+                st.markdown(
+                    f'<div style="background:#EEF2FF;color:#3730A3;font-size:12px;'
+                    f'padding:4px 12px;border-radius:6px;margin-bottom:4px;">{desc}</div>',
+                    unsafe_allow_html=True,
+                )
+            with rc2:
+                if st.button("✕", key=f"{state_key}_del_{sel_col}_{i}", help="Eliminar"):
+                    new_rules = dict(rules)
+                    new_rules[sel_col] = [r for j, r in enumerate(col_rules) if j != i]
+                    st.session_state[state_key] = new_rules
+                    st.rerun()
+    else:
+        st.caption("Sin reglas para esta columna.")
+
+    tipo_sel = st.selectbox(
+        "Tipo de regla",
+        _REGLA_TIPOS,
+        key=f"{state_key}_new_tipo",
+        format_func=lambda x: _REGLA_LABELS.get(x, x),
+    )
+
+    nueva_regla = None
+    if tipo_sel == "isin":
+        val_str = st.text_input(
+            "Valores permitidos (separados por coma)",
+            key=f"{state_key}_new_isin",
+            placeholder="C, D, N",
         )
+        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+            valores = [v.strip() for v in val_str.split(",") if v.strip()]
+            if valores:
+                nueva_regla = {"tipo": "isin", "valor": valores}
+
+    elif tipo_sel in ("gte", "lte"):
+        num_val = st.number_input(
+            "Valor limite",
+            key=f"{state_key}_new_num",
+            value=0.0,
+        )
+        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+            nueva_regla = {"tipo": tipo_sel, "valor": float(num_val)}
+
+    elif tipo_sel == "min_length":
+        min_val = st.number_input(
+            "Caracteres minimos",
+            key=f"{state_key}_new_minlen",
+            value=1, min_value=1, step=1,
+        )
+        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+            nueva_regla = {"tipo": "min_length", "valor": int(min_val)}
+
+    elif tipo_sel == "str_length":
+        nc1, nc2 = st.columns(2)
+        with nc1:
+            sl_min = st.number_input("Min", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
+        with nc2:
+            sl_max = st.number_input("Max", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
+        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+            nueva_regla = {"tipo": "str_length", "min": int(sl_min), "max": int(sl_max)}
+
+    if nueva_regla is not None:
+        new_rules = dict(rules)
+        col_list = list(new_rules.get(sel_col, []))
+        col_list.append(nueva_regla)
+        new_rules[sel_col] = col_list
+        st.session_state[state_key] = new_rules
+        st.rerun()
 
 
 def _render_schema_editor(schema: dict, key_prefix: str) -> None:
     columnas = schema.get("columnas", [])
     schema_cache_key = st.session_state.get("adm_schema_key", "default")
-    state_key = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
-    active_key = f"{key_prefix}_active_col_{hash(schema_cache_key)}"
-    filter_key = f"{key_prefix}_filter_col_{hash(schema_cache_key)}"
+    state_key  = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
+    result_key = f"{key_prefix}_schema_edited_{hash(schema_cache_key)}"
+    rules_key  = f"{key_prefix}_rules_{hash(schema_cache_key)}"
 
+    # state_key se escribe UNA sola vez (fuente inmutable del data_editor)
     if state_key not in st.session_state:
-        st.session_state[state_key] = [
-            {
-                "nombre": col["nombre"],
-                "tipo": col["tipo"] if col["tipo"] in _TIPOS else "str",
-                "nullable": col.get("nullable", True),
-                "reglas": col.get("reglas", []),
-            }
-            for col in columnas
-        ]
-
-    rows = st.session_state[state_key]
-    if not rows:
-        st.info("Sin columnas para editar.")
-        return
-
-    if active_key not in st.session_state or not isinstance(st.session_state[active_key], int) or st.session_state[active_key] >= len(rows):
-        st.session_state[active_key] = 0
-
-    left, right = st.columns([1.1, 1.6], gap="large")
-
-    with left:
-        st.markdown("**Columnas**")
-        st.text_input(
-            "Buscar columna",
-            placeholder="Buscar columna...",
-            key=filter_key,
-            label_visibility="collapsed",
+        st.session_state[state_key] = pd.DataFrame(
+            [
+                {
+                    "nombre":   col["nombre"],
+                    "tipo":     col["tipo"] if col["tipo"] in _TIPOS else "str",
+                    "nullable": bool(col.get("nullable", True)),
+                }
+                for col in columnas
+            ],
+            columns=["nombre", "tipo", "nullable"],
         )
-        query = st.session_state.get(filter_key, "").strip().lower()
-        filtered_rows = [
-            (i, r) for i, r in enumerate(rows)
-            if not query or query in r["nombre"].lower()
-        ]
 
-        if not filtered_rows:
-            st.caption("Sin coincidencias.")
-        else:
-            for orig_idx, row in filtered_rows:
-                is_active = st.session_state.get(active_key) == orig_idx
-                label = f"• {row['nombre']}" if is_active else row["nombre"]
-                if st.button(
-                    label,
-                    key=f"{active_key}_btn_{orig_idx}",
-                    use_container_width=True,
-                    type="primary" if is_active else "secondary",
-                ):
-                    st.session_state[active_key] = orig_idx
-                    st.rerun()
+    # Inicializar reglas existentes del schema (solo una vez)
+    if rules_key not in st.session_state:
+        st.session_state[rules_key] = {
+            col["nombre"]: list(col.get("reglas", []))
+            for col in columnas
+            if col.get("reglas")
+        }
 
-    with right:
-        current_idx = st.session_state.get(active_key, 0)
-        current = rows[current_idx]
+    df = st.session_state[state_key]
+    height = 38 + len(df) * 35 + 2
 
+    # Stats bar
+    if not df.empty:
+        from collections import Counter
+        tipo_counts   = Counter(df["tipo"].tolist())
+        nullable_n    = int(df["nullable"].sum())
+        tipo_badges   = "".join(
+            f'<span style="background:#EDE9FE;color:#534AB7;font-size:10px;font-weight:600;'
+            f'padding:1px 7px;border-radius:20px;margin-right:4px;">{t} ×{n}</span>'
+            for t, n in sorted(tipo_counts.items())
+        )
         st.markdown(
-            f"""
-            <div style="text-align:center; padding:8px 10px; background:#F6F8FC; border:1px solid #D1D9F0;
-                        border-radius:10px; font-size:14px; font-weight:700; color:#1C2F6E;">
-                {current['nombre']}
-                <div style="font-size:11px; font-weight:500; color:#6B7280; margin-top:3px;">
-                    Columna {current_idx + 1} de {len(rows)}
-                </div>
-            </div>
-            """,
+            f'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;'
+            f'padding:6px 0 8px;">'
+            f'<span style="font-size:12px;color:#6B7280;font-weight:500;">{len(df)} columnas</span>'
+            f'<span style="color:#D1D9F0;">|</span>'
+            f'{tipo_badges}'
+            f'<span style="background:#D1FAE5;color:#065F46;font-size:10px;font-weight:600;'
+            f'padding:1px 7px;border-radius:20px;">{nullable_n} nullable</span>'
+            f'<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:600;'
+            f'padding:1px 7px;border-radius:20px;">{len(df)-nullable_n} requerido</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-        if st.button("← Anterior", use_container_width=True, key=f"{active_key}_prev", disabled=current_idx == 0):
-            st.session_state[active_key] = current_idx - 1
-            st.rerun()
-        if st.button("Siguiente →", use_container_width=True, key=f"{active_key}_next", disabled=current_idx >= len(rows) - 1):
-            st.session_state[active_key] = current_idx + 1
-            st.rerun()
+    # result_key ≠ state_key → no alimenta de vuelta al editor, evita el loop
+    edited = st.data_editor(
+        df,
+        column_config={
+            "nombre":   st.column_config.TextColumn("Columna",  width="medium"),
+            "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True, width="small"),
+            "nullable": st.column_config.CheckboxColumn("Nullable", width="small"),
+        },
+        disabled=["nombre"],
+        use_container_width=False,
+        num_rows="fixed",
+        hide_index=True,
+        height=height,
+        key=f"de_{state_key}",
+    )
+    st.session_state[result_key] = edited
 
-        new_nombre = st.text_input(
-            "Nombre de columna",
-            value=current["nombre"],
-            key=f"{active_key}_edit_nombre_{current_idx}",
-        )
-        if st.button("Renombrar", key=f"{active_key}_rename_{current_idx}", use_container_width=True):
-            new_nombre = new_nombre.strip()
-            existing = {r["nombre"] for i, r in enumerate(rows) if i != current_idx}
-            if new_nombre and new_nombre not in existing:
-                rows[current_idx]["nombre"] = new_nombre
-                st.session_state[state_key] = rows
-                st.session_state[active_key] = new_nombre
-                st.rerun()
-
-        new_tipo = st.selectbox(
-            "Tipo",
-            _TIPOS,
-            index=_TIPOS.index(current["tipo"]) if current["tipo"] in _TIPOS else 0,
-            key=f"{active_key}_tipo_{current['nombre']}",
-        )
-        new_nullable = st.checkbox(
-            "Nullable",
-            value=bool(current.get("nullable", True)),
-            key=f"{active_key}_nullable_{current['nombre']}",
-        )
-
-        rows[current_idx]["tipo"] = new_tipo
-        rows[current_idx]["nullable"] = new_nullable
-        st.session_state[state_key] = rows
-
-        preview_df = pd.DataFrame([
-            {
-                "Columna": row["nombre"],
-                "Tipo": row["tipo"],
-                "Nullable": "Sí" if row["nullable"] else "No",
-            }
-            for row in rows
-        ])
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        st.dataframe(
-            preview_df,
-            use_container_width=True,
-            hide_index=True,
-            height=min(len(preview_df) * 35 + 38, 240),
-        )
-
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-        if st.button("➕ Agregar columna", key=f"{active_key}_add_col", use_container_width=True):
-            existing_names = {r["nombre"] for r in rows}
-            i = 1
-            while f"nueva_columna_{i}" in existing_names:
-                i += 1
-            new_col = {"nombre": f"nueva_columna_{i}", "tipo": "str", "nullable": True, "reglas": []}
-            rows.append(new_col)
-            st.session_state[state_key] = rows
-            st.session_state[active_key] = new_col["nombre"]
-            st.rerun()
+    col_names = list(df["nombre"]) if not df.empty else []
+    _render_rules_editor(col_names, rules_key)
 
 
 def _bulk_table_prefix(table: str) -> str:
@@ -1016,26 +1135,27 @@ def _render_active_table_editor(db: str, table: str, mapped: Set[tuple]) -> None
 
 
 def _collect_schema(schema: dict, key_prefix: str) -> dict:
-    orig = schema.get("columnas", [])
     schema_cache_key = st.session_state.get("adm_schema_key", "default")
-    state_key = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
-    rows = st.session_state.get(state_key)
-    if not rows:
+    state_key  = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
+    result_key = f"{key_prefix}_schema_edited_{hash(schema_cache_key)}"
+    rules_key  = f"{key_prefix}_rules_{hash(schema_cache_key)}"
+
+    data = st.session_state.get(result_key) or st.session_state.get(state_key)
+    if data is None:
         return schema
 
-    reglas_por_columna = {
-        col.get("nombre"): col.get("reglas", [])
-        for col in orig
-    }
+    rules_por_columna = st.session_state.get(rules_key, {})
+    rows = data.to_dict("records") if isinstance(data, pd.DataFrame) else data
     return {
         "columnas": [
             {
-                "nombre": str(row["nombre"]),
-                "tipo": str(row["tipo"]),
-                "nullable": bool(row["nullable"]),
-                "reglas": reglas_por_columna.get(row["nombre"], row.get("reglas", [])),
+                "nombre":   str(r.get("nombre", "")).strip(),
+                "tipo":     str(r.get("tipo", "str")),
+                "nullable": bool(r.get("nullable", True)),
+                "reglas":   rules_por_columna.get(str(r.get("nombre", "")).strip(), []),
             }
-            for row in rows
+            for r in rows
+            if str(r.get("nombre", "")).strip()
         ]
     }
 
@@ -1305,13 +1425,19 @@ def _tab_activos() -> None:
                         st.caption("Puedes editar nombre, tipo y nulabilidad. Usa la última fila vacía para agregar columnas.")
 
                         schema_init_key = f"{ek}_schema_init"
+                        rules_edit_key  = f"{ek}_rules_state"
                         if schema_init_key not in st.session_state:
                             try:
                                 raw = get_catalog_schema(cid)
+                                col_defs = raw.get("columnas", [])
                                 st.session_state[schema_init_key] = [
                                     {"nombre": c["nombre"], "tipo": c["tipo"], "nullable": bool(c.get("nullable", True))}
-                                    for c in raw.get("columnas", [])
+                                    for c in col_defs
                                 ]
+                                st.session_state[rules_edit_key] = {
+                                    c["nombre"]: list(c.get("reglas", []))
+                                    for c in col_defs if c.get("reglas")
+                                }
                             except Exception as e:
                                 st.error(f"Error al cargar esquema: {e}")
                                 st.session_state[schema_init_key] = []
@@ -1332,17 +1458,21 @@ def _tab_activos() -> None:
                             key=f"{ek}_schema_editor",
                         )
 
+                        edit_col_names = [str(r.get("nombre", "")).strip() for _, r in edited_df.iterrows() if str(r.get("nombre", "")).strip()]
+                        _render_rules_editor(edit_col_names, rules_edit_key)
+
                         bc1, bc2 = st.columns(2)
                         with bc1:
                             if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True):
                                 try:
+                                    edit_rules = st.session_state.get(rules_edit_key, {})
                                     new_schema = {
                                         "columnas": [
                                             {
                                                 "nombre": str(r.get("nombre", "")).strip(),
                                                 "tipo": str(r.get("tipo", "str")),
                                                 "nullable": bool(r.get("nullable", True)),
-                                                "reglas": [],
+                                                "reglas": edit_rules.get(str(r.get("nombre", "")).strip(), []),
                                             }
                                             for _, r in edited_df.iterrows()
                                             if str(r.get("nombre", "")).strip()
@@ -1351,6 +1481,7 @@ def _tab_activos() -> None:
                                     update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
                                     st.success("Catálogo actualizado.")
                                     st.session_state.pop(schema_init_key, None)
+                                    st.session_state.pop(rules_edit_key, None)
                                     st.session_state[edit_key] = False
                                     st.rerun()
                                 except Exception as e:
@@ -1358,6 +1489,7 @@ def _tab_activos() -> None:
                         with bc2:
                             if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
                                 st.session_state.pop(schema_init_key, None)
+                                st.session_state.pop(rules_edit_key, None)
                                 st.session_state[edit_key] = False
                                 st.rerun()
 

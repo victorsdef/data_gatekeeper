@@ -12,7 +12,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from config.settings import DEMO_MODE
 from utils.db_writer import get_audit_log
 
 
@@ -88,15 +87,6 @@ def render_history_view() -> None:
         </p>
     </div>
     """, unsafe_allow_html=True)
-
-    # ── Modo demo ────────────────────────────────────────────────────
-    if DEMO_MODE:
-        st.info(
-            "El historial de auditoría no está disponible en modo demo. "
-            "Activa `DEMO_MODE=false` en el `.env` y conecta a SingleStore para ver los registros reales.",
-            icon="ℹ️",
-        )
-        return
 
     # ── Filtros ──────────────────────────────────────────────────────
     with st.expander("Filtros", expanded=True):

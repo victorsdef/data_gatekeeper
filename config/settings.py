@@ -8,15 +8,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ------------------------------------------------------------------
-# Modo demo: True = no necesita LDAP ni BD reales, útil para desarrollo
-# DEMO_MODE       controla el LOGIN (True = usuarios hardcodeados, sin AD)
-# REAL_CATALOGS   controla los CATÁLOGOS (True = lee de SingleStore, False = mock)
-#                 Si no se define, sigue el valor contrario de DEMO_MODE
-# ------------------------------------------------------------------
-DEMO_MODE: bool = os.getenv("DEMO_MODE", "true").lower() == "true"
-REAL_CATALOGS: bool = os.getenv("REAL_CATALOGS", str(not DEMO_MODE)).lower() == "true"
-
-# ------------------------------------------------------------------
 # LDAP / Active Directory
 # ------------------------------------------------------------------
 LDAP_SERVER: str   = os.getenv("LDAP_SERVER",   "ldap://ad.baustro.fin.ec")
@@ -30,6 +21,9 @@ LDAP_USE_SSL: bool = os.getenv("LDAP_USE_SSL", "false").lower() == "true"
 # ------------------------------------------------------------------
 SYSTEM_ADMIN_USERNAME: str = os.getenv("SYSTEM_ADMIN_USERNAME", "admin")
 SYSTEM_ADMIN_PASSWORD: str = os.getenv("SYSTEM_ADMIN_PASSWORD", "")
+
+# Grupo LDAP requerido para acceder a la app (vacío = sin restricción de grupo)
+LDAP_REQUIRED_GROUP: str = os.getenv("LDAP_REQUIRED_GROUP", "")
 
 LDAP_AUTH_METHOD: str    = os.getenv("LDAP_AUTH_METHOD",    "NTLM")
 LDAP_USERS_OU: str       = os.getenv("LDAP_USERS_OU",       "ou=users,DC=baustro,DC=fin,DC=ec")
@@ -69,21 +63,3 @@ TBL_LOG_AUDITORIA:   str = "log_auditoria"
 AUDIT_STORAGE_PATH: str = os.getenv("AUDIT_STORAGE_PATH", "./audit_storage")
 MAX_FILE_SIZE_MB:   int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 MAX_ROWS_IN_MEMORY: int = int(os.getenv("MAX_ROWS_IN_MEMORY", "500000"))
-
-# ------------------------------------------------------------------
-# Credenciales demo (solo cuando DEMO_MODE=true)
-# ------------------------------------------------------------------
-DEMO_USERS = {
-    "vcastro": {
-        "password": "demo123",
-        "nombre":   "Víctor Castro",
-        "email":    "vcastro@baustro.fin.ec",
-        "rol":      "Publicador",
-    },
-    "admin": {
-        "password": "admin123",
-        "nombre":   "Administrador",
-        "email":    "admin@baustro.fin.ec",
-        "rol":      "Admin",
-    },
-}

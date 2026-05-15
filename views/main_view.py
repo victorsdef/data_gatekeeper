@@ -667,7 +667,6 @@ def _render_result_step(catalog: dict) -> None:
 
     load_result = st.session_state.get("load_result", {})
     success     = load_result.get("success", False)
-    is_demo     = load_result.get("demo", False)
 
     if not success:
         st.markdown(f"""
@@ -692,7 +691,6 @@ def _render_result_step(catalog: dict) -> None:
             st.rerun()
         return
 
-    demo_note = " (modo demo — BD no impactada)" if is_demo else ""
     st.markdown(f"""
     <div style="
         padding:28px 32px; background:#F0FDF4;
@@ -701,11 +699,10 @@ def _render_result_step(catalog: dict) -> None:
     ">
         <div style="margin-bottom:12px;"><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#14532D" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="9 12 11 14 15 10"/></svg></div>
         <div style="font-weight:600; font-size:18px; color:#14532D;">
-            Carga completada exitosamente{demo_note}
+            Carga completada exitosamente
         </div>
         <div style="font-size:13px; color:#166534; margin-top:8px;">
-            {f'Los datos fueron insertados en <code>{catalog["tabla_destino"]}</code>.' if not is_demo
-             else 'Validación OK. En producción los datos se insertarán en <code>' + catalog["tabla_destino"] + '</code>.'}
+            Los datos fueron insertados en <code>{catalog["tabla_destino"]}</code>.
             {' El archivo original fue guardado en almacenamiento auditado.' if load_result.get("zip_path") else ''}
         </div>
     </div>
@@ -731,7 +728,6 @@ def _render_result_step(catalog: dict) -> None:
         "tabla_destino":    catalog["tabla_destino"],
         "estado_carga":     "Exito",
         "zip_auditoria":    load_result.get("zip_path") or "—",
-        "modo_demo":        is_demo,
     }, expanded=True)
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)

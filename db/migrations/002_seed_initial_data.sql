@@ -1,6 +1,6 @@
 -- =============================================================
 -- Data Gatekeeper — Datos iniciales
--- Migración del mock_catalogs.py a la base de datos.
+-- Carga inicial de catálogos de referencia a la base de datos.
 -- Ejecutar después de 001_create_metadata_tables.sql
 -- =============================================================
 

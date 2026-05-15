@@ -43,7 +43,7 @@ docker-compose up --build
 | Contraseña | gatekeeper123 |
 | Base de datos | gatekeeper_meta |
 
-## Credenciales demo del portal
+## Usuarios de la simulación LDAP
 
 | Usuario | Contraseña | Rol |
 |---------|------------|-----|

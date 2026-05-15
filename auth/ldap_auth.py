@@ -1,27 +1,24 @@
 """
 auth/ldap_auth.py
 Autenticación contra Active Directory (NTLM) u OpenLDAP (SIMPLE).
-Si DEMO_MODE=true, valida contra las credenciales hardcodeadas en settings.
 """
 from typing import Optional, Dict, Any
 from config.settings import (
-    DEMO_MODE, DEMO_USERS,
     LDAP_SERVER, LDAP_PORT, LDAP_BASE_DN,
     LDAP_DOMAIN, LDAP_USE_SSL, LDAP_AUTH_METHOD,
     LDAP_USERS_OU, LDAP_GROUPS_OU,
     LDAP_ADMIN_DN, LDAP_ADMIN_PASSWORD,
     SYSTEM_ADMIN_USERNAME, SYSTEM_ADMIN_PASSWORD,
+    LDAP_REQUIRED_GROUP,
 )
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
     if not username or not password:
         return None
-    # Admin del sistema: siempre funciona, independiente de LDAP o DEMO_MODE
+    # Admin del sistema: siempre funciona, independiente de LDAP
     if username.lower() == SYSTEM_ADMIN_USERNAME.lower():
         return _system_admin_authenticate(password)
-    if DEMO_MODE:
-        return _demo_authenticate(username, password)
     if LDAP_AUTH_METHOD == "SIMPLE":
         return _simple_authenticate(username, password)
     return _ntlm_authenticate(username, password)
@@ -36,18 +33,6 @@ def _system_admin_authenticate(password: str) -> Optional[Dict[str, Any]]:
         "email":    f"{SYSTEM_ADMIN_USERNAME.lower()}@baustro.fin.ec",
         "rol":      "Admin",
     }
-
-
-def _demo_authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
-    user_data = DEMO_USERS.get(username.lower())
-    if user_data and user_data["password"] == password:
-        return {
-            "username": username.lower(),
-            "nombre":   user_data["nombre"],
-            "email":    user_data["email"],
-            "rol":      user_data["rol"],
-        }
-    return None
 
 
 def _ntlm_authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
@@ -72,8 +57,13 @@ def _ntlm_authenticate(username: str, password: str) -> Optional[Dict[str, Any]]
         entry  = conn.entries[0]
         nombre = str(entry.cn)   if entry.cn   else username
         email  = str(entry.mail) if entry.mail else f"{username}@baustro.fin.ec"
+        member_of_str = str(entry.memberOf) if entry.memberOf else ""
         rol    = _resolve_role_from_memberof(entry.memberOf) if entry.memberOf else "Publicador"
         conn.unbind()
+
+        if LDAP_REQUIRED_GROUP and LDAP_REQUIRED_GROUP.upper() not in member_of_str.upper():
+            return None
+
         return {"username": username.lower(), "nombre": nombre, "email": email, "rol": rol}
 
     except Exception as exc:
@@ -115,6 +105,9 @@ def _simple_authenticate(username: str, password: str) -> Optional[Dict[str, Any
         groups = [str(e.cn) for e in admin_conn.entries]
         rol    = _resolve_role_from_groups(groups)
         admin_conn.unbind()
+
+        if LDAP_REQUIRED_GROUP and LDAP_REQUIRED_GROUP.upper() not in [g.upper() for g in groups]:
+            return None
 
         # 2. Verificar contraseña del usuario con su propio bind
         user_conn = Connection(server, user=user_dn, password=password, authentication=SIMPLE)

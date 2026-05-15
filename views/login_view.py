@@ -7,7 +7,6 @@ from pathlib import Path
 import streamlit as st
 from auth.ldap_auth import authenticate_user
 from utils.user_service import get_or_register_user
-from config.settings import DEMO_MODE
 
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
@@ -83,17 +82,6 @@ def render_login() -> None:
                     st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos.")
-
-        if DEMO_MODE:
-            st.markdown("""
-            <div class="demo-hint">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F5A800" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;margin-top:1px;"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                <div>
-                    <strong>Modo Demo</strong><br>
-                    <code>vcastro / demo123</code> &nbsp;·&nbsp; <code>admin / admin123</code>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
         st.markdown("""
         <p style="text-align:center; font-size:11px; color:#D1D5DB; margin-top:24px;">
@@ -192,15 +180,5 @@ def _inject_login_css() -> None:
             margin-top: -3px;
         }
 
-        /* Demo hint */
-        .demo-hint {
-            display: flex; align-items: flex-start; gap: 10px;
-            margin-top: 12px; padding: 11px 14px;
-            background: #F7F9FF;
-            border: 1px solid #D1D9F0;
-            border-left: 3px solid #F5A800;
-            border-radius: 10px;
-            font-size: 12px; color: #1C2F6E;
-        }
     </style>
     """, unsafe_allow_html=True)
