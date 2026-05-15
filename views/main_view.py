@@ -19,6 +19,16 @@ from config.catalogs import get_proyectos_list, get_catalogs_by_project
 from config.settings import MAX_FILE_SIZE_MB
 
 
+def _skeleton_html(n: int = 4, dark: bool = False) -> str:
+    css = "skel-line-dark" if dark else "skel-line"
+    widths = ["long", "medium", "short", "long", "medium"]
+    lines = "".join(
+        f'<div class="{css} {widths[i % len(widths)]}"></div>'
+        for i in range(n)
+    )
+    return f'<div style="padding:6px 0">{lines}</div>'
+
+
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
@@ -98,9 +108,13 @@ def _render_sidebar() -> None:
         st.markdown("**Seleccionar catálogo**")
 
         # Proyectos desde catalogos_config
+        ph1 = st.empty()
+        ph1.markdown(_skeleton_html(3, dark=True), unsafe_allow_html=True)
         try:
             proyectos = get_proyectos_list()
+            ph1.empty()
         except Exception as e:
+            ph1.empty()
             st.error(f"Sin conexión a la base de datos: {e}")
             _render_sidebar_footer(user)
             return
@@ -119,13 +133,17 @@ def _render_sidebar() -> None:
         )
 
         # Catálogos del proyecto filtrados por permisos del usuario
+        ph2 = st.empty()
+        ph2.markdown(_skeleton_html(3, dark=True), unsafe_allow_html=True)
         try:
             catalogs = get_catalogs_by_project(
                 proy_sel_id,
                 username=user.get("username", ""),
                 rol=user.get("rol", "Publicador"),
             )
+            ph2.empty()
         except Exception as e:
+            ph2.empty()
             st.error(f"Error al cargar catálogos: {e}")
             _render_sidebar_footer(user)
             return
@@ -794,6 +812,26 @@ def _inject_main_css() -> None:
             color: #A8B4D8 !important;
             font-size: 12px !important;
         }
+
+        @keyframes skel-shimmer {
+            0%   { background-position: -600px 0; }
+            100% { background-position:  600px 0; }
+        }
+        .skel-line {
+            background: linear-gradient(90deg, #EAECF4 25%, #D8DCF0 50%, #EAECF4 75%);
+            background-size: 1200px 100%;
+            animation: skel-shimmer 1.5s ease infinite;
+            border-radius: 4px; height: 13px; margin-bottom: 10px;
+        }
+        .skel-line-dark {
+            background: linear-gradient(90deg, #2A3F7A 25%, #364EA0 50%, #2A3F7A 75%);
+            background-size: 1200px 100%;
+            animation: skel-shimmer 1.5s ease infinite;
+            border-radius: 4px; height: 12px; margin-bottom: 8px;
+        }
+        .skel-line.long,   .skel-line-dark.long   { width: 88%; }
+        .skel-line.medium, .skel-line-dark.medium  { width: 60%; }
+        .skel-line.short,  .skel-line-dark.short   { width: 35%; }
 
         /* Botones en sidebar */
         section[data-testid="stSidebar"] button[kind="primary"],

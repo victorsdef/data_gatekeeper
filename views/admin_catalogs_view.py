@@ -43,6 +43,19 @@ _REGLA_LABELS = {
 }
 
 
+def _skeleton_html(n_lines: int = 4, card: bool = False) -> str:
+    """Placeholder animado (shimmer) mientras carga contenido de BD."""
+    widths = ["long", "medium", "short", "long", "medium"]
+    lines = "".join(
+        f'<div class="skel-line {widths[i % len(widths)]}"></div>'
+        for i in range(n_lines)
+    )
+    if card:
+        single = f'<div class="skel-card">{lines}</div>'
+        return single * 3
+    return f'<div style="padding:8px 0">{lines}</div>'
+
+
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
@@ -296,13 +309,17 @@ def _tab_registro() -> None:
             get_hive_tables.clear()
             st.rerun()
 
+        ph_tables = st.empty()
+        ph_tables.markdown(_skeleton_html(8), unsafe_allow_html=True)
         try:
             if fuente == "SingleStore":
                 all_tables = get_tables_from_db(db_sel)
             else:
                 all_tables = get_hive_tables(db_sel)
             mapped: Set[tuple] = get_mapped_tables()
+            ph_tables.empty()
         except Exception as e:
+            ph_tables.empty()
             st.error(f"Error al listar tablas: {e}")
             return
 
@@ -1090,6 +1107,8 @@ def _get_bulk_table_config(db: str, table: str) -> Dict[str, str]:
 def _load_schema_into_state(db: str, table: str) -> dict | None:
     schema_key = f"{db}.{table}"
     if st.session_state.get("adm_schema_key") != schema_key:
+        ph = st.empty()
+        ph.markdown(_skeleton_html(6), unsafe_allow_html=True)
         try:
             fuente = st.session_state.get("adm_step2_fuente") or st.session_state.get("adm_fuente", "SingleStore")
             if fuente == "Hive":
@@ -1098,7 +1117,9 @@ def _load_schema_into_state(db: str, table: str) -> dict | None:
                 rows = describe_table(db, table)
             st.session_state.adm_schema = build_schema_json(rows)
             st.session_state.adm_schema_key = schema_key
+            ph.empty()
         except Exception as e:
+            ph.empty()
             st.error(f"Error al consultar esquema: {e}")
             return None
     return st.session_state.get("adm_schema", {})
@@ -1314,9 +1335,13 @@ def _tab_activos() -> None:
         key="adm_ac_search", label_visibility="collapsed"
     )
 
+    ph = st.empty()
+    ph.markdown(_skeleton_html(4, card=True), unsafe_allow_html=True)
     try:
         catalogs = get_active_catalogs()
+        ph.empty()
     except Exception as e:
+        ph.empty()
         st.error(f"Error al cargar catálogos: {e}")
         return
 
@@ -1606,9 +1631,13 @@ def _tab_usuarios() -> None:
     </div>
     """, unsafe_allow_html=True)
 
+    ph = st.empty()
+    ph.markdown(_skeleton_html(5), unsafe_allow_html=True)
     try:
         usuarios = get_all_usuarios()
+        ph.empty()
     except Exception as e:
+        ph.empty()
         st.error(f"Error al cargar usuarios: {e}")
         return
 
@@ -1673,6 +1702,29 @@ def _inject_admin_css() -> None:
             border: 1px solid #D1D9F0 !important;
             border-radius: 8px !important;
         }
+        @keyframes skel-shimmer {
+            0%   { background-position: -600px 0; }
+            100% { background-position:  600px 0; }
+        }
+        .skel-line {
+            background: linear-gradient(90deg, #EAECF4 25%, #D8DCF0 50%, #EAECF4 75%);
+            background-size: 1200px 100%;
+            animation: skel-shimmer 1.5s ease infinite;
+            border-radius: 4px;
+            height: 13px;
+            margin-bottom: 10px;
+        }
+        .skel-line.long   { width: 88%; }
+        .skel-line.medium { width: 60%; }
+        .skel-line.short  { width: 35%; }
+        .skel-card {
+            background: var(--secondary-background-color);
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 8px;
+            border-left: 3px solid #E5E9F5;
+        }
+
         div[data-testid="stButton"] button[kind="primary"] {
             background: #1C2F6E !important;
             border: none !important;

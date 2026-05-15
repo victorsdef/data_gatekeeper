@@ -15,6 +15,15 @@ import streamlit as st
 from utils.db_writer import get_audit_log
 
 
+def _skeleton_html(n: int = 4) -> str:
+    widths = ["long", "medium", "short", "long", "medium"]
+    lines = "".join(
+        f'<div class="skel-line {widths[i % len(widths)]}"></div>'
+        for i in range(n)
+    )
+    return f'<div style="padding:8px 0">{lines}</div>'
+
+
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
@@ -126,6 +135,8 @@ def render_history_view() -> None:
                 usuario_filter = username
 
     # ── Carga de datos ───────────────────────────────────────────────
+    ph = st.empty()
+    ph.markdown(_skeleton_html(6), unsafe_allow_html=True)
     try:
         rows = get_audit_log(
             username_filter=None if (is_admin and not usuario_filter) else (usuario_filter or username),
@@ -133,7 +144,9 @@ def render_history_view() -> None:
             fecha_hasta=str(fecha_hasta),
             estado=None if estado_filter == "Todos" else estado_filter,
         )
+        ph.empty()
     except Exception as exc:
+        ph.empty()
         st.error(f"Error al consultar el historial: {exc}")
         return
 
@@ -259,5 +272,18 @@ def _inject_css() -> None:
             border: 1px solid #D1D9F0 !important;
             border-radius: 8px !important;
         }
+        @keyframes skel-shimmer {
+            0%   { background-position: -600px 0; }
+            100% { background-position:  600px 0; }
+        }
+        .skel-line {
+            background: linear-gradient(90deg, #EAECF4 25%, #D8DCF0 50%, #EAECF4 75%);
+            background-size: 1200px 100%;
+            animation: skel-shimmer 1.5s ease infinite;
+            border-radius: 4px; height: 13px; margin-bottom: 10px;
+        }
+        .skel-line.long   { width: 88%; }
+        .skel-line.medium { width: 60%; }
+        .skel-line.short  { width: 35%; }
     </style>
     """, unsafe_allow_html=True)
