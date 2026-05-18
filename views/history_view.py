@@ -6,6 +6,7 @@ Admins ven todas las cargas; Publicadores solo las suyas.
 from __future__ import annotations
 
 import base64
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -171,7 +172,7 @@ def render_history_view() -> None:
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
     # ── Tabla ────────────────────────────────────────────────────────
-    display_df = df[[
+    base_cols = [
         "timestamp_carga",
         "usuario_ad",
         "project_id",
@@ -181,7 +182,8 @@ def render_history_view() -> None:
         "estrategia_usada",
         "destino",
         "estado_carga",
-    ]].copy()
+    ]
+    display_df = df[base_cols].copy()
 
     display_df.rename(columns={
         "timestamp_carga":         "Fecha/Hora",
@@ -197,21 +199,33 @@ def render_history_view() -> None:
 
     display_df["Fecha/Hora"] = pd.to_datetime(display_df["Fecha/Hora"]).dt.strftime("%Y-%m-%d %H:%M")
 
+    col_config = {
+        "Fecha/Hora": st.column_config.TextColumn("Fecha/Hora", width="medium"),
+        "Usuario":    st.column_config.TextColumn("Usuario",    width="small"),
+        "Proyecto":   st.column_config.TextColumn("Proyecto",   width="small"),
+        "Catalogo":   st.column_config.TextColumn("Catalogo",   width="medium"),
+        "Archivo":    st.column_config.TextColumn("Archivo",    width="large"),
+        "Filas":      st.column_config.NumberColumn("Filas",    width="small", format="%d"),
+        "Estrategia": st.column_config.TextColumn("Estrategia", width="small"),
+        "Destino":    st.column_config.TextColumn("Destino",    width="small"),
+        "Estado":     st.column_config.TextColumn("Estado",     width="small"),
+    }
+
+    if is_admin and "ruta_zip_auditoria" in df.columns:
+        display_df["Archivo ZIP"] = df["ruta_zip_auditoria"].apply(
+            lambda p: os.path.basename(str(p)) if pd.notna(p) and str(p) != "None" else "—"
+        )
+        display_df["Ruta ZIP"] = df["ruta_zip_auditoria"].apply(
+            lambda p: str(p) if pd.notna(p) and str(p) != "None" else "—"
+        )
+        col_config["Archivo ZIP"] = st.column_config.TextColumn("Archivo ZIP", width="large")
+        col_config["Ruta ZIP"]    = st.column_config.TextColumn("Ruta ZIP",    width="large")
+
     st.dataframe(
         display_df,
         use_container_width=True,
         height=440,
-        column_config={
-            "Fecha/Hora": st.column_config.TextColumn("Fecha/Hora", width="medium"),
-            "Usuario":    st.column_config.TextColumn("Usuario",    width="small"),
-            "Proyecto":   st.column_config.TextColumn("Proyecto",   width="small"),
-            "Catalogo":   st.column_config.TextColumn("Catalogo",   width="medium"),
-            "Archivo":    st.column_config.TextColumn("Archivo",    width="large"),
-            "Filas":      st.column_config.NumberColumn("Filas",    width="small", format="%d"),
-            "Estrategia": st.column_config.TextColumn("Estrategia", width="small"),
-            "Destino":    st.column_config.TextColumn("Destino",    width="small"),
-            "Estado":     st.column_config.TextColumn("Estado",     width="small"),
-        },
+        column_config=col_config,
         hide_index=True,
     )
 

@@ -59,8 +59,11 @@ def execute_load(
     error_msg: Optional[str] = None
     success = False
 
+    # 1. Cold storage siempre — antes de tocar la BD para tener evidencia incluso en fallo
+    zip_path = _save_cold_storage(file_bytes, filename, catalog_id, username, estado="pendiente")
+
     try:
-        # 1. Escritura en BD
+        # 2. Escritura en BD
         if destino == "singlestore":
             _write_singlestore(df, base_datos, tabla, estrategia)
         elif destino == "hive":
@@ -68,10 +71,8 @@ def execute_load(
         else:
             raise ValueError(f"Destino desconocido: '{destino}'")
 
-        # 2. Cold storage (funciona en ambos modos)
-        zip_path = _save_cold_storage(file_bytes, filename, catalog_id, username)
-
-        # 3. Auditoría
+        # 3. Renombrar ZIP a "exito" y registrar log
+        zip_path = _rename_cold_storage(zip_path, "exito")
         _save_audit_log(
             username=username,
             project_id=project_id,
@@ -89,6 +90,7 @@ def execute_load(
 
     except Exception as exc:
         error_msg = str(exc)
+        zip_path = _rename_cold_storage(zip_path, "fallo")
         try:
             _save_audit_log(
                 username=username,
@@ -100,7 +102,7 @@ def execute_load(
                 destino=destino,
                 estado="Fallo",
                 errores_json={"error": error_msg},
-                zip_path=None,
+                zip_path=zip_path,
             )
         except Exception:
             pass
@@ -136,25 +138,38 @@ def _write_singlestore(df: pd.DataFrame, base_datos: str, tabla: str, estrategia
     with _connect_ss() as conn:
         with conn.cursor() as cur:
             if estrategia == "append":
+                # Sin transacción — append es acumulativo y tolera reintentos
                 _batch_insert(cur, insert_sql, rows_data)
 
             elif estrategia == "overwrite":
+                # Atómico: si el INSERT falla después del TRUNCATE, el ROLLBACK
+                # protege la tabla — no queda vacía en producción
                 cur.execute("BEGIN")
-                cur.execute(f"TRUNCATE TABLE {tabla_fq}")
-                _batch_insert(cur, insert_sql, rows_data)
-                cur.execute("COMMIT")
+                try:
+                    cur.execute(f"TRUNCATE TABLE {tabla_fq}")
+                    _batch_insert(cur, insert_sql, rows_data)
+                    cur.execute("COMMIT")
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
 
             elif estrategia == "reproceso":
+                # Atómico por fechas: borra solo las fechas del archivo y reinserta
+                # Si falla, ROLLBACK deja los datos históricos intactos
                 partition_col = _get_partition_col(df)
                 fechas = df[partition_col].dropna().unique().tolist()
                 ph_fechas = ", ".join(["%s"] * len(fechas))
                 cur.execute("BEGIN")
-                cur.execute(
-                    f"DELETE FROM {tabla_fq} WHERE `{partition_col}` IN ({ph_fechas})",
-                    fechas,
-                )
-                _batch_insert(cur, insert_sql, rows_data)
-                cur.execute("COMMIT")
+                try:
+                    cur.execute(
+                        f"DELETE FROM {tabla_fq} WHERE `{partition_col}` IN ({ph_fechas})",
+                        fechas,
+                    )
+                    _batch_insert(cur, insert_sql, rows_data)
+                    cur.execute("COMMIT")
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
 
             else:
                 raise ValueError(f"Estrategia no soportada en SingleStore: '{estrategia}'")
@@ -294,10 +309,18 @@ def _save_cold_storage(
     filename: str,
     catalog_id: str,
     username: str,
+    estado: str = "exito",
 ) -> Optional[str]:
     """
-    Guarda ZIP inmutable del archivo original.
-    Ruta: {AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{user}_{filename}.zip
+    Guarda ZIP del archivo original.
+    Ruta: {AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{user}_{filename}.zip
+
+    Estructura en disco:
+      audit_storage/
+        {catalog_id}/
+          {YYYYMMDD}/
+            20260516_143022_exito_vcastro_roles.csv.zip
+            20260516_143055_fallo_vcastro_roles_malo.csv.zip
     """
     if not file_bytes:
         return None
@@ -306,7 +329,7 @@ def _save_cold_storage(
         date_dir   = datetime.now().strftime("%Y%m%d")
         safe_user  = "".join(c if c.isalnum() else "_" for c in username)
         safe_name  = "".join(c if (c.isalnum() or c in "._-") else "_" for c in filename)
-        zip_name   = f"{timestamp}_{safe_user}_{safe_name}.zip"
+        zip_name   = f"{timestamp}_{estado}_{safe_user}_{safe_name}.zip"
         target_dir = os.path.join(AUDIT_STORAGE_PATH, catalog_id, date_dir)
 
         os.makedirs(target_dir, exist_ok=True)
@@ -320,6 +343,21 @@ def _save_cold_storage(
     except Exception as exc:
         print(f"[COLD STORAGE ERROR] {exc}")
         return None
+
+
+def _rename_cold_storage(zip_path: Optional[str], estado: str) -> Optional[str]:
+    """
+    Renombra el ZIP de 'pendiente' a 'exito' o 'fallo' una vez conocido el resultado.
+    """
+    if not zip_path or not os.path.exists(zip_path):
+        return zip_path
+    try:
+        nuevo_path = zip_path.replace("_pendiente_", f"_{estado}_")
+        os.rename(zip_path, nuevo_path)
+        return nuevo_path
+    except Exception as exc:
+        print(f"[COLD STORAGE RENAME ERROR] {exc}")
+        return zip_path
 
 
 # ------------------------------------------------------------------
