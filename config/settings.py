@@ -1,65 +1,117 @@
-"""
-config/settings.py
-Configuración central del proyecto Data Gatekeeper.
-"""
+
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ------------------------------------------------------------------
-# LDAP / Active Directory
-# ------------------------------------------------------------------
-LDAP_SERVER: str   = os.getenv("LDAP_SERVER",   "ldap://ad.baustro.fin.ec")
-LDAP_PORT:   int   = int(os.getenv("LDAP_PORT", "389"))
-LDAP_BASE_DN: str  = os.getenv("LDAP_BASE_DN",  "DC=baustro,DC=fin,DC=ec")
-LDAP_DOMAIN: str   = os.getenv("LDAP_DOMAIN",   "BAUSTRO")
-LDAP_USE_SSL: bool = os.getenv("LDAP_USE_SSL", "false").lower() == "true"
-# NTLM = Active Directory real | SIMPLE = OpenLDAP / servidor de pruebas
-# ------------------------------------------------------------------
-# Admin del sistema (independiente de LDAP, siempre funciona)
-# ------------------------------------------------------------------
-SYSTEM_ADMIN_USERNAME: str = os.getenv("SYSTEM_ADMIN_USERNAME", "admin")
-SYSTEM_ADMIN_PASSWORD: str = os.getenv("SYSTEM_ADMIN_PASSWORD", "")
+APP_ENV = os.getenv("APP_ENV", "production")
+APP_PORT = int(os.getenv("APP_PORT", 8501))
 
-# Grupo LDAP requerido para acceder a la app (vacío = sin restricción de grupo)
-LDAP_REQUIRED_GROUP: str = os.getenv("LDAP_REQUIRED_GROUP", "")
+# ==========================================================
+# SINGLESTORE
+# ==========================================================
 
-LDAP_AUTH_METHOD: str    = os.getenv("LDAP_AUTH_METHOD",    "NTLM")
-LDAP_USERS_OU: str       = os.getenv("LDAP_USERS_OU",       "ou=users,DC=baustro,DC=fin,DC=ec")
-LDAP_GROUPS_OU: str      = os.getenv("LDAP_GROUPS_OU",      "ou=groups,DC=baustro,DC=fin,DC=ec")
-LDAP_ADMIN_DN: str       = os.getenv("LDAP_ADMIN_DN",       "cn=admin,DC=baustro,DC=fin,DC=ec")
-LDAP_ADMIN_PASSWORD: str = os.getenv("LDAP_ADMIN_PASSWORD", "")
+SS_USE_BALANCER = os.getenv("SS_USE_BALANCER", "false").lower() == "true"
+SS_DIRECT_HOST = os.getenv("SS_DIRECT_HOST", os.getenv("SS_HOST"))
+SS_BALANCER_HOST = os.getenv("SS_BALANCER_HOST")
 
-# ------------------------------------------------------------------
-# SingleStore
-# ------------------------------------------------------------------
-SS_HOST:     str = os.getenv("SS_HOST",     "localhost")
-SS_PORT:     int = int(os.getenv("SS_PORT", "3306"))
-SS_USER:     str = os.getenv("SS_USER",     "admin")
-SS_PASSWORD: str = os.getenv("SS_PASSWORD", "")
-SS_DATABASE: str = os.getenv("SS_DATABASE", "gatekeeper_meta")
+SS_HOST = (
+    SS_BALANCER_HOST
+    if SS_USE_BALANCER and SS_BALANCER_HOST
+    else SS_DIRECT_HOST
+)
+SS_PORT = int(os.getenv("SS_PORT", 3306))
 
-# ------------------------------------------------------------------
-# Hive
-# ------------------------------------------------------------------
-HIVE_HOST:     str = os.getenv("HIVE_HOST",     "localhost")
-HIVE_PORT:     int = int(os.getenv("HIVE_PORT", "10000"))
-HIVE_USER:     str = os.getenv("HIVE_USER",     "hive")
-HIVE_DATABASE: str = os.getenv("HIVE_DATABASE", "default")
+SS_DATABASE = os.getenv("SS_DATABASE")
 
-# ------------------------------------------------------------------
-# Tablas de metadatos (gatekeeper_meta)
-# ------------------------------------------------------------------
-TBL_PROYECTOS:       str = "proyectos"
-TBL_CATALOGOS:       str = "catalogos_config"
-TBL_USUARIOS:        str = "usuarios"
-TBL_PERMISOS:        str = "permisos_catalogo"
-TBL_LOG_AUDITORIA:   str = "log_auditoria"
+SS_USER = os.getenv("SS_USER")
+SS_PASSWORD = os.getenv("SS_PASSWORD")
 
-# ------------------------------------------------------------------
-# Auditoría / Almacenamiento
-# ------------------------------------------------------------------
-AUDIT_STORAGE_PATH: str = os.getenv("AUDIT_STORAGE_PATH", "./audit_storage")
-MAX_FILE_SIZE_MB:   int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
-MAX_ROWS_IN_MEMORY: int = int(os.getenv("MAX_ROWS_IN_MEMORY", "500000"))
+DB_NAME_FILTERS = os.getenv("DB_NAME_FILTERS", "")
+
+# ==========================================================
+# HIVE
+# ==========================================================
+
+HIVE_HOST = os.getenv("HIVE_HOST")
+HIVE_PORT = int(os.getenv("HIVE_PORT", 10000))
+
+HIVE_DATABASE = os.getenv("HIVE_DATABASE", "default")
+
+HIVE_USER = os.getenv("HIVE_USER")
+HIVE_PASSWORD = os.getenv("HIVE_PASSWORD")
+
+# ==========================================================
+# LDAP / ACTIVE DIRECTORY
+# ==========================================================
+
+LDAP_SERVER = os.getenv("LDAP_SERVER")
+
+LDAP_PORT = int(os.getenv("LDAP_PORT", 389))
+
+LDAP_DOMAIN = os.getenv("LDAP_DOMAIN")
+
+LDAP_BIND_USER = os.getenv("LDAP_BIND_USER")
+LDAP_BIND_PASSWORD = os.getenv("LDAP_BIND_PASSWORD")
+
+LDAP_USE_SSL = (
+    os.getenv("LDAP_USE_SSL", "false").lower() == "true"
+)
+
+LDAP_AUTH_METHOD = os.getenv(
+    "LDAP_AUTH_METHOD",
+    "NTLM"
+)
+
+LDAP_BASE_DN = os.getenv("LDAP_BASE_DN")
+LDAP_USERS_OU = os.getenv("LDAP_USERS_OU")
+LDAP_GROUPS_OU = os.getenv("LDAP_GROUPS_OU")
+LDAP_ADMIN_DN = os.getenv("LDAP_ADMIN_DN", LDAP_BIND_USER)
+LDAP_ADMIN_PASSWORD = os.getenv("LDAP_ADMIN_PASSWORD", LDAP_BIND_PASSWORD)
+LDAP_REQUIRED_GROUP = os.getenv("LDAP_REQUIRED_GROUP", "")
+
+# ==========================================================
+# ADMIN LOCAL
+# ==========================================================
+
+SYSTEM_ADMIN_USERNAME = os.getenv("SYSTEM_ADMIN_USERNAME", "admin")
+SYSTEM_ADMIN_PASSWORD = os.getenv("SYSTEM_ADMIN_PASSWORD")
+
+# ==========================================================
+# TABLAS METADATA
+# ==========================================================
+
+TBL_PROYECTOS = os.getenv("TBL_PROYECTOS", "proyectos")
+TBL_CATALOGOS = os.getenv("TBL_CATALOGOS", "catalogos_config")
+TBL_USUARIOS = os.getenv("TBL_USUARIOS", "usuarios")
+TBL_PERMISOS = os.getenv("TBL_PERMISOS", "permisos_catalogo")
+TBL_LOG_AUDITORIA = os.getenv("TBL_LOG_AUDITORIA", "log_auditoria")
+
+# ==========================================================
+# AUDITORÍA
+# ==========================================================
+
+AUDIT_STORAGE_PATH = os.getenv(
+    "AUDIT_STORAGE_PATH",
+    "/app/audit_storage"
+)
+
+# ==========================================================
+# LOGGING
+# ==========================================================
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ==========================================================
+# VALIDACIONES
+# ==========================================================
+
+MAX_UPLOAD_SIZE_MB = int(
+    os.getenv("MAX_UPLOAD_SIZE_MB", 100)
+)
+MAX_FILE_SIZE_MB = int(
+    os.getenv("MAX_FILE_SIZE_MB", MAX_UPLOAD_SIZE_MB)
+)
+MAX_ROWS_IN_MEMORY = int(
+    os.getenv("MAX_ROWS_IN_MEMORY", 500000)
+)

@@ -2,15 +2,35 @@
 auth/ldap_auth.py
 Autenticación contra Active Directory (NTLM) u OpenLDAP (SIMPLE).
 """
+import os
 from typing import Optional, Dict, Any
-from config.settings import (
-    LDAP_SERVER, LDAP_PORT, LDAP_BASE_DN,
-    LDAP_DOMAIN, LDAP_USE_SSL, LDAP_AUTH_METHOD,
-    LDAP_USERS_OU, LDAP_GROUPS_OU,
-    LDAP_ADMIN_DN, LDAP_ADMIN_PASSWORD,
-    SYSTEM_ADMIN_USERNAME, SYSTEM_ADMIN_PASSWORD,
-    LDAP_REQUIRED_GROUP,
-)
+
+from config import settings
+
+
+def _setting(name: str, default: Any = None) -> Any:
+    return getattr(settings, name, os.getenv(name, default))
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() == "true"
+
+
+LDAP_SERVER = _setting("LDAP_SERVER")
+LDAP_PORT = int(_setting("LDAP_PORT", 389))
+LDAP_BASE_DN = _setting("LDAP_BASE_DN")
+LDAP_DOMAIN = _setting("LDAP_DOMAIN")
+LDAP_USE_SSL = _as_bool(_setting("LDAP_USE_SSL", False))
+LDAP_AUTH_METHOD = str(_setting("LDAP_AUTH_METHOD", "NTLM")).upper()
+LDAP_USERS_OU = _setting("LDAP_USERS_OU")
+LDAP_GROUPS_OU = _setting("LDAP_GROUPS_OU")
+LDAP_ADMIN_DN = _setting("LDAP_ADMIN_DN", _setting("LDAP_BIND_USER"))
+LDAP_ADMIN_PASSWORD = _setting("LDAP_ADMIN_PASSWORD", _setting("LDAP_BIND_PASSWORD"))
+SYSTEM_ADMIN_USERNAME = _setting("SYSTEM_ADMIN_USERNAME", "admin")
+SYSTEM_ADMIN_PASSWORD = _setting("SYSTEM_ADMIN_PASSWORD")
+LDAP_REQUIRED_GROUP = _setting("LDAP_REQUIRED_GROUP", "")
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:

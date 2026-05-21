@@ -13,10 +13,19 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from config.settings import (
-    AUDIT_STORAGE_PATH,
-    SS_HOST, SS_PORT, SS_USER, SS_PASSWORD, SS_DATABASE,
-)
+from config import settings
+
+
+def _setting(name: str, default: Any = None) -> Any:
+    return getattr(settings, name, os.getenv(name, default))
+
+
+AUDIT_STORAGE_PATH = _setting("AUDIT_STORAGE_PATH", "/app/audit_storage")
+SS_HOST = _setting("SS_HOST")
+SS_PORT = int(_setting("SS_PORT", 3306))
+SS_USER = _setting("SS_USER")
+SS_PASSWORD = _setting("SS_PASSWORD")
+SS_DATABASE = _setting("SS_DATABASE")
 
 _BATCH_SIZE = 500
 

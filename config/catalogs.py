@@ -16,8 +16,20 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import json
+import os
 
-from config.settings import SS_DATABASE, SS_HOST, SS_PASSWORD, SS_PORT, SS_USER
+from config import settings
+
+
+def _setting(name: str, default: Any = None) -> Any:
+    return getattr(settings, name, os.getenv(name, default))
+
+
+SS_HOST = _setting("SS_HOST")
+SS_PORT = int(_setting("SS_PORT", 3306))
+SS_DATABASE = _setting("SS_DATABASE")
+SS_USER = _setting("SS_USER")
+SS_PASSWORD = _setting("SS_PASSWORD")
 
 
 def _connect():

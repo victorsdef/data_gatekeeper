@@ -4,12 +4,32 @@ Descubrimiento de esquemas y gestión de catalogos_config para el panel de admin
 """
 from __future__ import annotations
 import json
+import os
 import re
 from typing import Any, Dict, List
 import streamlit as st
-from config.settings import (
-    TBL_PROYECTOS, TBL_CATALOGOS, TBL_USUARIOS, TBL_PERMISOS, TBL_LOG_AUDITORIA,
-)
+from config import settings
+
+
+def _setting(name: str, default: Any = None) -> Any:
+    return getattr(settings, name, os.getenv(name, default))
+
+
+SS_HOST = _setting("SS_HOST")
+SS_PORT = int(_setting("SS_PORT", 3306))
+SS_USER = _setting("SS_USER")
+SS_PASSWORD = _setting("SS_PASSWORD")
+SS_DATABASE = _setting("SS_DATABASE")
+HIVE_HOST = _setting("HIVE_HOST")
+HIVE_PORT = int(_setting("HIVE_PORT", 10000))
+HIVE_USER = _setting("HIVE_USER", "hive")
+DB_NAME_FILTERS = _setting("DB_NAME_FILTERS", "")
+
+TBL_PROYECTOS = _setting("TBL_PROYECTOS", "proyectos")
+TBL_CATALOGOS = _setting("TBL_CATALOGOS", "catalogos_config")
+TBL_USUARIOS = _setting("TBL_USUARIOS", "usuarios")
+TBL_PERMISOS = _setting("TBL_PERMISOS", "permisos_catalogo")
+TBL_LOG_AUDITORIA = _setting("TBL_LOG_AUDITORIA", "log_auditoria")
 
 _SYSTEM_DBS = {
     "information_schema", "memsql", "cluster", "mysql",
@@ -29,8 +49,27 @@ _TYPE_MAP = {
 }
 
 
+def _db_name_filters() -> List[str]:
+    return [
+        item.strip().lower()
+        for item in str(DB_NAME_FILTERS or "").split(",")
+        if item.strip()
+    ]
+
+
+def _is_allowed_database(database: str, system_databases: set[str]) -> bool:
+    db_name = database.lower()
+    if db_name in system_databases:
+        return False
+
+    filters = _db_name_filters()
+    if not filters:
+        return True
+
+    return any(pattern in db_name for pattern in filters)
+
+
 def _connect():
-    from config.settings import SS_HOST, SS_PORT, SS_USER, SS_PASSWORD, SS_DATABASE
     import singlestoredb as s2
     return s2.connect(
         host=SS_HOST, port=SS_PORT,
@@ -50,7 +89,7 @@ def get_all_databases() -> List[str]:
         with conn.cursor() as cur:
             cur.execute("SHOW DATABASES")
             rows = [r[0] for r in cur.fetchall()]
-    return sorted(db for db in rows if db.lower() not in _SYSTEM_DBS)
+    return sorted(db for db in rows if _is_allowed_database(db, _SYSTEM_DBS))
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -91,7 +130,6 @@ def get_mapped_tables() -> set:
 
 def ensure_project_exists(project_id: str, nombre: str) -> None:
     """Crea el proyecto si no existe (usa la BD como proyecto)."""
-    from config.settings import SS_DATABASE
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -194,7 +232,6 @@ def save_catalog_config(
     if catalog_exists(catalog_id):
         return False
 
-    from config.settings import SS_DATABASE
     sql = f"""
         INSERT IGNORE INTO `{SS_DATABASE}`.{TBL_CATALOGOS}
             (catalog_id, project_id, nombre, descripcion, base_datos,
@@ -265,7 +302,6 @@ def _connect_hive():
         from pyhive import hive as pyhive_conn
     except ImportError:
         raise ImportError("Instala pyhive: pip install pyhive thrift thrift-sasl")
-    from config.settings import HIVE_HOST, HIVE_PORT, HIVE_USER
     return pyhive_conn.Connection(host=HIVE_HOST, port=HIVE_PORT, username=HIVE_USER)
 
 
@@ -275,7 +311,7 @@ def get_hive_databases() -> List[str]:
         with conn.cursor() as cur:
             cur.execute("SHOW DATABASES")
             rows = [r[0] for r in cur.fetchall()]
-    return sorted(db for db in rows if db.lower() not in _HIVE_SYSTEM_DBS)
+    return sorted(db for db in rows if _is_allowed_database(db, _HIVE_SYSTEM_DBS))
 
 
 @st.cache_data(ttl=300, show_spinner=False)

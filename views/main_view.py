@@ -3,6 +3,7 @@ views/main_view.py
 Vista principal del portal: sidebar + flujo de carga en 4 pasos.
 """
 from __future__ import annotations
+import os
 import streamlit as st
 import pandas as pd
 from typing import Optional
@@ -16,7 +17,15 @@ from utils.file_handler import read_uploaded_file, get_file_stats, detect_file_d
 from utils.report_builder import build_error_report
 from utils.db_writer import execute_load
 from config.catalogs import get_proyectos_list, get_catalogs_by_project
-from config.settings import MAX_FILE_SIZE_MB
+from config import settings
+
+MAX_FILE_SIZE_MB = int(
+    getattr(
+        settings,
+        "MAX_FILE_SIZE_MB",
+        os.getenv("MAX_FILE_SIZE_MB", os.getenv("MAX_UPLOAD_SIZE_MB", 50)),
+    )
+)
 
 
 def _skeleton_html(n: int = 4, dark: bool = False) -> str:
