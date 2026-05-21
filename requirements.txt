@@ -13,6 +13,9 @@ thrift==0.16.0
 thrift-sasl==0.4.3
 pure-sasl>=0.6.2
 
+# Tests
+pytest==8.3.5
+
 
 
 # Data Gatekeeper — Python 3.14.4
