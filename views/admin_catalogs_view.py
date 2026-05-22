@@ -12,6 +12,7 @@ Flujo:
 from __future__ import annotations
 import re
 import base64
+import json
 from pathlib import Path
 from typing import Dict, List, Set
 import pandas as pd
@@ -23,11 +24,16 @@ from utils.db_admin import (
     get_hive_databases, get_hive_tables, describe_hive_table,
     get_all_projects, get_active_catalogs,
     save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
-    get_catalog_permissions, save_permissions, get_all_usuarios_activos,
+    get_catalog_permissions, save_permissions, get_all_usuarios_activos, get_catalog_id_by_table,
     update_catalog_config,
     get_catalog_schema,
+    export_catalogs_bundle, import_catalogs_bundle,
 )
-from utils.user_service import get_all_usuarios, update_user_rol, toggle_user_activo
+from utils.db_writer import get_audit_log
+from utils.user_service import (
+    get_all_usuarios, update_user_rol, toggle_user_activo,
+    export_users_bundle, import_users_bundle,
+)
 
 _TIPOS       = ["str", "int", "float", "bool"]
 _ESTRATEGIAS = ["overwrite", "append", "reproceso"]
@@ -40,6 +46,17 @@ _REGLA_LABELS = {
     "lte":        "Valor máximo (≤)",
     "min_length": "Longitud mínima de texto",
     "str_length": "Longitud entre mín y máx",
+}
+
+_ID_PREFIX = "dg_au_agd"
+_GENERIC_ORIGIN_TOKENS = {
+    "bd", "db", "dbo", "tbl", "tmp",
+    "catalogo", "catalogos", "catalog", "catalogs",
+    "tabla", "tablas", "table", "tables",
+    "manual", "manuales", "man", "data", "datos",
+    "cliente", "ideal", "transacciones", "transaccion",
+    "decrypt", "encrypt", "columna", "columnas", "campo", "campos",
+    "fuente", "fuentes", "general", "maestro", "maestros",
 }
 
 
@@ -113,11 +130,130 @@ def _render_active_table_selector(selected: List[str], key_suffix: str = "main")
     return active
 
 
+def _slugify_id(text: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "_", str(text).lower()).strip("_")
+
+
+def _pretty_label(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text).replace("_", " ")).strip().title()
+
+
+def _infer_origin(database: str, table: str | None = None) -> str:
+    candidates: List[str] = []
+    if table:
+        candidates.extend([tok for tok in _slugify_id(table).split("_") if tok])
+    candidates.extend([tok for tok in _slugify_id(database).split("_") if tok])
+
+    for token in reversed(candidates):
+        if token not in _GENERIC_ORIGIN_TOKENS and len(token) >= 2:
+            return token
+    return "general"
+
+
+def _project_defaults(database: str, table: str | None = None) -> tuple[str, str]:
+    origin = _infer_origin(database, table)
+    project_id = f"{_ID_PREFIX}_{origin}"
+    project_name = f"Analitica y Gestion de Dato - {origin.upper()}"
+    return project_id, project_name
+
+
+def _catalog_defaults(database: str, table: str) -> tuple[str, str]:
+    project_id, _ = _project_defaults(database, table)
+    return f"{project_id}__{_slugify_id(table)}", _pretty_label(table)
+
+
+def _catalog_id_for_existing_table(database: str, table: str) -> str:
+    existing = get_catalog_id_by_table(database, table)
+    if existing:
+        return existing
+    catalog_id, _ = _catalog_defaults(database, table)
+    return catalog_id
+
+
+def _validate_schema_definition(schema: dict) -> List[str]:
+    errors: List[str] = []
+    columnas = schema.get("columnas", []) or []
+    if not columnas:
+        return ["El esquema debe tener al menos una columna."]
+
+    seen: Set[str] = set()
+    for idx, col in enumerate(columnas, start=1):
+        nombre = str(col.get("nombre", "")).strip()
+        tipo = str(col.get("tipo", "")).strip()
+        if not nombre:
+            errors.append(f"La columna #{idx} no tiene nombre.")
+            continue
+        if nombre in seen:
+            errors.append(f"La columna `{nombre}` está repetida en el esquema.")
+        seen.add(nombre)
+        if tipo not in _TIPOS:
+            errors.append(f"La columna `{nombre}` tiene un tipo inválido.")
+    return errors
+
+
+def _validate_catalog_form(
+    *,
+    project_id: str | None = None,
+    project_name: str | None = None,
+    catalog_id: str,
+    nombre: str,
+    schema: dict,
+) -> List[str]:
+    errors: List[str] = []
+    if project_id is not None:
+        if not project_id:
+            errors.append("El ID del proyecto no puede estar vacío.")
+        elif not re.match(r"^[a-z0-9_]+$", project_id):
+            errors.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
+    if project_name is not None and not project_name:
+        errors.append("El nombre del proyecto no puede estar vacío.")
+    if not catalog_id:
+        errors.append("El ID del catálogo no puede estar vacío.")
+    elif not re.match(r"^[a-z0-9_]+$", catalog_id):
+        errors.append("El ID del catálogo solo puede tener minúsculas, números y guiones bajos.")
+    if not nombre:
+        errors.append("El nombre legible no puede estar vacío.")
+    errors.extend(_validate_schema_definition(schema))
+    return errors
+
+
+def _validate_project_fields(project_id: str, project_name: str) -> List[str]:
+    errors: List[str] = []
+    if not project_id:
+        errors.append("El ID del proyecto no puede estar vacío.")
+    elif not re.match(r"^[a-z0-9_]+$", project_id):
+        errors.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
+    if not project_name:
+        errors.append("El nombre del proyecto no puede estar vacío.")
+    return errors
+
+
+def _validate_bulk_configs(db: str, tables: List[str]) -> List[str]:
+    errors: List[str] = []
+    fuente = st.session_state.get("adm_step2_fuente") or st.session_state.get("adm_fuente", "SingleStore")
+    for table in tables:
+        cfg = _get_bulk_table_config(db, table)
+        schema = cfg.get("schema")
+        if not schema:
+            rows = describe_hive_table(db, table) if fuente == "Hive" else describe_table(db, table)
+            schema = build_schema_json(rows)
+        cfg_errors = _validate_catalog_form(
+            catalog_id=str(cfg.get("catalog_id", "")).strip(),
+            nombre=str(cfg.get("nombre", "")).strip(),
+            schema=schema,
+        )
+        for err in cfg_errors:
+            errors.append(f"{table}: {err}")
+    return errors
+
+
 def _default_bulk_table_config(db: str, table: str) -> Dict[str, str]:
+    catalog_id, nombre = _catalog_defaults(db, table)
     return {
-        "catalog_id": re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower()).strip(),
-        "nombre": table.replace("_", " ").title(),
+        "catalog_id": catalog_id,
+        "nombre": nombre,
         "descripcion": "",
+        "schema": None,
     }
 
 
@@ -130,6 +266,7 @@ def _sync_bulk_form_state(db: str, active_table: str) -> None:
             "catalog_id": st.session_state.get("adm_bulk_form_cid", "").strip(),
             "nombre": st.session_state.get("adm_bulk_form_nombre", "").strip(),
             "descripcion": st.session_state.get("adm_bulk_form_desc", "").strip(),
+            "schema": configs.get(previous_table, {}).get("schema"),
         }
 
     if previous_table != active_table:
@@ -149,17 +286,17 @@ def _persist_bulk_form_state() -> None:
         "catalog_id": st.session_state.get("adm_bulk_form_cid", "").strip(),
         "nombre": st.session_state.get("adm_bulk_form_nombre", "").strip(),
         "descripcion": st.session_state.get("adm_bulk_form_desc", "").strip(),
+        "schema": configs.get(current_table, {}).get("schema"),
     }
 
 
-def _project_defaults_from_db(database: str) -> tuple[str, str]:
-    project_id = re.sub(r"[^a-z0-9_]+", "_", database.lower()).strip("_")
-    project_name = database.replace("_", " ").strip().title()
-    return project_id or "nuevo_proyecto", project_name or "Nuevo Proyecto"
-
-
-def _render_project_inputs(db_name: str, key_prefix: str, projects: List[Dict]) -> tuple[str, str, bool]:
-    suggested_id, suggested_name = _project_defaults_from_db(db_name)
+def _render_project_inputs(
+    db_name: str,
+    key_prefix: str,
+    projects: List[Dict],
+    table_name: str | None = None,
+) -> tuple[str, str, bool]:
+    suggested_id, suggested_name = _project_defaults(db_name, table_name)
     existing_map = {p["id"]: p["nombre"] for p in projects}
 
     options = ["Crear o usar sugerido"]
@@ -186,7 +323,8 @@ def _render_project_inputs(db_name: str, key_prefix: str, projects: List[Dict]) 
         "ID del proyecto",
         value=st.session_state.get(f"{key_prefix}_project_id_default", suggested_id),
         key=f"{key_prefix}_project_id",
-        help="Se generó a partir del nombre de la base de datos, pero puedes cambiarlo.",
+        help="Se genera automáticamente con la convención dg_au_agd_<origen>.",
+        disabled=True,
     ).strip()
     project_name = st.text_input(
         "Nombre del proyecto",
@@ -235,14 +373,152 @@ def render_admin_view() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["Registrar catálogos", "Catálogos activos", "Usuarios"])
+    tab0, tab1, tab2, tab3 = st.tabs(["Resumen", "Registrar catálogos", "Catálogos activos", "Usuarios"])
 
+    with tab0:
+        _tab_resumen()
     with tab1:
         _tab_registro()
     with tab2:
         _tab_activos()
     with tab3:
         _tab_usuarios()
+
+
+def _tab_resumen() -> None:
+    st.markdown("""
+    <div style="padding:4px 0 16px;">
+        <p style="font-size:13px; color:#6B7280; margin:0;">
+            Vista rápida de operación para revisar actividad reciente, fallos y catálogos más usados.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    ph = st.empty()
+    ph.markdown(_skeleton_html(6, card=True), unsafe_allow_html=True)
+    try:
+        catalogs = get_active_catalogs()
+        usuarios = get_all_usuarios()
+        audit_rows = get_audit_log(limit=1000)
+        ph.empty()
+    except Exception as e:
+        ph.empty()
+        st.error(f"Error al cargar el resumen: {e}")
+        return
+
+    total_catalogos = len(catalogs)
+    total_usuarios = len(usuarios)
+    usuarios_activos = sum(1 for u in usuarios if u.get("activo"))
+
+    if audit_rows:
+        audit_df = pd.DataFrame(audit_rows)
+        total_cargas = len(audit_df)
+        total_fallos = int((audit_df["estado_carga"] == "Fallo").sum())
+        filas_ok = int(audit_df.loc[audit_df["estado_carga"] == "Exito", "filas_procesadas"].sum())
+    else:
+        audit_df = pd.DataFrame()
+        total_cargas = 0
+        total_fallos = 0
+        filas_ok = 0
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Catálogos activos", f"{total_catalogos:,}")
+    m2.metric("Usuarios", f"{total_usuarios:,}")
+    m3.metric("Usuarios activos", f"{usuarios_activos:,}")
+    m4.metric("Cargas recientes", f"{total_cargas:,}")
+    m5.metric("Fallos recientes", f"{total_fallos:,}")
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    s1, s2 = st.columns([2, 1])
+    with s1:
+        st.markdown("##### Actividad por día")
+        if audit_df.empty:
+            st.info("Aún no hay registros de auditoría para construir tendencias.")
+        else:
+            daily = audit_df.copy()
+            daily["fecha"] = pd.to_datetime(daily["timestamp_carga"]).dt.date
+            resumen_diario = (
+                daily.groupby("fecha")
+                .agg(cargas=("id", "count"), filas=("filas_procesadas", "sum"))
+                .sort_index()
+                .tail(14)
+            )
+            st.line_chart(resumen_diario["cargas"], use_container_width=True)
+            st.caption(f"Filas exitosas acumuladas en la muestra: {filas_ok:,}")
+
+    with s2:
+        st.markdown("##### Estado rápido")
+        st.markdown(
+            f"""
+            <div style="padding:12px 14px;background:var(--secondary-background-color);
+                        border-radius:10px;border-left:3px solid {'#DC2626' if total_fallos else '#16A34A'};">
+                <div style="font-size:13px;font-weight:600;">Últimos registros</div>
+                <div style="font-size:12px;color:#6B7280;margin-top:6px;">
+                    Exitosas: <b>{max(total_cargas - total_fallos, 0):,}</b><br>
+                    Fallidas: <b>{total_fallos:,}</b><br>
+                    Tasa de fallo: <b>{(total_fallos / total_cargas * 100 if total_cargas else 0):.1f}%</b>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Catálogos más usados")
+        if audit_df.empty:
+            st.caption("Sin actividad todavía.")
+        else:
+            top_catalogs = (
+                audit_df.groupby("id_catalogo")
+                .agg(cargas=("id", "count"), filas=("filas_procesadas", "sum"))
+                .sort_values(["cargas", "filas"], ascending=False)
+                .head(10)
+                .reset_index()
+            )
+            st.dataframe(top_catalogs, use_container_width=True, hide_index=True)
+
+    with c2:
+        st.markdown("##### Últimos fallos")
+        if audit_df.empty or "estado_carga" not in audit_df.columns:
+            st.caption("Sin fallos registrados.")
+        else:
+            fallos = audit_df[audit_df["estado_carga"] == "Fallo"].copy()
+            if fallos.empty:
+                st.success("No hay fallos en la muestra reciente.")
+            else:
+                cols = ["timestamp_carga", "usuario_ad", "id_catalogo", "nombre_archivo_original"]
+                fallos = fallos[cols].copy().head(10)
+                fallos.rename(columns={
+                    "timestamp_carga": "Fecha/Hora",
+                    "usuario_ad": "Usuario",
+                    "id_catalogo": "Catálogo",
+                    "nombre_archivo_original": "Archivo",
+                }, inplace=True)
+                fallos["Fecha/Hora"] = pd.to_datetime(fallos["Fecha/Hora"]).dt.strftime("%Y-%m-%d %H:%M")
+                st.dataframe(fallos, use_container_width=True, hide_index=True)
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    st.markdown("##### KPIs por proyecto")
+    if audit_df.empty:
+        st.caption("Sin actividad para calcular KPIs por proyecto.")
+    else:
+        by_project = (
+            audit_df.groupby("project_id")
+            .agg(
+                cargas=("id", "count"),
+                filas=("filas_procesadas", "sum"),
+                fallos=("estado_carga", lambda s: int((s == "Fallo").sum())),
+            )
+            .sort_values(["cargas", "filas"], ascending=False)
+            .reset_index()
+        )
+        by_project["tasa_fallo_pct"] = by_project.apply(
+            lambda row: round((row["fallos"] / row["cargas"]) * 100, 1) if row["cargas"] else 0.0,
+            axis=1,
+        )
+        st.dataframe(by_project, use_container_width=True, hide_index=True)
 
 
 # ------------------------------------------------------------------
@@ -614,7 +890,7 @@ def _render_config_only(db: str, table: str, mapped: Set[tuple]) -> None:
         return
 
     if already:
-        catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+        catalog_id = _catalog_id_for_existing_table(db, table)
         _render_permission_manager_inline(catalog_id, f"pm_{catalog_id}")
     else:
         _render_registro_form(db, table, schema, key_prefix="ex")
@@ -650,7 +926,7 @@ def _render_single_panel(db: str, table: str, mapped: Set[tuple]) -> None:
         # Esquema solo lectura + gestión de permisos
         _render_schema_readonly(schema)
         st.divider()
-        catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{table}".lower())
+        catalog_id = _catalog_id_for_existing_table(db, table)
         _render_permission_manager_inline(catalog_id, f"pm_{catalog_id}")
     else:
         # Esquema editable + formulario de registro
@@ -693,7 +969,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
 
         with cfg_right:
             if active_is_registered:
-                catalog_id = re.sub(r"[^a-z0-9_]", "_", f"{db}__{active_table}".lower())
+                catalog_id = _catalog_id_for_existing_table(db, active_table)
                 _render_permission_manager_inline(catalog_id, f"pm_bulk_{catalog_id}")
             else:
                 active_key_prefix = _bulk_table_prefix(active_table)
@@ -770,7 +1046,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         st.error(f"Error al cargar proyectos: {e}")
         return
 
-    bk_proj, bk_project_name, create_project = _render_project_inputs(db, "adm_bk", projects)
+    bk_proj, bk_project_name, create_project = _render_project_inputs(db, "adm_bk", projects, active_table)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -781,21 +1057,16 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
 
     _render_permisos_selector("bk")
 
-    project_errors: List[str] = []
-    if not bk_proj:
-        project_errors.append("El ID del proyecto no puede estar vacío.")
-    elif not re.match(r"^[a-z0-9_]+$", bk_proj):
-        project_errors.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
-    if not bk_project_name:
-        project_errors.append("El nombre del proyecto no puede estar vacío.")
-    for err in project_errors:
+    project_errors = _validate_project_fields(bk_proj, bk_project_name)
+    bulk_config_errors = _validate_bulk_configs(db, to_register)
+    for err in project_errors + bulk_config_errors:
         st.warning(err)
 
     st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
 
     if st.button(
         f"Registrar tablas seleccionadas ({len(to_register)})", type="primary",
-        use_container_width=True, key="adm_bk_go", disabled=bool(project_errors)
+        use_container_width=True, key="adm_bk_go", disabled=bool(project_errors or bulk_config_errors)
     ):
         _persist_bulk_form_state()
         if create_project:
@@ -814,8 +1085,12 @@ def _ejecutar_registro_masivo(
     for i, table in enumerate(tables):
         progress.progress((i + 1) / len(tables), text=f"Procesando `{table}`...")
         try:
-            schema     = build_schema_json(describe_table(db, table))
             cfg = _get_bulk_table_config(db, table)
+            schema = cfg.get("schema")
+            if not schema:
+                fuente = st.session_state.get("adm_step2_fuente") or st.session_state.get("adm_fuente", "SingleStore")
+                rows = describe_hive_table(db, table) if fuente == "Hive" else describe_table(db, table)
+                schema = build_schema_json(rows)
             catalog_id = cfg["catalog_id"]
             if catalog_exists(catalog_id):
                 skipped.append(table)
@@ -1161,7 +1436,9 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
     result_key = f"{key_prefix}_schema_edited_{hash(schema_cache_key)}"
     rules_key  = f"{key_prefix}_rules_{hash(schema_cache_key)}"
 
-    data = st.session_state.get(result_key) or st.session_state.get(state_key)
+    data = st.session_state.get(result_key)
+    if data is None:
+        data = st.session_state.get(state_key)
     if data is None:
         return schema
 
@@ -1225,15 +1502,16 @@ def _render_registro_form(
         except Exception as e:
             st.error(f"Error al cargar proyectos: {e}")
             return
-        proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects)
+        proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects, tbl_sel)
 
-    cid_default = re.sub(r"[^a-z0-9_]", "_", f"{db_sel}__{tbl_sel}".lower())
+    cid_default, nombre_default = _catalog_defaults(db_sel, tbl_sel)
     catalog_id  = st.text_input(
         "ID del catálogo", value=st.session_state.get(f"{key_prefix}_cid", cid_default), key=f"{key_prefix}_cid",
-        help="Solo minúsculas, números y guiones bajos."
+        help="Se genera automáticamente a partir del proyecto y la tabla.",
+        disabled=True,
     )
     nombre      = st.text_input(
-        "Nombre legible", value=st.session_state.get(f"{key_prefix}_nombre", tbl_sel.replace("_", " ").title()), key=f"{key_prefix}_nombre"
+        "Nombre legible", value=st.session_state.get(f"{key_prefix}_nombre", nombre_default), key=f"{key_prefix}_nombre"
     )
     descripcion = st.text_area(
         "Descripción (opcional)",
@@ -1252,19 +1530,27 @@ def _render_registro_form(
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         _render_permisos_selector(key_prefix)
 
-    cid    = catalog_id.strip()
+    cid = catalog_id.strip()
+    current_schema = _collect_schema(schema, key_prefix) if not bulk_mode else _collect_schema(schema, "bulk")
     errores: List[str] = []
     if not bulk_mode:
-        if not proj_sel:
-            errores.append("El ID del proyecto no puede estar vacío.")
-        elif not re.match(r"^[a-z0-9_]+$", proj_sel):
-            errores.append("El ID del proyecto solo puede tener minúsculas, números y guiones bajos.")
-        if not proj_name:
-            errores.append("El nombre del proyecto no puede estar vacío.")
-    if not cid:
-        errores.append("El ID no puede estar vacío.")
-    elif not re.match(r"^[a-z0-9_]+$", cid):
-        errores.append("El ID solo puede tener minúsculas, números y guiones bajos.")
+        errores.extend(
+            _validate_catalog_form(
+                project_id=proj_sel,
+                project_name=proj_name,
+                catalog_id=cid,
+                nombre=nombre.strip(),
+                schema=current_schema,
+            )
+        )
+    else:
+        errores.extend(
+            _validate_catalog_form(
+                catalog_id=cid,
+                nombre=nombre.strip(),
+                schema=current_schema,
+            )
+        )
     for e in errores:
         st.warning(e)
 
@@ -1281,6 +1567,7 @@ def _render_registro_form(
                 "catalog_id": cid,
                 "nombre": nombre.strip(),
                 "descripcion": descripcion.strip(),
+                "schema": current_schema,
             }
             st.success(f"Configuración de **{tbl_sel}** guardada en memoria.")
             return
@@ -1300,7 +1587,7 @@ def _render_registro_form(
                 tabla_destino = tbl_sel,
                 destino       = destino,
                 estrategia    = estrategia,
-                schema_json   = _collect_schema(schema, key_prefix),
+                schema_json   = current_schema,
             )
             save_permissions(cid, _collect_permisos(key_prefix))
             st.success(f"Catálogo **{nombre.strip()}** registrado correctamente.")
@@ -1330,6 +1617,50 @@ def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
 # Tab 2: Catálogos activos
 # ------------------------------------------------------------------
 def _tab_activos() -> None:
+    st.markdown("##### Respaldo y restauración")
+    ex1, ex2 = st.columns([1, 2])
+    with ex1:
+        if st.button("Preparar backup JSON", use_container_width=True, key="adm_export_bundle"):
+            try:
+                st.session_state["adm_export_bundle_payload"] = export_catalogs_bundle()
+                st.success("Backup preparado.")
+            except Exception as e:
+                st.error(f"Error exportando configuración: {e}")
+        payload = st.session_state.get("adm_export_bundle_payload")
+        if payload:
+            st.download_button(
+                "Descargar backup",
+                data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="catalogos_config_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+    with ex2:
+        uploaded_bundle = st.file_uploader(
+            "Restaurar configuración desde backup JSON",
+            type=["json"],
+            key="adm_import_bundle",
+            label_visibility="collapsed",
+            help="Importa proyectos, catálogos y permisos desde un backup exportado por el sistema.",
+        )
+        overwrite_existing = st.checkbox(
+            "Sobrescribir catálogos existentes",
+            key="adm_import_overwrite",
+            help="Si está activo, actualiza configuración y permisos de catálogos ya registrados.",
+        )
+        if uploaded_bundle is not None and st.button("Importar backup", use_container_width=True, key="adm_import_bundle_btn"):
+            try:
+                bundle = json.loads(uploaded_bundle.getvalue().decode("utf-8"))
+                result = import_catalogs_bundle(bundle, overwrite_existing=overwrite_existing)
+                st.success(
+                    "Importación completada. "
+                    f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error importando backup: {e}")
+
+    st.divider()
     search = st.text_input(
         "Buscar", placeholder="Nombre, base de datos o tabla...",
         key="adm_ac_search", label_visibility="collapsed"
@@ -1486,9 +1817,28 @@ def _tab_activos() -> None:
                         edit_col_names = [str(r.get("nombre", "")).strip() for _, r in edited_df.iterrows() if str(r.get("nombre", "")).strip()]
                         _render_rules_editor(edit_col_names, rules_edit_key)
 
+                        edit_schema_errors = _validate_catalog_form(
+                            catalog_id=cid,
+                            nombre=ed_nombre.strip(),
+                            schema={
+                                "columnas": [
+                                    {
+                                        "nombre": str(r.get("nombre", "")).strip(),
+                                        "tipo": str(r.get("tipo", "str")),
+                                        "nullable": bool(r.get("nullable", True)),
+                                        "reglas": st.session_state.get(rules_edit_key, {}).get(str(r.get("nombre", "")).strip(), []),
+                                    }
+                                    for _, r in edited_df.iterrows()
+                                    if str(r.get("nombre", "")).strip()
+                                ]
+                            },
+                        )
+                        for err in edit_schema_errors:
+                            st.warning(err)
+
                         bc1, bc2 = st.columns(2)
                         with bc1:
-                            if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True):
+                            if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True, disabled=bool(edit_schema_errors)):
                                 try:
                                     edit_rules = st.session_state.get(rules_edit_key, {})
                                     new_schema = {
@@ -1630,6 +1980,51 @@ def _tab_usuarios() -> None:
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("##### Respaldo y restauración")
+    ux1, ux2 = st.columns([1, 2])
+    with ux1:
+        if st.button("Preparar backup usuarios", use_container_width=True, key="usr_export_bundle"):
+            try:
+                st.session_state["usr_export_bundle_payload"] = export_users_bundle()
+                st.success("Backup de usuarios preparado.")
+            except Exception as e:
+                st.error(f"Error exportando usuarios: {e}")
+        users_payload = st.session_state.get("usr_export_bundle_payload")
+        if users_payload:
+            st.download_button(
+                "Descargar backup usuarios",
+                data=json.dumps(users_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="usuarios_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+    with ux2:
+        uploaded_users = st.file_uploader(
+            "Restaurar usuarios desde backup JSON",
+            type=["json"],
+            key="usr_import_bundle",
+            label_visibility="collapsed",
+            help="Importa usuarios, roles y estado activo/inactivo.",
+        )
+        overwrite_users = st.checkbox(
+            "Sobrescribir usuarios existentes",
+            key="usr_import_overwrite",
+            help="Si está activo, actualiza rol, nombre, correo y estado de usuarios ya existentes.",
+        )
+        if uploaded_users is not None and st.button("Importar usuarios", use_container_width=True, key="usr_import_bundle_btn"):
+            try:
+                bundle = json.loads(uploaded_users.getvalue().decode("utf-8"))
+                result = import_users_bundle(bundle, overwrite_existing=overwrite_users)
+                st.success(
+                    "Importación de usuarios completada. "
+                    f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error importando usuarios: {e}")
+
+    st.divider()
 
     ph = st.empty()
     ph.markdown(_skeleton_html(5), unsafe_allow_html=True)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import uuid
 import zipfile
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -14,6 +15,8 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from config import settings
+from utils.logging_utils import get_logger
+from utils.notifier import notify_load_event
 
 
 def _setting(name: str, default: Any = None) -> Any:
@@ -26,8 +29,10 @@ SS_PORT = int(_setting("SS_PORT", 3306))
 SS_USER = _setting("SS_USER")
 SS_PASSWORD = _setting("SS_PASSWORD")
 SS_DATABASE = _setting("SS_DATABASE")
+TBL_LOG_AUDITORIA = _setting("TBL_LOG_AUDITORIA", "log_auditoria")
 
 _BATCH_SIZE = 500
+logger = get_logger(__name__)
 
 
 # ------------------------------------------------------------------
@@ -67,9 +72,29 @@ def execute_load(
     zip_path:  Optional[str] = None
     error_msg: Optional[str] = None
     success = False
+    operation_id = uuid.uuid4().hex[:12]
+
+    logger.info(
+        "Inicio de carga operation_id=%s catalog_id=%s project_id=%s destino=%s estrategia=%s rows=%s usuario=%s archivo=%s",
+        operation_id,
+        catalog_id,
+        project_id,
+        destino,
+        estrategia,
+        rows,
+        username,
+        filename,
+    )
 
     # 1. Cold storage siempre — antes de tocar la BD para tener evidencia incluso en fallo
-    zip_path = _save_cold_storage(file_bytes, filename, catalog_id, username, estado="pendiente")
+    zip_path = _save_cold_storage(
+        file_bytes,
+        filename,
+        catalog_id,
+        username,
+        operation_id=operation_id,
+        estado="pendiente",
+    )
 
     try:
         # 2. Escritura en BD
@@ -96,9 +121,37 @@ def execute_load(
         )
 
         success = True
+        logger.info(
+            "Carga completada operation_id=%s catalog_id=%s rows=%s zip_path=%s",
+            operation_id,
+            catalog_id,
+            rows,
+            zip_path,
+        )
+        notify_load_event(
+            "load_succeeded",
+            {
+                "operation_id": operation_id,
+                "catalog_id": catalog_id,
+                "project_id": project_id,
+                "usuario": username,
+                "destino": destino,
+                "estrategia": estrategia,
+                "rows": rows,
+                "zip_path": zip_path,
+            },
+        )
 
     except Exception as exc:
         error_msg = str(exc)
+        logger.exception(
+            "Fallo la carga operation_id=%s catalog_id=%s hacia '%s.%s' usando estrategia '%s'.",
+            operation_id,
+            catalog_id,
+            base_datos,
+            tabla,
+            estrategia,
+        )
         zip_path = _rename_cold_storage(zip_path, "fallo")
         try:
             _save_audit_log(
@@ -115,8 +168,24 @@ def execute_load(
             )
         except Exception:
             pass
+        notify_load_event(
+            "load_failed",
+            {
+                "operation_id": operation_id,
+                "catalog_id": catalog_id,
+                "project_id": project_id,
+                "usuario": username,
+                "destino": destino,
+                "estrategia": estrategia,
+                "rows": rows,
+                "archivo": filename,
+                "error": error_msg,
+                "zip_path": zip_path,
+            },
+        )
 
     return {
+        "operation_id": operation_id,
         "success":  success,
         "rows":     rows,
         "zip_path": zip_path,
@@ -318,18 +387,19 @@ def _save_cold_storage(
     filename: str,
     catalog_id: str,
     username: str,
+    operation_id: str,
     estado: str = "exito",
 ) -> Optional[str]:
     """
     Guarda ZIP del archivo original.
-    Ruta: {AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{user}_{filename}.zip
+    Ruta: {AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{user}_{operation_id}_{filename}.zip
 
     Estructura en disco:
       audit_storage/
         {catalog_id}/
           {YYYYMMDD}/
-            20260516_143022_exito_vcastro_roles.csv.zip
-            20260516_143055_fallo_vcastro_roles_malo.csv.zip
+            20260516_143022_exito_vcastro_a1b2c3d4e5f6_roles.csv.zip
+            20260516_143055_fallo_vcastro_f6e5d4c3b2a1_roles_malo.csv.zip
     """
     if not file_bytes:
         return None
@@ -338,7 +408,8 @@ def _save_cold_storage(
         date_dir   = datetime.now().strftime("%Y%m%d")
         safe_user  = "".join(c if c.isalnum() else "_" for c in username)
         safe_name  = "".join(c if (c.isalnum() or c in "._-") else "_" for c in filename)
-        zip_name   = f"{timestamp}_{estado}_{safe_user}_{safe_name}.zip"
+        safe_operation = "".join(c for c in operation_id.lower() if c.isalnum())[:12] or "sinopid"
+        zip_name   = f"{timestamp}_{estado}_{safe_user}_{safe_operation}_{safe_name}.zip"
         target_dir = os.path.join(AUDIT_STORAGE_PATH, catalog_id, date_dir)
 
         os.makedirs(target_dir, exist_ok=True)
@@ -350,7 +421,7 @@ def _save_cold_storage(
         return zip_path
 
     except Exception as exc:
-        print(f"[COLD STORAGE ERROR] {exc}")
+        logger.exception("Error guardando cold storage para catalogo '%s'.", catalog_id)
         return None
 
 
@@ -365,7 +436,7 @@ def _rename_cold_storage(zip_path: Optional[str], estado: str) -> Optional[str]:
         os.rename(zip_path, nuevo_path)
         return nuevo_path
     except Exception as exc:
-        print(f"[COLD STORAGE RENAME ERROR] {exc}")
+        logger.warning("No se pudo renombrar el ZIP de auditoria '%s': %s", zip_path, exc)
         return zip_path
 
 
@@ -405,7 +476,7 @@ def get_audit_log(
             id, timestamp_carga, usuario_ad, project_id, id_catalogo,
             nombre_archivo_original, filas_procesadas, estrategia_usada,
             destino, estado_carga, ruta_zip_auditoria
-        FROM log_auditoria
+        FROM {TBL_LOG_AUDITORIA}
         WHERE {where}
         ORDER BY timestamp_carga DESC
         LIMIT {int(limit)}
@@ -415,7 +486,15 @@ def get_audit_log(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+            logger.info(
+                "Consulta de auditoria username_filter=%s estado=%s limit=%s resultados=%s",
+                username_filter,
+                estado,
+                limit,
+                len(rows),
+            )
+            return rows
 
 
 # ------------------------------------------------------------------
@@ -433,8 +512,8 @@ def _save_audit_log(
     errores_json: Optional[Dict],
     zip_path: Optional[str],
 ) -> None:
-    sql = """
-        INSERT INTO log_auditoria (
+    sql = f"""
+        INSERT INTO {TBL_LOG_AUDITORIA} (
             usuario_ad, project_id, id_catalogo, nombre_archivo_original,
             filas_procesadas, estrategia_usada, destino, estado_carga,
             errores_json, ruta_zip_auditoria

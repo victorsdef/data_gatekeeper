@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------
-# Data Gatekeeper — Docker Compose SIMULACIÓN DE PRODUCCIÓN
+# Data Gatekeeper — Docker Compose PRUEBA LOCAL
 # ------------------------------------------------------------------
 # Simula localmente la infraestructura real del banco:
 #
@@ -10,13 +10,10 @@
 #   LDAP / AD    austro.grpfin:389    →  contenedor ldap
 #   Nginx        (instalado en srv)   →  contenedor nginx :80
 #
-# Sin Spark ni Zeppelin (herramientas de desarrollo).
-# Las credenciales vienen de docker/.env.
-#
 # Uso:
-#   docker compose -f docker/docker-compose.prod.yml up -d --build
-#   docker compose -f docker/docker-compose.prod.yml logs -f app
-#   docker compose -f docker/docker-compose.prod.yml down
+#   docker compose -f docker/docker-compose.prueba.yml up -d --build
+#   docker compose -f docker/docker-compose.prueba.yml logs -f app
+#   docker compose -f docker/docker-compose.prueba.yml down
 #
 # Primera vez (inicializar la BD):
 #   docker exec -i gatekeeper_singlestore singlestore \
@@ -29,15 +26,14 @@ version: "3.9"
 
 services:
 
-  # ── Simula SingleStore 10.16.190.51 ─────────────────────────────
   singlestore:
     image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
     container_name: gatekeeper_singlestore
     environment:
       ROOT_PASSWORD: "${SS_PASSWORD}"
     ports:
-      - "3307:3306"    # 3306 ocupado en el host → accede por localhost:3307
-      - "8080:8080"    # SingleStore Studio
+      - "3307:3306"
+      - "8080:8080"
     volumes:
       - singlestore_data:/data
       - ./init_db:/init_db
@@ -50,19 +46,18 @@ services:
     networks:
       gatekeeper_net:
         aliases:
-          - singlestore-sim   # alias interno opcional
+          - singlestore-sim
     restart: unless-stopped
 
-  # ── Simula Hive 10.16.190.21 ────────────────────────────────────
   hive:
     image: apache/hive:4.0.0
     container_name: gatekeeper_hive
     environment:
       SERVICE_NAME: hiveserver2
     ports:
-      - "10000:10000"  # HiveServer2 Thrift — puerto real del banco
-      - "10002:10002"  # Hive Web UI
-      - "9083:9083"    # Hive Metastore
+      - "10000:10000"
+      - "10002:10002"
+      - "9083:9083"
     volumes:
       - hive_warehouse:/opt/hive/data/warehouse
     healthcheck:
@@ -75,7 +70,6 @@ services:
       - gatekeeper_net
     restart: unless-stopped
 
-  # ── Simula AD austro.grpfin ─────────────────────────────────────
   ldap:
     image: osixia/openldap:1.5.0
     container_name: gatekeeper_ldap
@@ -89,14 +83,13 @@ services:
       - ldap_config:/etc/ldap/slapd.d
       - ./ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom
     ports:
-      - "389:389"      # puerto LDAP real del banco
+      - "389:389"
     networks:
       gatekeeper_net:
         aliases:
-          - austro.grpfin   # el app puede resolver el dominio real dentro de Docker
+          - austro.grpfin
     restart: unless-stopped
 
-  # ── LDAP Admin UI (phpLDAPadmin) ────────────────────────────────
   ldap-admin:
     image: osixia/phpldapadmin:0.9.0
     container_name: gatekeeper_ldap_admin
@@ -111,22 +104,20 @@ services:
       - gatekeeper_net
     restart: unless-stopped
 
-  # ── Aplicación ──────────────────────────────────────────────────
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: gatekeeper_app
     env_file:
-      - .env            # carga todas las variables del banco
+      - .env
     environment:
-      # Redirige los hosts reales a los contenedores simulados
-      SS_HOST: singlestore          # en vez de 10.16.190.51
-      HIVE_HOST: hive               # en vez de 10.16.190.21
-      LDAP_SERVER: ldap://ldap      # en vez de ldap://austro.grpfin
-      LDAP_AUTH_METHOD: SIMPLE      # OpenLDAP no soporta NTLM (solo el AD real usa NTLM)
+      SS_HOST: singlestore
+      HIVE_HOST: hive
+      LDAP_SERVER: ldap://ldap
+      LDAP_AUTH_METHOD: SIMPLE
     expose:
-      - "8501"          # solo accesible internamente; nginx es el punto de entrada
+      - "8501"
     volumes:
       - ../audit_storage:/app/audit_storage
     depends_on:
@@ -137,7 +128,7 @@ services:
       ldap:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      test: ["CMD", "python", "scripts/healthcheck.py", "--mode", "readiness"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -146,29 +137,32 @@ services:
       - gatekeeper_net
     restart: unless-stopped
 
-  # ── Nginx proxy inverso (puerto 80 → app:8501) ──────────────────
   nginx:
     image: nginx:1.25-alpine
     container_name: gatekeeper_nginx
     ports:
-      - "80:80"         # punto de entrada público
+      - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       app:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - gatekeeper_net
     restart: unless-stopped
 
-# ── Volúmenes ──────────────────────────────────────────────────────
 volumes:
   singlestore_data:
   hive_warehouse:
   ldap_data:
   ldap_config:
 
-# ── Red interna ────────────────────────────────────────────────────
 networks:
   gatekeeper_net:
     driver: bridge

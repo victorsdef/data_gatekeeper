@@ -6,6 +6,7 @@ import os
 from typing import Optional, Dict, Any
 
 from config import settings
+from utils.logging_utils import get_logger
 
 
 def _setting(name: str, default: Any = None) -> Any:
@@ -31,17 +32,24 @@ LDAP_ADMIN_PASSWORD = _setting("LDAP_ADMIN_PASSWORD", _setting("LDAP_BIND_PASSWO
 SYSTEM_ADMIN_USERNAME = _setting("SYSTEM_ADMIN_USERNAME", "admin")
 SYSTEM_ADMIN_PASSWORD = _setting("SYSTEM_ADMIN_PASSWORD")
 LDAP_REQUIRED_GROUP = _setting("LDAP_REQUIRED_GROUP", "")
+logger = get_logger(__name__)
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
     if not username or not password:
+        logger.info("Intento de autenticacion rechazado por credenciales vacias.")
         return None
     # Admin del sistema: siempre funciona, independiente de LDAP
     if username.lower() == SYSTEM_ADMIN_USERNAME.lower():
-        return _system_admin_authenticate(password)
+        result = _system_admin_authenticate(password)
+        logger.info("Autenticacion de admin local usuario=%s success=%s", username.lower(), bool(result))
+        return result
     if LDAP_AUTH_METHOD == "SIMPLE":
-        return _simple_authenticate(username, password)
-    return _ntlm_authenticate(username, password)
+        result = _simple_authenticate(username, password)
+    else:
+        result = _ntlm_authenticate(username, password)
+    logger.info("Autenticacion LDAP usuario=%s metodo=%s success=%s", username.lower(), LDAP_AUTH_METHOD, bool(result))
+    return result
 
 
 def _system_admin_authenticate(password: str) -> Optional[Dict[str, Any]]:
@@ -87,7 +95,7 @@ def _ntlm_authenticate(username: str, password: str) -> Optional[Dict[str, Any]]
         return {"username": username.lower(), "nombre": nombre, "email": email, "rol": rol}
 
     except Exception as exc:
-        print(f"[LDAP NTLM ERROR] {exc}")
+        logger.exception("Error autenticando contra LDAP NTLM para usuario '%s'.", username)
         return None
 
 
@@ -101,7 +109,7 @@ def _simple_authenticate(username: str, password: str) -> Optional[Dict[str, Any
         # 1. Bind como admin para buscar atributos y grupos
         admin_conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASSWORD, authentication=SIMPLE)
         if not admin_conn.bind():
-            print(f"[LDAP SIMPLE ERROR] Admin bind falló: {admin_conn.last_error}")
+            logger.warning("LDAP SIMPLE admin bind fallo: %s", admin_conn.last_error)
             return None
 
         admin_conn.search(
@@ -138,7 +146,7 @@ def _simple_authenticate(username: str, password: str) -> Optional[Dict[str, Any
         return {"username": username.lower(), "nombre": nombre, "email": email, "rol": rol}
 
     except Exception as exc:
-        print(f"[LDAP SIMPLE ERROR] {exc}")
+        logger.exception("Error autenticando contra LDAP SIMPLE para usuario '%s'.", username)
         return None
 
 

@@ -77,6 +77,9 @@ def render_login() -> None:
                         )
                     except Exception:
                         pass  # Si la BD falla, seguimos con los datos del LDAP
+                    if user_info.get("activo") is False:
+                        st.error("Tu usuario está desactivado en Data Gatekeeper. Contacta al administrador.")
+                        return
                     st.session_state.authenticated = True
                     st.session_state.user_info = user_info
                     st.rerun()

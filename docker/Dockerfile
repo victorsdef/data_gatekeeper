@@ -21,7 +21,7 @@ COPY ../ .
 EXPOSE 8501
 
 # Healthcheck
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+HEALTHCHECK CMD python scripts/healthcheck.py --mode liveness || exit 1
 
 # Arrancar Streamlit
 CMD ["streamlit", "run", "app.py", \

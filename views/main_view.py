@@ -26,6 +26,28 @@ MAX_FILE_SIZE_MB = int(
         os.getenv("MAX_FILE_SIZE_MB", os.getenv("MAX_UPLOAD_SIZE_MB", 50)),
     )
 )
+MAX_ROWS_IN_MEMORY = int(
+    getattr(
+        settings,
+        "MAX_ROWS_IN_MEMORY",
+        os.getenv("MAX_ROWS_IN_MEMORY", 500000),
+    )
+)
+
+
+def _missing_catalog_fields(catalog: dict | None) -> list[str]:
+    if not catalog:
+        return ["catalogo"]
+    required = ["catalog_id", "nombre", "base_datos", "tabla_destino", "estrategia", "destino", "schema"]
+    missing = []
+    for field in required:
+        value = catalog.get(field)
+        if field == "schema":
+            if not isinstance(value, dict) or not (value.get("columnas") or []):
+                missing.append(field)
+        elif value in (None, ""):
+            missing.append(field)
+    return missing
 
 
 def _skeleton_html(n: int = 4, dark: bool = False) -> str:
@@ -280,6 +302,15 @@ def _render_main_content() -> None:
         st.info("Selecciona un proyecto y catálogo en el panel izquierdo.")
         return
 
+    missing_fields = _missing_catalog_fields(catalog)
+    if missing_fields:
+        st.error(
+            "El catálogo seleccionado no está completo para continuar. "
+            f"Faltan estos campos obligatorios: {', '.join(missing_fields)}. "
+            "Pide al administrador revisar la configuración."
+        )
+        return
+
     step = st.session_state.get("current_step", "upload")
     _render_step_indicator(step)
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
@@ -499,6 +530,15 @@ def _render_upload_step(catalog: dict) -> None:
             combined_name = " + ".join(fname for fname, _, _ in dfs)
             total_bytes   = sum(len(file_bytes) for _, file_bytes in original_files)
             audit_bytes, audit_name = _build_audit_payload(original_files)
+
+            if len(combined_df) > MAX_ROWS_IN_MEMORY:
+                st.error(
+                    "El conjunto combinado excede el límite configurado de "
+                    f"{MAX_ROWS_IN_MEMORY:,} filas en memoria. "
+                    "Divide la carga en archivos más pequeños o ajusta MAX_ROWS_IN_MEMORY."
+                )
+                st.session_state.uploaded_df = None
+                return
 
             stats = get_file_stats(combined_df, b"x" * total_bytes)
             st.session_state.uploaded_df          = combined_df
@@ -742,20 +782,57 @@ def _render_result_step(catalog: dict) -> None:
     col4.metric("Estado",         "Éxito ✓")
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
-    st.markdown("**Registro de auditoría**")
-    st.json({
-        "timestamp":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "usuario_ad":       user.get("username", "—"),
-        "project_id":       project_id,
-        "id_catalogo":      catalog["catalog_id"],
-        "nombre_archivo":   filename,
-        "filas_procesadas": load_result.get("rows", 0),
-        "estrategia_usada": catalog["estrategia"],
-        "destino":          catalog["destino"],
-        "tabla_destino":    catalog["tabla_destino"],
-        "estado_carga":     "Exito",
-        "zip_auditoria":    load_result.get("zip_path") or "—",
-    }, expanded=True)
+    audit_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    zip_path = load_result.get("zip_path") or "No disponible"
+    st.markdown("**Resumen de auditoría**")
+    st.markdown(f"""
+    <div style="
+        padding:18px 20px;
+        background:var(--secondary-background-color);
+        border:1px solid #E5E7EB;
+        border-radius:12px;
+        margin-bottom:8px;
+    ">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+            <div style="font-size:15px;font-weight:700;color:#1C2F6E;">Registro guardado</div>
+            <span style="
+                background:#DCFCE7;
+                color:#166534;
+                border:1px solid #86EFAC;
+                padding:2px 10px;
+                border-radius:999px;
+                font-size:11px;
+                font-weight:600;
+            ">Éxito</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px 24px;">
+            <div>
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Operación</div>
+                <div style="font-size:13px;color:#111827;font-weight:600;"><code>{load_result.get("operation_id", "—")}</code></div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Fecha</div>
+                <div style="font-size:13px;color:#111827;">{audit_timestamp}</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Usuario</div>
+                <div style="font-size:13px;color:#111827;">{user.get("username", "—")}</div>
+            </div>
+            <div>
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Catálogo</div>
+                <div style="font-size:13px;color:#111827;">{catalog["nombre"]}</div>
+            </div>
+            <div style="grid-column:1 / -1;">
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Archivo</div>
+                <div style="font-size:13px;color:#111827;word-break:break-word;">{filename}</div>
+            </div>
+            <div style="grid-column:1 / -1;">
+                <div style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:.04em;">Ruta auditada</div>
+                <div style="font-size:12px;color:#374151;word-break:break-word;"><code>{zip_path}</code></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
     if st.button("Nueva carga", type="primary", key="btn_nueva_carga"):

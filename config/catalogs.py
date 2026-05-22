@@ -30,6 +30,9 @@ SS_PORT = int(_setting("SS_PORT", 3306))
 SS_DATABASE = _setting("SS_DATABASE")
 SS_USER = _setting("SS_USER")
 SS_PASSWORD = _setting("SS_PASSWORD")
+TBL_PROYECTOS = _setting("TBL_PROYECTOS", "proyectos")
+TBL_CATALOGOS = _setting("TBL_CATALOGOS", "catalogos_config")
+TBL_PERMISOS = _setting("TBL_PERMISOS", "permisos_catalogo")
 
 
 def _connect():
@@ -67,7 +70,7 @@ def _parse_schema(schema_value: Any) -> Dict[str, Any]:
 def get_proyectos_list() -> List[Dict[str, str]]:
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT project_id AS id, nombre FROM proyectos WHERE activo = 1 ORDER BY nombre")
+            cur.execute(f"SELECT project_id AS id, nombre FROM {TBL_PROYECTOS} WHERE activo = 1 ORDER BY nombre")
             rows = _fetchall_dict(cur)
             return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
 
@@ -84,7 +87,7 @@ def get_catalogs_by_project(
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT DISTINCT
                   c.catalog_id,
                   c.nombre,
@@ -93,8 +96,8 @@ def get_catalogs_by_project(
                   c.estrategia,
                   c.destino,
                   c.schema_json
-                FROM catalogos_config c
-                LEFT JOIN permisos_catalogo p ON p.catalog_id = c.catalog_id
+                FROM {TBL_CATALOGOS} c
+                LEFT JOIN {TBL_PERMISOS} p ON p.catalog_id = c.catalog_id
                 WHERE c.project_id = %s AND c.activo = 1
                   AND (
                     %s = 'Admin'
@@ -125,7 +128,7 @@ def get_catalog_by_id(project_id: str, catalog_id: str) -> Dict[str, Any]:
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                   catalog_id,
                   nombre,
@@ -134,7 +137,7 @@ def get_catalog_by_id(project_id: str, catalog_id: str) -> Dict[str, Any]:
                   estrategia,
                   destino,
                   schema_json
-                FROM catalogos_config
+                FROM {TBL_CATALOGOS}
                 WHERE project_id = %s AND catalog_id = %s
                 LIMIT 1
                 """,

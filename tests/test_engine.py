@@ -50,3 +50,43 @@ def test_validate_dataframe_reports_structure_and_business_errors():
         "columna_requerida",
         "columna_no_esperada",
     }
+
+
+def test_validate_dataframe_reports_regex_errors():
+    df = pd.DataFrame({"codigo": ["ABC-123", "malo"]})
+    schema = {
+        "columnas": [
+            {
+                "nombre": "codigo",
+                "tipo": "str",
+                "nullable": False,
+                "reglas": [{"tipo": "regex", "valor": r"^[A-Z]{3}-\d{3}$"}],
+            }
+        ]
+    }
+
+    result = validate_dataframe(df, schema)
+
+    assert result.success is False
+    assert result.error_count == 1
+    assert result.errors[0].regla == "regex"
+
+
+def test_validate_dataframe_reports_invalid_regex_definition():
+    df = pd.DataFrame({"codigo": ["ABC-123"]})
+    schema = {
+        "columnas": [
+            {
+                "nombre": "codigo",
+                "tipo": "str",
+                "nullable": False,
+                "reglas": [{"tipo": "regex", "valor": "["}],
+            }
+        ]
+    }
+
+    result = validate_dataframe(df, schema)
+
+    assert result.success is False
+    assert result.error_count == 1
+    assert result.errors[0].regla == "regex_invalido"

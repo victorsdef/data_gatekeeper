@@ -214,6 +214,24 @@ def catalog_exists(catalog_id: str) -> bool:
             return cur.fetchone() is not None
 
 
+def get_catalog_id_by_table(base_datos: str, tabla_destino: str) -> str | None:
+    """Retorna el catalog_id activo asociado a una tabla física."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT catalog_id
+                FROM {TBL_CATALOGOS}
+                WHERE base_datos = %s AND tabla_destino = %s AND activo = 1
+                ORDER BY catalog_id
+                LIMIT 1
+                """,
+                (base_datos, tabla_destino),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
 def save_catalog_config(
     catalog_id: str,
     project_id: str,
@@ -289,6 +307,182 @@ def get_all_usuarios_activos() -> List[str]:
         with conn.cursor() as cur:
             cur.execute(f"SELECT username FROM {TBL_USUARIOS} WHERE activo = 1 ORDER BY username")
             return [r[0] for r in cur.fetchall()]
+
+
+def export_catalogs_bundle() -> Dict[str, Any]:
+    """Exporta proyectos, catálogos y permisos activos a un bundle JSON."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT project_id, nombre
+                FROM {TBL_PROYECTOS}
+                WHERE activo = 1
+                ORDER BY nombre
+                """
+            )
+            proyectos = [{"project_id": r[0], "nombre": r[1]} for r in cur.fetchall()]
+
+            cur.execute(
+                f"""
+                SELECT
+                    catalog_id, project_id, nombre, descripcion,
+                    base_datos, tabla_destino, destino, estrategia,
+                    schema_json, activo
+                FROM {TBL_CATALOGOS}
+                WHERE activo = 1
+                ORDER BY project_id, nombre
+                """
+            )
+            catalogs = []
+            for row in cur.fetchall():
+                schema_value = row[8]
+                if isinstance(schema_value, str):
+                    schema_json = json.loads(schema_value)
+                elif isinstance(schema_value, (bytes, bytearray)):
+                    schema_json = json.loads(schema_value.decode("utf-8", errors="ignore"))
+                else:
+                    schema_json = schema_value or {"columnas": []}
+                catalogs.append(
+                    {
+                        "catalog_id": row[0],
+                        "project_id": row[1],
+                        "nombre": row[2],
+                        "descripcion": row[3],
+                        "base_datos": row[4],
+                        "tabla_destino": row[5],
+                        "destino": row[6],
+                        "estrategia": row[7],
+                        "schema_json": schema_json,
+                        "activo": bool(row[9]),
+                    }
+                )
+
+            cur.execute(
+                f"""
+                SELECT catalog_id, tipo, valor
+                FROM {TBL_PERMISOS}
+                ORDER BY catalog_id, tipo, valor
+                """
+            )
+            permissions = [{"catalog_id": r[0], "tipo": r[1], "valor": r[2]} for r in cur.fetchall()]
+
+    return {
+        "version": 1,
+        "proyectos": proyectos,
+        "catalogos": catalogs,
+        "permisos": permissions,
+    }
+
+
+def import_catalogs_bundle(bundle: Dict[str, Any], overwrite_existing: bool = False) -> Dict[str, int]:
+    """
+    Importa un bundle exportado previamente.
+    Si overwrite_existing=True, actualiza config/permisos de catálogos existentes.
+    """
+    if not isinstance(bundle, dict):
+        raise ValueError("El backup de catálogos debe ser un objeto JSON válido.")
+
+    proyectos = bundle.get("proyectos", []) or []
+    catalogos = bundle.get("catalogos", []) or []
+    permisos = bundle.get("permisos", []) or []
+    if not isinstance(proyectos, list) or not isinstance(catalogos, list) or not isinstance(permisos, list):
+        raise ValueError("El backup de catálogos debe contener listas válidas de proyectos, catálogos y permisos.")
+
+    permisos_by_catalog: Dict[str, List[Dict[str, str]]] = {}
+    for perm in permisos:
+        if not isinstance(perm, dict):
+            raise ValueError("Cada permiso del backup debe ser un objeto.")
+        if not str(perm.get("catalog_id", "")).strip() or not str(perm.get("tipo", "")).strip() or not str(perm.get("valor", "")).strip():
+            raise ValueError("Cada permiso del backup debe incluir catalog_id, tipo y valor.")
+        permisos_by_catalog.setdefault(str(perm["catalog_id"]), []).append(
+            {"tipo": str(perm["tipo"]), "valor": str(perm["valor"])}
+        )
+
+    created = 0
+    updated = 0
+    skipped = 0
+
+    for proyecto in proyectos:
+        if not isinstance(proyecto, dict):
+            raise ValueError("Cada proyecto del backup debe ser un objeto.")
+        if not str(proyecto.get("project_id", "")).strip():
+            raise ValueError("Cada proyecto del backup debe tener project_id.")
+        if not str(proyecto.get("nombre", "")).strip():
+            raise ValueError("Cada proyecto del backup debe tener nombre.")
+        ensure_project_exists(str(proyecto["project_id"]), str(proyecto["nombre"]))
+
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            for cat in catalogos:
+                if not isinstance(cat, dict):
+                    raise ValueError("Cada catálogo del backup debe ser un objeto.")
+                catalog_id = str(cat.get("catalog_id", "")).strip()
+                required_fields = ["catalog_id", "project_id", "nombre", "base_datos", "tabla_destino", "destino", "estrategia"]
+                missing = [field for field in required_fields if not str(cat.get(field, "")).strip()]
+                if missing:
+                    raise ValueError(
+                        f"El catálogo `{catalog_id or 'sin_id'}` no tiene estos campos obligatorios: {', '.join(missing)}."
+                    )
+                schema_json = cat.get("schema_json") or {"columnas": []}
+                if not isinstance(schema_json, dict) or not (schema_json.get("columnas") or []):
+                    raise ValueError(f"El catálogo `{catalog_id}` debe incluir un schema_json con columnas.")
+                if catalog_exists(catalog_id):
+                    if overwrite_existing:
+                        cur.execute(
+                            f"""
+                            UPDATE {TBL_CATALOGOS}
+                            SET project_id=%s, nombre=%s, descripcion=%s, base_datos=%s,
+                                tabla_destino=%s, destino=%s, estrategia=%s, schema_json=%s, activo=1
+                            WHERE catalog_id=%s
+                            """,
+                            (
+                                str(cat["project_id"]),
+                                str(cat["nombre"]),
+                                str(cat.get("descripcion") or ""),
+                                str(cat["base_datos"]),
+                                str(cat["tabla_destino"]),
+                                str(cat["destino"]),
+                                str(cat["estrategia"]),
+                                json.dumps(schema_json, ensure_ascii=False),
+                                catalog_id,
+                            ),
+                        )
+                        updated += 1
+                    else:
+                        skipped += 1
+                        continue
+                else:
+                    cur.execute(
+                        f"""
+                        INSERT INTO {TBL_CATALOGOS}
+                            (catalog_id, project_id, nombre, descripcion, base_datos,
+                             tabla_destino, destino, estrategia, schema_json, activo)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+                        """,
+                        (
+                            catalog_id,
+                            str(cat["project_id"]),
+                            str(cat["nombre"]),
+                            str(cat.get("descripcion") or ""),
+                            str(cat["base_datos"]),
+                            str(cat["tabla_destino"]),
+                            str(cat["destino"]),
+                            str(cat["estrategia"]),
+                            json.dumps(schema_json, ensure_ascii=False),
+                        ),
+                    )
+                    created += 1
+
+                cur.execute(f"DELETE FROM {TBL_PERMISOS} WHERE catalog_id = %s", (catalog_id,))
+                for perm in permisos_by_catalog.get(catalog_id, []):
+                    cur.execute(
+                        f"INSERT IGNORE INTO {TBL_PERMISOS} (catalog_id, tipo, valor) VALUES (%s, %s, %s)",
+                        (catalog_id, perm["tipo"], perm["valor"]),
+                    )
+        conn.commit()
+
+    return {"created": created, "updated": updated, "skipped": skipped}
 
 
 # ------------------------------------------------------------------

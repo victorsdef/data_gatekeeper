@@ -103,6 +103,14 @@ AUDIT_STORAGE_PATH = os.getenv(
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # ==========================================================
+# ALERTAS
+# ==========================================================
+
+ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "false").lower() == "true"
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
+ALERT_ON_SUCCESS = os.getenv("ALERT_ON_SUCCESS", "false").lower() == "true"
+
+# ==========================================================
 # VALIDACIONES
 # ==========================================================
 

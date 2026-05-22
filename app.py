@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import streamlit as st
+from utils.logging_utils import configure_logging
 
 # ------------------------------------------------------------------
 # Configuración de página — debe ir ANTES de cualquier otro st.*
@@ -60,6 +61,7 @@ def _init_session() -> None:
 # Main
 # ------------------------------------------------------------------
 def main() -> None:
+    configure_logging()
     _init_session()
 
     if not st.session_state.authenticated:

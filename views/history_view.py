@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -14,6 +15,14 @@ import pandas as pd
 import streamlit as st
 
 from utils.db_writer import get_audit_log
+
+
+def _extract_operation_id(zip_path: object) -> str:
+    if zip_path is None or str(zip_path) == "None":
+        return "—"
+    file_name = os.path.basename(str(zip_path))
+    match = re.search(r"_([a-f0-9]{12})_.*\.zip$", file_name, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else "—"
 
 
 def _skeleton_html(n: int = 4) -> str:
@@ -171,6 +180,50 @@ def render_history_view() -> None:
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
+    st.markdown("**Tendencias**")
+    ana1, ana2, ana3 = st.tabs(["Por día", "Por catálogo", "Por usuario"])
+
+    with ana1:
+        daily = df.copy()
+        daily["fecha"] = pd.to_datetime(daily["timestamp_carga"]).dt.date
+        daily_summary = (
+            daily.groupby("fecha")
+            .agg(cargas=("id", "count"), filas=("filas_procesadas", "sum"))
+            .sort_index()
+        )
+        st.bar_chart(daily_summary["cargas"], use_container_width=True)
+        st.dataframe(daily_summary.reset_index(), use_container_width=True, hide_index=True)
+
+    with ana2:
+        by_catalog = (
+            df.groupby("id_catalogo")
+            .agg(
+                cargas=("id", "count"),
+                filas=("filas_procesadas", "sum"),
+                fallos=("estado_carga", lambda s: int((s == "Fallo").sum())),
+            )
+            .sort_values(["cargas", "filas"], ascending=False)
+            .head(15)
+        )
+        st.bar_chart(by_catalog["cargas"], use_container_width=True)
+        st.dataframe(by_catalog.reset_index(), use_container_width=True, hide_index=True)
+
+    with ana3:
+        by_user = (
+            df.groupby("usuario_ad")
+            .agg(
+                cargas=("id", "count"),
+                filas=("filas_procesadas", "sum"),
+                exitosas=("estado_carga", lambda s: int((s == "Exito").sum())),
+            )
+            .sort_values(["cargas", "filas"], ascending=False)
+            .head(15)
+        )
+        st.bar_chart(by_user["cargas"], use_container_width=True)
+        st.dataframe(by_user.reset_index(), use_container_width=True, hide_index=True)
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
     # ── Tabla ────────────────────────────────────────────────────────
     base_cols = [
         "timestamp_carga",
@@ -198,9 +251,14 @@ def render_history_view() -> None:
     }, inplace=True)
 
     display_df["Fecha/Hora"] = pd.to_datetime(display_df["Fecha/Hora"]).dt.strftime("%Y-%m-%d %H:%M")
+    if "ruta_zip_auditoria" in df.columns:
+        display_df["Operacion"] = df["ruta_zip_auditoria"].apply(_extract_operation_id)
+    else:
+        display_df["Operacion"] = "—"
 
     col_config = {
         "Fecha/Hora": st.column_config.TextColumn("Fecha/Hora", width="medium"),
+        "Operacion":  st.column_config.TextColumn("Operacion",  width="small"),
         "Usuario":    st.column_config.TextColumn("Usuario",    width="small"),
         "Proyecto":   st.column_config.TextColumn("Proyecto",   width="small"),
         "Catalogo":   st.column_config.TextColumn("Catalogo",   width="medium"),

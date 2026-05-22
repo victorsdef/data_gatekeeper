@@ -36,13 +36,14 @@ CREATE TABLE IF NOT EXISTS usuarios (
 
 CREATE TABLE IF NOT EXISTS permisos_catalogo (
     catalog_id      VARCHAR(100)    NOT NULL,
-    tipo            VARCHAR(20)     NOT NULL,   -- 'rol' | 'usuario'
-    valor           VARCHAR(100)    NOT NULL,   -- 'Publicador', 'Admin', 'vcastro', etc.
+    tipo            VARCHAR(20)     NOT NULL,
+    valor           VARCHAR(100)    NOT NULL,
     PRIMARY KEY (catalog_id, tipo, valor)
 );
 
 CREATE TABLE IF NOT EXISTS log_auditoria (
     id                      BIGINT          NOT NULL AUTO_INCREMENT,
+    operation_id            VARCHAR(20),
     timestamp_carga         DATETIME        NOT NULL DEFAULT NOW(),
     usuario_ad              VARCHAR(100)    NOT NULL,
     project_id              VARCHAR(50)     NOT NULL,
@@ -57,6 +58,5 @@ CREATE TABLE IF NOT EXISTS log_auditoria (
     PRIMARY KEY (id)
 );
 
--- Admin del sistema (siempre existe, independiente de LDAP)
 INSERT IGNORE INTO usuarios (username, nombre, email, rol)
 VALUES ('admin', 'Administrador', 'admin@baustro.fin.ec', 'Admin');
