@@ -115,6 +115,16 @@ En el wizard de registro:
 
 - primero se define el esquema base: `tipo` y `nullable`;
 - luego se agregan reglas por columna en el bloque **Reglas de calidad**.
+- el selector **Tipo de regla** se filtra segun el tipo de dato de la columna seleccionada.
+
+Reglas disponibles por tipo:
+
+| Tipo de columna | Reglas visibles en Admin |
+|---|---|
+| `str` | `isin`, `min_length`, `str_length`, `regex` |
+| `int` | `gte`, `lte` |
+| `float` | `gte`, `lte` |
+| `bool` | Sin reglas adicionales |
 
 Ejemplos:
 

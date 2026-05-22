@@ -39,7 +39,13 @@ _TIPOS       = ["str", "int", "float", "bool"]
 _ESTRATEGIAS = ["overwrite", "append", "reproceso"]
 _DESTINOS    = ["singlestore", "hive"]
 _ROLES       = ["Publicador", "Admin"]
-_REGLA_TIPOS = ["isin", "gte", "lte", "min_length", "str_length"]
+_REGLA_TIPOS = ["isin", "gte", "lte", "min_length", "str_length", "regex"]
+_REGLAS_POR_TIPO = {
+    "str": ["isin", "min_length", "str_length", "regex"],
+    "int": ["gte", "lte"],
+    "float": ["gte", "lte"],
+    "bool": [],
+}
 _REGLA_LABELS = {
     "isin":       "Dominio (valores permitidos)",
     "gte":        "Valor mínimo (≥)",
@@ -47,6 +53,8 @@ _REGLA_LABELS = {
     "min_length": "Longitud mínima de texto",
     "str_length": "Longitud entre mín y máx",
 }
+
+_REGLA_LABELS["regex"] = "Patron de texto (regex)"
 
 _ID_PREFIX = "dg_au_agd"
 _GENERIC_ORIGIN_TOKENS = {
@@ -1186,9 +1194,21 @@ def _render_schema_readonly(schema: dict) -> None:
     )
 
 
-def _render_rules_editor(col_names: list, state_key: str) -> None:
+def _render_rules_editor(columns: list, state_key: str) -> None:
     """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
-    if not col_names:
+    if not columns:
+        return
+    col_defs = []
+    for col in columns:
+        if isinstance(col, dict):
+            name = str(col.get("nombre", "")).strip()
+            tipo = str(col.get("tipo", "str") or "str").strip().lower()
+        else:
+            name = str(col).strip()
+            tipo = "str"
+        if name:
+            col_defs.append({"nombre": name, "tipo": tipo if tipo in _TIPOS else "str"})
+    if not col_defs:
         return
     if state_key not in st.session_state:
         st.session_state[state_key] = {}
@@ -1202,10 +1222,15 @@ def _render_rules_editor(col_names: list, state_key: str) -> None:
     )
     sel_col = st.selectbox(
         "Columna",
-        col_names,
+        [col["nombre"] for col in col_defs],
         key=f"{state_key}_sel",
         label_visibility="collapsed",
     )
+    sel_type = next((col["tipo"] for col in col_defs if col["nombre"] == sel_col), "str")
+    regla_options = _REGLAS_POR_TIPO.get(sel_type, _REGLA_TIPOS)
+    tipo_key = f"{state_key}_new_tipo"
+    if st.session_state.get(tipo_key) not in regla_options:
+        st.session_state.pop(tipo_key, None)
     col_rules = list(rules.get(sel_col, []))
 
     if col_rules:
@@ -1221,6 +1246,8 @@ def _render_rules_editor(col_names: list, state_key: str) -> None:
                 desc = f"Longitud minima: {regla.get('valor', '')}"
             elif t == "str_length":
                 desc = f"Longitud entre {regla.get('min','')} y {regla.get('max','')}"
+            elif t == "regex":
+                desc = f"Regex: {regla.get('valor', '')}"
             else:
                 desc = str(regla)
             rc1, rc2 = st.columns([8, 1])
@@ -1239,10 +1266,14 @@ def _render_rules_editor(col_names: list, state_key: str) -> None:
     else:
         st.caption("Sin reglas para esta columna.")
 
+    if not regla_options:
+        st.info(f"El tipo `{sel_type}` no tiene reglas adicionales configurables.")
+        return
+
     tipo_sel = st.selectbox(
         "Tipo de regla",
-        _REGLA_TIPOS,
-        key=f"{state_key}_new_tipo",
+        regla_options,
+        key=tipo_key,
         format_func=lambda x: _REGLA_LABELS.get(x, x),
     )
 
@@ -1284,6 +1315,17 @@ def _render_rules_editor(col_names: list, state_key: str) -> None:
             sl_max = st.number_input("Max", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
         if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
             nueva_regla = {"tipo": "str_length", "min": int(sl_min), "max": int(sl_max)}
+
+    elif tipo_sel == "regex":
+        pattern = st.text_input(
+            "Patron regex",
+            key=f"{state_key}_new_regex",
+            placeholder=r"^[A-Z0-9_-]+$",
+        )
+        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+            pattern = pattern.strip()
+            if pattern:
+                nueva_regla = {"tipo": "regex", "valor": pattern}
 
     if nueva_regla is not None:
         new_rules = dict(rules)
@@ -1367,8 +1409,15 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
     )
     st.session_state[result_key] = edited
 
-    col_names = list(df["nombre"]) if not df.empty else []
-    _render_rules_editor(col_names, rules_key)
+    rule_columns = [
+        {
+            "nombre": str(row.get("nombre", "")).strip(),
+            "tipo": str(row.get("tipo", "str") or "str").strip().lower(),
+        }
+        for _, row in edited.iterrows()
+        if str(row.get("nombre", "")).strip()
+    ]
+    _render_rules_editor(rule_columns, rules_key)
 
 
 def _bulk_table_prefix(table: str) -> str:
@@ -1814,8 +1863,15 @@ def _tab_activos() -> None:
                             key=f"{ek}_schema_editor",
                         )
 
-                        edit_col_names = [str(r.get("nombre", "")).strip() for _, r in edited_df.iterrows() if str(r.get("nombre", "")).strip()]
-                        _render_rules_editor(edit_col_names, rules_edit_key)
+                        edit_rule_columns = [
+                            {
+                                "nombre": str(r.get("nombre", "")).strip(),
+                                "tipo": str(r.get("tipo", "str") or "str").strip().lower(),
+                            }
+                            for _, r in edited_df.iterrows()
+                            if str(r.get("nombre", "")).strip()
+                        ]
+                        _render_rules_editor(edit_rule_columns, rules_edit_key)
 
                         edit_schema_errors = _validate_catalog_form(
                             catalog_id=cid,
