@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 import streamlit as st
 from auth.ldap_auth import authenticate_user
-from utils.user_service import get_or_register_user
+from services.user_service import get_or_register_user
 
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
@@ -74,6 +74,7 @@ def render_login() -> None:
                             user_info["username"],
                             user_info["nombre"],
                             user_info["email"],
+                            user_info.get("rol", "Publicador"),
                         )
                     except Exception:
                         pass  # Si la BD falla, seguimos con los datos del LDAP
@@ -82,6 +83,7 @@ def render_login() -> None:
                         return
                     st.session_state.authenticated = True
                     st.session_state.user_info = user_info
+                    st.session_state.current_view = "upload"
                     st.rerun()
                 else:
                     st.error("Usuario o contraseña incorrectos.")

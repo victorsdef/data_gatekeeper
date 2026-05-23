@@ -14,7 +14,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from utils.db_writer import get_audit_log
+from services.db_writer import get_audit_log
+from utils.error_messages import user_facing_error
 
 
 def _extract_operation_id(zip_path: object) -> str:
@@ -157,7 +158,7 @@ def render_history_view() -> None:
         ph.empty()
     except Exception as exc:
         ph.empty()
-        st.error(f"Error al consultar el historial: {exc}")
+        st.error(user_facing_error(exc, context="audit"))
         return
 
     if not rows:
@@ -251,7 +252,9 @@ def render_history_view() -> None:
     }, inplace=True)
 
     display_df["Fecha/Hora"] = pd.to_datetime(display_df["Fecha/Hora"]).dt.strftime("%Y-%m-%d %H:%M")
-    if "ruta_zip_auditoria" in df.columns:
+    if "operation_id" in df.columns:
+        display_df["Operacion"] = df["operation_id"].fillna("—").astype(str)
+    elif "ruta_zip_auditoria" in df.columns:
         display_df["Operacion"] = df["ruta_zip_auditoria"].apply(_extract_operation_id)
     else:
         display_df["Operacion"] = "—"

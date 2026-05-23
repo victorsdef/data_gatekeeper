@@ -2,7 +2,7 @@ import importlib
 
 
 def test_db_name_filter_allows_matching_database(monkeypatch):
-    import utils.db_admin as db_admin
+    import services.db_admin as db_admin
 
     db_admin = importlib.reload(db_admin)
     monkeypatch.setattr(db_admin, "DB_NAME_FILTERS", "CATALOGO")
@@ -12,7 +12,7 @@ def test_db_name_filter_allows_matching_database(monkeypatch):
 
 
 def test_db_name_filter_allows_all_when_empty(monkeypatch):
-    import utils.db_admin as db_admin
+    import services.db_admin as db_admin
 
     db_admin = importlib.reload(db_admin)
     monkeypatch.setattr(db_admin, "DB_NAME_FILTERS", "")

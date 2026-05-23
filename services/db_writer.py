@@ -1,10 +1,11 @@
 """
-utils/db_writer.py
+services/db_writer.py
 Escritura en BD (SingleStore / Hive), cold storage y auditoría.
 """
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import uuid
@@ -15,8 +16,9 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from config import settings
+from utils.error_messages import user_facing_error
 from utils.logging_utils import get_logger
-from utils.notifier import notify_load_event
+from services.notifier import notify_load_event
 
 
 def _setting(name: str, default: Any = None) -> Any:
@@ -24,6 +26,11 @@ def _setting(name: str, default: Any = None) -> Any:
 
 
 AUDIT_STORAGE_PATH = _setting("AUDIT_STORAGE_PATH", "/app/audit_storage")
+AUDIT_STORAGE_READONLY_AFTER_WRITE = str(
+    _setting("AUDIT_STORAGE_READONLY_AFTER_WRITE", "true")
+).lower() == "true"
+AUDIT_STORAGE_DIR_MODE = int(str(_setting("AUDIT_STORAGE_DIR_MODE", "750")), 8)
+AUDIT_STORAGE_FILE_MODE = int(str(_setting("AUDIT_STORAGE_FILE_MODE", "440")), 8)
 SS_HOST = _setting("SS_HOST")
 SS_PORT = int(_setting("SS_PORT", 3306))
 SS_USER = _setting("SS_USER")
@@ -71,6 +78,7 @@ def execute_load(
 
     zip_path:  Optional[str] = None
     error_msg: Optional[str] = None
+    technical_error: Optional[str] = None
     success = False
     operation_id = uuid.uuid4().hex[:12]
 
@@ -108,6 +116,7 @@ def execute_load(
         # 3. Renombrar ZIP a "exito" y registrar log
         zip_path = _rename_cold_storage(zip_path, "exito")
         _save_audit_log(
+            operation_id=operation_id,
             username=username,
             project_id=project_id,
             catalog_id=catalog_id,
@@ -143,7 +152,8 @@ def execute_load(
         )
 
     except Exception as exc:
-        error_msg = str(exc)
+        technical_error = str(exc)
+        error_msg = user_facing_error(exc, context=destino)
         logger.exception(
             "Fallo la carga operation_id=%s catalog_id=%s hacia '%s.%s' usando estrategia '%s'.",
             operation_id,
@@ -155,6 +165,7 @@ def execute_load(
         zip_path = _rename_cold_storage(zip_path, "fallo")
         try:
             _save_audit_log(
+                operation_id=operation_id,
                 username=username,
                 project_id=project_id,
                 catalog_id=catalog_id,
@@ -163,7 +174,10 @@ def execute_load(
                 estrategia=estrategia,
                 destino=destino,
                 estado="Fallo",
-                errores_json={"error": error_msg},
+                errores_json={
+                    "error": error_msg,
+                    "technical_error": technical_error,
+                },
                 zip_path=zip_path,
             )
         except Exception:
@@ -180,6 +194,7 @@ def execute_load(
                 "rows": rows,
                 "archivo": filename,
                 "error": error_msg,
+                "technical_error": technical_error,
                 "zip_path": zip_path,
             },
         )
@@ -190,6 +205,7 @@ def execute_load(
         "rows":     rows,
         "zip_path": zip_path,
         "error":    error_msg,
+        "technical_error": technical_error,
     }
 
 
@@ -406,17 +422,37 @@ def _save_cold_storage(
     try:
         timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
         date_dir   = datetime.now().strftime("%Y%m%d")
-        safe_user  = "".join(c if c.isalnum() else "_" for c in username)
-        safe_name  = "".join(c if (c.isalnum() or c in "._-") else "_" for c in filename)
+        safe_catalog = _safe_path_part(catalog_id, default="catalogo")
+        safe_user  = _safe_path_part(username, default="usuario")
+        safe_name  = _safe_filename(filename)
         safe_operation = "".join(c for c in operation_id.lower() if c.isalnum())[:12] or "sinopid"
         zip_name   = f"{timestamp}_{estado}_{safe_user}_{safe_operation}_{safe_name}.zip"
-        target_dir = os.path.join(AUDIT_STORAGE_PATH, catalog_id, date_dir)
+        target_dir = _safe_join(AUDIT_STORAGE_PATH, safe_catalog, date_dir)
 
         os.makedirs(target_dir, exist_ok=True)
-        zip_path = os.path.join(target_dir, zip_name)
+        _chmod_best_effort(target_dir, AUDIT_STORAGE_DIR_MODE)
+        zip_path = _safe_join(target_dir, zip_name)
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        manifest = {
+            "operation_id": operation_id,
+            "catalog_id": catalog_id,
+            "username": username,
+            "original_filename": filename,
+            "stored_filename": safe_name,
+            "estado_inicial": estado,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "sha256": file_hash,
+            "size_bytes": len(file_bytes),
+        }
 
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(filename, file_bytes)
+            zf.writestr(safe_name, file_bytes)
+            zf.writestr(
+                "audit_manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+
+        _protect_audit_file(zip_path)
 
         return zip_path
 
@@ -432,12 +468,48 @@ def _rename_cold_storage(zip_path: Optional[str], estado: str) -> Optional[str]:
     if not zip_path or not os.path.exists(zip_path):
         return zip_path
     try:
-        nuevo_path = zip_path.replace("_pendiente_", f"_{estado}_")
+        dir_name = os.path.dirname(zip_path)
+        base_name = os.path.basename(zip_path)
+        nuevo_name = base_name.replace("_pendiente_", f"_{estado}_", 1)
+        nuevo_path = _safe_join(dir_name, nuevo_name)
+        _chmod_best_effort(zip_path, 0o660)
         os.rename(zip_path, nuevo_path)
+        _protect_audit_file(nuevo_path)
         return nuevo_path
     except Exception as exc:
         logger.warning("No se pudo renombrar el ZIP de auditoria '%s': %s", zip_path, exc)
         return zip_path
+
+
+def _safe_path_part(value: str, default: str) -> str:
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(value or ""))
+    safe = safe.strip("._-")
+    return safe[:180] or default
+
+
+def _safe_filename(filename: str) -> str:
+    base = os.path.basename(str(filename or "archivo"))
+    return _safe_path_part(base, default="archivo")
+
+
+def _safe_join(base: str, *parts: str) -> str:
+    root = os.path.abspath(base)
+    target = os.path.abspath(os.path.join(root, *parts))
+    if os.path.commonpath([root, target]) != root:
+        raise ValueError("Ruta de auditoria fuera del almacenamiento permitido.")
+    return target
+
+
+def _protect_audit_file(path: str) -> None:
+    if AUDIT_STORAGE_READONLY_AFTER_WRITE:
+        _chmod_best_effort(path, AUDIT_STORAGE_FILE_MODE)
+
+
+def _chmod_best_effort(path: str, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except Exception as exc:
+        logger.warning("No se pudieron aplicar permisos %s a '%s': %s", oct(mode), path, exc)
 
 
 # ------------------------------------------------------------------
@@ -473,7 +545,7 @@ def get_audit_log(
     where = " AND ".join(conditions)
     sql = f"""
         SELECT
-            id, timestamp_carga, usuario_ad, project_id, id_catalogo,
+            id, operation_id, timestamp_carga, usuario_ad, project_id, id_catalogo,
             nombre_archivo_original, filas_procesadas, estrategia_usada,
             destino, estado_carga, ruta_zip_auditoria
         FROM {TBL_LOG_AUDITORIA}
@@ -501,6 +573,7 @@ def get_audit_log(
 # Log de auditoría
 # ------------------------------------------------------------------
 def _save_audit_log(
+    operation_id: str,
     username: str,
     project_id: str,
     catalog_id: str,
@@ -514,17 +587,17 @@ def _save_audit_log(
 ) -> None:
     sql = f"""
         INSERT INTO {TBL_LOG_AUDITORIA} (
-            usuario_ad, project_id, id_catalogo, nombre_archivo_original,
+            operation_id, usuario_ad, project_id, id_catalogo, nombre_archivo_original,
             filas_procesadas, estrategia_usada, destino, estado_carga,
             errores_json, ruta_zip_auditoria
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     errores_str = json.dumps(errores_json, ensure_ascii=False) if errores_json else None
 
     with _connect_ss() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (
-                username, project_id, catalog_id, filename,
+                operation_id, username, project_id, catalog_id, filename,
                 rows, estrategia, destino, estado,
                 errores_str, zip_path,
             ))

@@ -18,7 +18,7 @@ from typing import Dict, List, Set
 import pandas as pd
 import streamlit as st
 
-from utils.db_admin import (
+from services.db_admin import (
     get_all_databases, get_tables_from_db, get_mapped_tables,
     describe_table, build_schema_json,
     get_hive_databases, get_hive_tables, describe_hive_table,
@@ -29,8 +29,9 @@ from utils.db_admin import (
     get_catalog_schema,
     export_catalogs_bundle, import_catalogs_bundle,
 )
-from utils.db_writer import get_audit_log
-from utils.user_service import (
+from services.db_writer import get_audit_log
+from utils.error_messages import user_facing_error
+from services.user_service import (
     get_all_usuarios, update_user_rol, toggle_user_activo,
     export_users_bundle, import_users_bundle,
 )
@@ -381,15 +382,25 @@ def render_admin_view() -> None:
     </div>
     """, unsafe_allow_html=True)
 
-    tab0, tab1, tab2, tab3 = st.tabs(["Resumen", "Registrar catálogos", "Catálogos activos", "Usuarios"])
+    admin_tabs = ["Resumen", "Registrar catálogos", "Catálogos activos", "Usuarios"]
+    if st.session_state.get("adm_active_tab") not in admin_tabs:
+        st.session_state.adm_active_tab = "Resumen"
 
-    with tab0:
+    active_tab = st.radio(
+        "Sección de administración",
+        admin_tabs,
+        horizontal=True,
+        key="adm_active_tab",
+        label_visibility="collapsed",
+    )
+
+    if active_tab == "Resumen":
         _tab_resumen()
-    with tab1:
+    elif active_tab == "Registrar catálogos":
         _tab_registro()
-    with tab2:
+    elif active_tab == "Catálogos activos":
         _tab_activos()
-    with tab3:
+    elif active_tab == "Usuarios":
         _tab_usuarios()
 
 
@@ -411,7 +422,7 @@ def _tab_resumen() -> None:
         ph.empty()
     except Exception as e:
         ph.empty()
-        st.error(f"Error al cargar el resumen: {e}")
+        st.error(user_facing_error(e, context="database"))
         return
 
     total_catalogos = len(catalogs)
@@ -550,7 +561,7 @@ def _tab_registro() -> None:
         try:
             databases = get_all_databases()
         except Exception as e:
-            st.error(f"Sin conexión a SingleStore: {e}")
+            st.error(user_facing_error(e, context="singlestore"))
             return
         if not databases:
             st.warning("No hay bases de datos disponibles en SingleStore.")
@@ -559,7 +570,7 @@ def _tab_registro() -> None:
         try:
             databases = get_hive_databases()
         except Exception as e:
-            st.error(f"Sin conexión a Hive: {e}")
+            st.error(user_facing_error(e, context="hive"))
             return
         if not databases:
             st.warning("No hay bases de datos disponibles en Hive.")
@@ -604,7 +615,7 @@ def _tab_registro() -> None:
             ph_tables.empty()
         except Exception as e:
             ph_tables.empty()
-            st.error(f"Error al listar tablas: {e}")
+            st.error(user_facing_error(e, context="database"))
             return
 
         # Cache de permisos por tabla registrada (roles: Público / Admin / etc.)
@@ -861,7 +872,7 @@ def _render_step2() -> None:
     try:
         mapped: Set[tuple] = get_mapped_tables()
     except Exception as e:
-        st.error(f"Error al cargar tablas registradas: {e}")
+        st.error(user_facing_error(e, context="database"))
         return
 
     if len(selected) == 1:
@@ -1051,7 +1062,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
     try:
         projects = get_all_projects()
     except Exception as e:
-        st.error(f"Error al cargar proyectos: {e}")
+        st.error(user_facing_error(e, context="database"))
         return
 
     bk_proj, bk_project_name, create_project = _render_project_inputs(db, "adm_bk", projects, active_table)
@@ -1117,7 +1128,7 @@ def _ejecutar_registro_masivo(
             save_permissions(catalog_id, permisos)
             ok.append(table)
         except Exception as e:
-            failed.append(f"{table}: {e}")
+            failed.append(f"{table}: {user_facing_error(e, context='database')}")
 
     progress.empty()
 
@@ -1444,7 +1455,7 @@ def _load_schema_into_state(db: str, table: str) -> dict | None:
             ph.empty()
         except Exception as e:
             ph.empty()
-            st.error(f"Error al consultar esquema: {e}")
+            st.error(user_facing_error(e, context="database"))
             return None
     return st.session_state.get("adm_schema", {})
 
@@ -1549,7 +1560,7 @@ def _render_registro_form(
         try:
             projects = get_all_projects()
         except Exception as e:
-            st.error(f"Error al cargar proyectos: {e}")
+            st.error(user_facing_error(e, context="database"))
             return
         proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects, tbl_sel)
 
@@ -1644,7 +1655,7 @@ def _render_registro_form(
             st.session_state[f"adm_chk_{tbl_sel}"] = False
             st.rerun()
         except Exception as e:
-            st.error(f"Error al guardar: {e}")
+            st.error(user_facing_error(e, context="database"))
 
 
 def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
@@ -1659,7 +1670,7 @@ def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
             save_permissions(catalog_id, _collect_permisos(key_prefix))
             st.success("Permisos actualizados.")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(user_facing_error(e, context="database"))
 
 
 # ------------------------------------------------------------------
@@ -1674,7 +1685,7 @@ def _tab_activos() -> None:
                 st.session_state["adm_export_bundle_payload"] = export_catalogs_bundle()
                 st.success("Backup preparado.")
             except Exception as e:
-                st.error(f"Error exportando configuración: {e}")
+                st.error(user_facing_error(e, context="database"))
         payload = st.session_state.get("adm_export_bundle_payload")
         if payload:
             st.download_button(
@@ -1707,7 +1718,7 @@ def _tab_activos() -> None:
                 )
                 st.rerun()
             except Exception as e:
-                st.error(f"Error importando backup: {e}")
+                st.error("No se pudo importar el backup. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
 
     st.divider()
     search = st.text_input(
@@ -1722,7 +1733,7 @@ def _tab_activos() -> None:
         ph.empty()
     except Exception as e:
         ph.empty()
-        st.error(f"Error al cargar catálogos: {e}")
+        st.error(user_facing_error(e, context="database"))
         return
 
     if search:
@@ -1844,7 +1855,7 @@ def _tab_activos() -> None:
                                     for c in col_defs if c.get("reglas")
                                 }
                             except Exception as e:
-                                st.error(f"Error al cargar esquema: {e}")
+                                st.error(user_facing_error(e, context="database"))
                                 st.session_state[schema_init_key] = []
 
                         init_rows = st.session_state[schema_init_key]
@@ -1916,7 +1927,7 @@ def _tab_activos() -> None:
                                     st.session_state[edit_key] = False
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"Error: {e}")
+                                    st.error(user_facing_error(e, context="database"))
                         with bc2:
                             if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
                                 st.session_state.pop(schema_init_key, None)
@@ -1944,7 +1955,7 @@ def _tab_activos() -> None:
                                     st.session_state[manage_key] = False
                                     st.rerun()
                                 except Exception as e:
-                                    st.error(f"Error: {e}")
+                                    st.error(user_facing_error(e, context="database"))
                         with bc2:
                             if st.button("Cancelar", key=f"cancel_perm_{cid}", use_container_width=True):
                                 st.session_state[manage_key] = False
@@ -1961,7 +1972,7 @@ def _tab_activos() -> None:
                                 st.success("Catálogo desactivado.")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Error: {e}")
+                                st.error(user_facing_error(e, context="database"))
                     with dc2:
                         if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
                             st.session_state.pop(confirm_key, None)
@@ -2014,7 +2025,7 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
                         update_user_rol(uname, nuevo_rol)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(user_facing_error(e, context="database"))
             with c2:
                 if st.button("✓" if activo else "✗", key=f"usr_act_{uname}",
                              use_container_width=True, help="Activar/Desactivar"):
@@ -2022,7 +2033,7 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
                         toggle_user_activo(uname, not activo)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(user_facing_error(e, context="database"))
 
 
 def _tab_usuarios() -> None:
@@ -2045,7 +2056,7 @@ def _tab_usuarios() -> None:
                 st.session_state["usr_export_bundle_payload"] = export_users_bundle()
                 st.success("Backup de usuarios preparado.")
             except Exception as e:
-                st.error(f"Error exportando usuarios: {e}")
+                st.error(user_facing_error(e, context="database"))
         users_payload = st.session_state.get("usr_export_bundle_payload")
         if users_payload:
             st.download_button(
@@ -2078,7 +2089,7 @@ def _tab_usuarios() -> None:
                 )
                 st.rerun()
             except Exception as e:
-                st.error(f"Error importando usuarios: {e}")
+                st.error("No se pudo importar el backup de usuarios. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
 
     st.divider()
 
@@ -2089,7 +2100,7 @@ def _tab_usuarios() -> None:
         ph.empty()
     except Exception as e:
         ph.empty()
-        st.error(f"Error al cargar usuarios: {e}")
+        st.error(user_facing_error(e, context="database"))
         return
 
     if not usuarios:

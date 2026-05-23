@@ -1,5 +1,5 @@
 """
-utils/notifier.py
+services/notifier.py
 Notificaciones operativas simples por webhook HTTP.
 """
 from __future__ import annotations

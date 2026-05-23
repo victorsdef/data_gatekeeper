@@ -3,6 +3,7 @@ views/main_view.py
 Vista principal del portal: sidebar + flujo de carga en 4 pasos.
 """
 from __future__ import annotations
+import html
 import os
 import streamlit as st
 import pandas as pd
@@ -13,9 +14,10 @@ import zipfile
 from pathlib import Path
 
 from dg_validators.engine import validate_dataframe, ValidationResult
-from utils.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
-from utils.report_builder import build_error_report
-from utils.db_writer import execute_load
+from storage.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
+from reports.report_builder import build_error_report
+from services.db_writer import execute_load
+from utils.error_messages import user_facing_error
 from config.catalogs import get_proyectos_list, get_catalogs_by_project
 from config import settings
 
@@ -146,7 +148,7 @@ def _render_sidebar() -> None:
             ph1.empty()
         except Exception as e:
             ph1.empty()
-            st.error(f"Sin conexión a la base de datos: {e}")
+            st.error(user_facing_error(e, context="catalogs"))
             _render_sidebar_footer(user)
             return
 
@@ -175,7 +177,7 @@ def _render_sidebar() -> None:
             ph2.empty()
         except Exception as e:
             ph2.empty()
-            st.error(f"Error al cargar catálogos: {e}")
+            st.error(user_facing_error(e, context="catalogs"))
             _render_sidebar_footer(user)
             return
 
@@ -736,6 +738,8 @@ def _render_result_step(catalog: dict) -> None:
     success     = load_result.get("success", False)
 
     if not success:
+        op_id = html.escape(str(load_result.get("operation_id", "—")))
+        error_text = html.escape(str(load_result.get("error") or "Ocurrió un error inesperado durante la carga."))
         st.markdown(f"""
         <div style="
             padding:28px 32px; background:#FEF2F2;
@@ -744,10 +748,13 @@ def _render_result_step(catalog: dict) -> None:
         ">
             <div style="font-size:48px; margin-bottom:12px;">❌</div>
             <div style="font-weight:600; font-size:18px; color:#7F1D1D;">
-                Error al insertar en la base de datos
+                No se pudo completar la carga
             </div>
             <div style="font-size:13px; color:#B91C1C; margin-top:8px;">
-                {load_result.get("error", "Error desconocido")}
+                {error_text}
+            </div>
+            <div style="font-size:12px; color:#7F1D1D; margin-top:10px;">
+                Operación: <code>{op_id}</code>
             </div>
         </div>
         """, unsafe_allow_html=True)

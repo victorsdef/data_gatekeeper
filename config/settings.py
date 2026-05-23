@@ -95,6 +95,11 @@ AUDIT_STORAGE_PATH = os.getenv(
     "AUDIT_STORAGE_PATH",
     "/app/audit_storage"
 )
+AUDIT_STORAGE_READONLY_AFTER_WRITE = (
+    os.getenv("AUDIT_STORAGE_READONLY_AFTER_WRITE", "true").lower() == "true"
+)
+AUDIT_STORAGE_DIR_MODE = os.getenv("AUDIT_STORAGE_DIR_MODE", "750")
+AUDIT_STORAGE_FILE_MODE = os.getenv("AUDIT_STORAGE_FILE_MODE", "440")
 
 # ==========================================================
 # LOGGING

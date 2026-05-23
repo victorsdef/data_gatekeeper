@@ -27,6 +27,11 @@ Hoy el proyecto ya tiene:
 
 ## Arquitectura
 
+El proyecto usa una **arquitectura modular por capas** sobre `Streamlit`.
+No es un MVC estricto: las pantallas viven en `views/`, la lógica de soporte se
+separa en módulos de autenticación, configuración, validación, persistencia,
+auditoría y despliegue.
+
 ```text
 Usuario AD / Local
         |
@@ -44,9 +49,37 @@ Usuario AD / Local
         +--> [audit_storage ZIP]
 ```
 
+Flujo interno simplificado:
+
+```text
+app.py
+  -> views/
+     -> auth/ + config/ + dg_validators/ + services/ + storage/ + reports/ + utils/
+        -> LDAP / SingleStore / Hive / audit_storage
+```
+
 ---
 
 ## Estructura principal
+
+```text
+data_gatekeeper/
+├── app.py                  # Punto de entrada y enrutamiento de vistas
+├── views/                  # Pantallas Streamlit
+├── auth/                   # Autenticación LDAP y admin local
+├── config/                 # Variables de entorno y catálogos publicados
+├── dg_validators/          # Motor de validación de datos
+├── services/               # Servicios de BD, usuarios, auditoría y alertas
+├── storage/                # Lectura de archivos y manejo de entradas
+├── reports/                # Generación de reportes descargables
+├── utils/                  # Utilidades transversales: logging y mensajes
+├── docker/                 # Despliegue local/prueba y producción
+├── deploy/                 # Plantillas de configuración productiva
+├── scripts/                # Healthchecks y utilidades operativas
+├── tests/                  # Pruebas automáticas
+├── assets/                 # Logo y recursos visuales
+└── audit_storage/          # ZIPs auditados de archivos cargados
+```
 
 | Componente | Archivo / carpeta | Función |
 |---|---|---|
@@ -58,10 +91,12 @@ Usuario AD / Local
 | UI admin | `views/admin_catalogs_view.py` | Registro, edición, permisos, backups |
 | UI historial | `views/history_view.py` | Auditoría y métricas |
 | Validación | `dg_validators/engine.py` | Motor de reglas |
-| Lectura de archivos | `utils/file_handler.py` | CSV / TXT / Excel |
-| Escritura y auditoría | `utils/db_writer.py` | Carga a BD, ZIP, log |
-| Administración metadata | `utils/db_admin.py` | Proyectos, catálogos, permisos |
-| Usuarios | `utils/user_service.py` | Roles, activo/inactivo, backup |
+| Lectura de archivos | `storage/file_handler.py` | CSV / TXT / Excel |
+| Reportes | `reports/report_builder.py` | Excel de errores de validación |
+| Escritura y auditoría | `services/db_writer.py` | Carga a BD, ZIP, log |
+| Administración metadata | `services/db_admin.py` | Proyectos, catálogos, permisos |
+| Usuarios | `services/user_service.py` | Roles, activo/inactivo, backup |
+| Utilidades | `utils/` | Logging y mensajes seguros para UI |
 | Docker local | `docker/docker-compose.prueba.yml` | Simulación completa |
 | Docker banco | `docker/docker-compose.yml` | Solo `app` + `nginx` |
 
@@ -93,6 +128,10 @@ Desde `Administrar catálogos`:
 ## Validación
 
 El motor actual es `dg_validators/engine.py`.
+Es un motor propio sobre `pandas`, diseñado para leer reglas dinámicas desde
+`catalogos_config.schema_json`. No se usa `pandera` en la implementación actual,
+porque las reglas se administran desde la base de metadatos y desde el panel
+Admin.
 
 Reglas soportadas:
 
@@ -193,6 +232,10 @@ Resumen:
 - **validación**: el archivo se leyó, pero sus datos no cumplen reglas;
 - **carga**: el archivo pasó validación, pero falló al persistirse en la BD.
 
+Los errores técnicos de infraestructura, por ejemplo IPs, puertos, códigos SQL
+o trazas de conexión, se registran en logs/auditoría para soporte. En la UI se
+muestran mensajes simples y accionables para el usuario final.
+
 ---
 
 ## Estrategias de carga
@@ -211,7 +254,9 @@ Cada carga genera:
 
 - un `operation_id` único por operación;
 - un registro en `log_auditoria`;
-- un ZIP del archivo original en `AUDIT_STORAGE_PATH`.
+- un ZIP del archivo original en `AUDIT_STORAGE_PATH`;
+- un `audit_manifest.json` dentro del ZIP con `operation_id`, usuario, catálogo,
+  nombre original, tamaño en bytes y hash `SHA-256` del archivo subido.
 
 Ruta del ZIP:
 
@@ -224,6 +269,19 @@ Ejemplo:
 ```text
 /app/audit_storage/dg_au_agd_agencias__desembolsos_catalogo_agencias/20260522/20260522_052231_exito_vcastro_d0c8ac9dcb7f_db_catalogos_manuales.desembolsos_catalogo_agencias.csv.zip
 ```
+
+Protecciones aplicadas por la app:
+
+- sanitiza `catalog_id`, usuario y nombre del archivo antes de construir rutas;
+- bloquea rutas fuera de `AUDIT_STORAGE_PATH`;
+- crea directorios con permisos `AUDIT_STORAGE_DIR_MODE` si el sistema lo permite;
+- deja el ZIP final como solo lectura con `AUDIT_STORAGE_FILE_MODE` cuando
+  `AUDIT_STORAGE_READONLY_AFTER_WRITE=true`;
+- conserva el detalle técnico en logs si el sistema operativo no permite aplicar
+  permisos.
+
+La inmutabilidad fuerte debe completarse a nivel de infraestructura: volumen con
+permisos restringidos, backups, retención y control de quién puede borrar archivos.
 
 ---
 
@@ -343,6 +401,8 @@ No respalda LDAP real ni contraseñas.
 | `SS_HOST`, `SS_PORT`, `SS_USER`, `SS_PASSWORD` | SingleStore |
 | `HIVE_HOST`, `HIVE_PORT`, `HIVE_USER`, `HIVE_PASSWORD` | Hive |
 | `AUDIT_STORAGE_PATH` | Ruta donde se guardan los ZIP |
+| `AUDIT_STORAGE_READONLY_AFTER_WRITE` | Deja el ZIP en solo lectura después de escribirlo |
+| `AUDIT_STORAGE_DIR_MODE`, `AUDIT_STORAGE_FILE_MODE` | Permisos Unix para directorios y ZIPs auditados |
 | `MAX_FILE_SIZE_MB` | Límite por archivo |
 | `MAX_ROWS_IN_MEMORY` | Límite total en RAM |
 | `ALERTS_ENABLED` | Activa alertas webhook |

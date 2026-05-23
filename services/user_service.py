@@ -1,5 +1,5 @@
 """
-utils/user_service.py
+services/user_service.py
 Registro automático de usuarios en SingleStore al iniciar sesión.
 """
 from __future__ import annotations
@@ -140,11 +140,17 @@ def toggle_user_activo(username: str, activo: bool) -> None:
         conn.commit()
 
 
-def get_or_register_user(username: str, nombre: str, email: str) -> Dict[str, Any]:
+def get_or_register_user(
+    username: str,
+    nombre: str,
+    email: str,
+    rol_inicial: str = "Publicador",
+) -> Dict[str, Any]:
     """
     Si el usuario existe en DB → retorna su rol actual y actualiza ultimo_acceso.
-    Si no existe → lo registra como Publicador y retorna sus datos.
+    Si no existe → lo registra con el rol autenticado y retorna sus datos.
     """
+    rol_inicial = rol_inicial if rol_inicial in {"Admin", "Publicador"} else "Publicador"
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -161,14 +167,26 @@ def get_or_register_user(username: str, nombre: str, email: str) -> Dict[str, An
                     (username,),
                 )
             conn.commit()
-            return {"username": username, "nombre": nombre, "email": email, "rol": rol, "activo": bool(activo)}
+            return {
+                "username": username,
+                "nombre": nombre,
+                "email": email,
+                "rol": rol,
+                "activo": bool(activo),
+            }
 
-        # Primer login — registrar como Publicador
+        # Primer login: respeta el rol resuelto por LDAP/admin local.
         with conn.cursor() as cur:
             cur.execute(
                 f"INSERT INTO {TBL_USUARIOS} (username, nombre, email, rol, activo, ultimo_acceso) "
-                f"VALUES (%s, %s, %s, 'Publicador', 1, NOW())",
-                (username, nombre, email),
+                f"VALUES (%s, %s, %s, %s, 1, NOW())",
+                (username, nombre, email, rol_inicial),
             )
         conn.commit()
-        return {"username": username, "nombre": nombre, "email": email, "rol": "Publicador", "activo": True}
+        return {
+            "username": username,
+            "nombre": nombre,
+            "email": email,
+            "rol": rol_inicial,
+            "activo": True,
+        }

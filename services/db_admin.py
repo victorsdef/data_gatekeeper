@@ -1,5 +1,5 @@
 """
-utils/db_admin.py
+services/db_admin.py
 Descubrimiento de esquemas y gestión de catalogos_config para el panel de administración.
 """
 from __future__ import annotations

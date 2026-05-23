@@ -189,7 +189,7 @@ def validate_dataframe(df: pd.DataFrame, schema_config: Dict[str, Any]) -> Valid
                 columna="general",
                 valor="—",
                 regla="error_inesperado",
-                detalle=str(exc),
+                detalle="No se pudo completar la validación por un error interno del esquema. Contacta al administrador.",
             )
         )
 

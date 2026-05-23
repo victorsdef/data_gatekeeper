@@ -1,4 +1,4 @@
-from utils.file_handler import detect_file_delimiter, read_uploaded_file
+from storage.file_handler import detect_file_delimiter, read_uploaded_file
 
 
 def test_read_uploaded_csv_detects_semicolon_delimiter():

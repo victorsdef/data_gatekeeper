@@ -1,5 +1,5 @@
 """
-utils/file_handler.py
+storage/file_handler.py
 Lectura de archivos en memoria con pandas.
 Soporta CSV, TXT y Excel. Detecta encoding y delimitadores automáticamente.
 """
@@ -47,7 +47,7 @@ def read_uploaded_file(
         elif ext in (".xlsx", ".xls"):
             return _read_excel(file_bytes, sheet_name)
     except Exception as exc:
-        return None, f"Error leyendo el archivo: {str(exc)}"
+        return None, _friendly_file_error(exc, ext)
 
     return None, "Formato no reconocido."
 
@@ -99,7 +99,7 @@ def _read_csv(file_bytes: bytes, delimiter: str, encoding: str) -> Tuple[Optiona
         except UnicodeDecodeError:
             continue
         except Exception as exc:
-            return None, str(exc)
+            return None, _friendly_file_error(exc, ".csv")
 
     return None, "No se pudo decodificar el archivo. Prueba con encoding: latin-1 o utf-8."
 
@@ -120,6 +120,19 @@ def _get_extension(filename: str) -> str:
     import os
     _, ext = os.path.splitext(filename.lower())
     return ext
+
+
+def _friendly_file_error(exc: Exception, ext: str) -> str:
+    text = str(exc).lower()
+    if "encoding" in text or "decode" in text or "codec" in text:
+        return "No se pudo leer la codificación del archivo. Prueba con Latin-1, ISO-8859-1 o Windows-1252."
+    if "delimiter" in text or "tokenizing" in text or "expected" in text or "fields" in text:
+        return "No se pudo separar correctamente las columnas. Revisa el delimitador seleccionado."
+    if ext in (".xlsx", ".xls") or "excel" in text or "workbook" in text:
+        return "No se pudo leer el archivo Excel. Verifica que no esté dañado y que la hoja seleccionada tenga datos."
+    if "empty" in text or "no columns" in text:
+        return "El archivo no contiene columnas o filas de datos."
+    return "No se pudo leer el archivo. Verifica el formato, delimitador y codificación."
 
 
 def get_file_stats(df: pd.DataFrame, file_bytes: bytes) -> Dict[str, Any]:
