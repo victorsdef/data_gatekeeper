@@ -1,508 +1,470 @@
 # Data Gatekeeper
 
-Portal interno de ingesta y validación de catálogos manuales para Banco del Austro.
-
----
-
-## Objetivo
-
-La aplicación permite que un publicador cargue archivos manuales (`CSV`, `TXT`, `Excel`), los valide en memoria y luego los escriba en `SingleStore` o `Hive` con auditoría y resguardo del archivo original en ZIP.
-
----
-
-## Estado actual
-
-Hoy el proyecto ya tiene:
-
-- login con `LDAP` (`NTLM` para entorno real, `SIMPLE` para OpenLDAP de prueba) y admin local;
-- portal de publicador con flujo de carga de 3 pasos: `subir -> validar -> resultado`;
-- panel admin para registrar catálogos, editar configuración, gestionar permisos y usuarios;
-- historial de cargas con filtros, métricas y exportación;
-- auditoría en `log_auditoria` y cold storage en `audit_storage/`;
-- backups lógicos de catálogos y usuarios en JSON;
-- healthchecks para `app` y `nginx`;
-- alertas por webhook configurables.
-
----
-
-## Arquitectura
-
-El proyecto usa una **arquitectura modular por capas** sobre `Streamlit`.
-No es un MVC estricto: las pantallas viven en `views/`, la lógica de soporte se
-separa en módulos de autenticación, configuración, validación, persistencia,
-auditoría y despliegue.
-
-```text
-Usuario AD / Local
-        |
-        v
-     [Nginx]
-        |
-        v
-   [Streamlit App]
-        |
-        +--> [ldap3 / LDAP]
-        +--> [pandas en RAM]
-        +--> [dg_validators/engine.py]
-        +--> [SingleStore]
-        +--> [Hive]
-        +--> [audit_storage ZIP]
-```
-
-Flujo interno simplificado:
-
-```text
-app.py
-  -> views/
-     -> auth/ + config/ + dg_validators/ + services/ + storage/ + reports/ + utils/
-        -> LDAP / SingleStore / Hive / audit_storage
-```
-
----
-
-## Estructura principal
-
-```text
-data_gatekeeper/
-├── app.py                  # Punto de entrada y enrutamiento de vistas
-├── views/                  # Pantallas Streamlit
-├── auth/                   # Autenticación LDAP y admin local
-├── config/                 # Variables de entorno y catálogos publicados
-├── dg_validators/          # Motor de validación de datos
-├── services/               # Servicios de BD, usuarios, auditoría y alertas
-├── storage/                # Lectura de archivos y manejo de entradas
-├── reports/                # Generación de reportes descargables
-├── utils/                  # Utilidades transversales: logging y mensajes
-├── docker/                 # Despliegue local/prueba y producción
-├── deploy/                 # Plantillas de configuración productiva
-├── scripts/                # Healthchecks y utilidades operativas
-├── tests/                  # Pruebas automáticas
-├── assets/                 # Logo y recursos visuales
-└── audit_storage/          # ZIPs auditados de archivos cargados
-```
-
-| Componente | Archivo / carpeta | Función |
-|---|---|---|
-| Entry point | `app.py` | Inicializa sesión y enruta vistas |
-| Configuración | `config/settings.py` | Variables de entorno |
-| Catálogos publicados | `config/catalogs.py` | Lee proyectos y catálogos para el publicador |
-| Login | `auth/ldap_auth.py` | Autenticación LDAP y admin local |
-| UI publicador | `views/main_view.py` | Flujo de carga y resultado |
-| UI admin | `views/admin_catalogs_view.py` | Registro, edición, permisos, backups |
-| UI historial | `views/history_view.py` | Auditoría y métricas |
-| Validación | `dg_validators/engine.py` | Motor de reglas |
-| Lectura de archivos | `storage/file_handler.py` | CSV / TXT / Excel |
-| Reportes | `reports/report_builder.py` | Excel de errores de validación |
-| Escritura y auditoría | `services/db_writer.py` | Carga a BD, ZIP, log |
-| Administración metadata | `services/db_admin.py` | Proyectos, catálogos, permisos |
-| Usuarios | `services/user_service.py` | Roles, activo/inactivo, backup |
-| Utilidades | `utils/` | Logging y mensajes seguros para UI |
-| Docker local | `docker/docker-compose.prueba.yml` | Simulación completa |
-| Docker banco | `docker/docker-compose.yml` | Solo `app` + `nginx` |
-
----
-
-## Flujo funcional
-
-### Publicador
-
-1. Inicia sesión.
-2. Selecciona proyecto y catálogo en el sidebar.
-3. Sube uno o varios archivos.
-4. Revisa la previsualización.
-5. Ejecuta validación.
-6. Si la validación pasa, confirma la carga.
-7. La app escribe en BD, guarda ZIP auditado y registra `log_auditoria`.
-
-### Admin
-
-Desde `Administrar catálogos`:
-
-- `Resumen`: métricas operativas rápidas;
-- `Registrar catálogos`: wizard de 2 pasos;
-- `Catálogos activos`: editar, permisos, desactivar, backup/restauración;
-- `Usuarios`: roles, activo/inactivo, backup/restauración.
-
----
-
-## Validación
-
-El motor actual es `dg_validators/engine.py`.
-Es un motor propio sobre `pandas`, diseñado para leer reglas dinámicas desde
-`catalogos_config.schema_json`. No se usa `pandera` en la implementación actual,
-porque las reglas se administran desde la base de metadatos y desde el panel
-Admin.
-
-Reglas soportadas:
-
-| Regla | Descripción |
-|---|---|
-| Estructural | La columna debe existir exactamente como fue configurada |
-| Archivo vacío | Rechaza archivos sin filas |
-| Tipo | `str`, `int`, `float`, `bool` |
-| Nulabilidad | Controla si la columna puede venir vacía |
-| `isin` | Dominio de valores permitidos |
-| `gte` | Valor mínimo |
-| `lte` | Valor máximo |
-| `min_length` | Longitud mínima |
-| `str_length` | Longitud entre mínimo y máximo |
-| `regex` | Patrón esperado |
-
-### Reglas de calidad desde el panel Admin
-
-En el wizard de registro:
-
-- primero se define el esquema base: `tipo` y `nullable`;
-- luego se agregan reglas por columna en el bloque **Reglas de calidad**.
-- el selector **Tipo de regla** se filtra segun el tipo de dato de la columna seleccionada.
-
-Reglas disponibles por tipo:
-
-| Tipo de columna | Reglas visibles en Admin |
-|---|---|
-| `str` | `isin`, `min_length`, `str_length`, `regex` |
-| `int` | `gte`, `lte` |
-| `float` | `gte`, `lte` |
-| `bool` | Sin reglas adicionales |
-
-Ejemplos:
-
-- `codigo_segmento` con `isin`: `C, D, N`
-- `monto` con `gte`: `0`
-- `porcentaje` con `lte`: `100`
-- `nombre_cliente` con `min_length`: `3`
-- `codigo_oficina` con `str_length`: entre `3` y `5`
-- `fecha_corte` con `regex`: `^\d{4}-\d{2}-\d{2}$`
-
-Si una regla falla:
-
-- no se escribe nada en BD;
-- el publicador recibe el detalle del error;
-- puede descargar reporte Excel de validación.
-
-### Motivos comunes de falla al subir un archivo
-
-Un archivo puede fallar en tres capas distintas:
-
-#### 1. Fallas de lectura
-
-Antes de validar datos, la app primero debe poder leer correctamente el archivo.
-
-Casos típicos:
-
-- separador incorrecto en `CSV` o `TXT`;
-- codificación incorrecta (`utf-8`, `latin-1`, `cp1252`, etc.);
-- hoja equivocada en un archivo Excel;
-- archivo vacío;
-- archivo que supera `MAX_FILE_SIZE_MB`;
-- conjunto de archivos que supera `MAX_ROWS_IN_MEMORY`.
-
-#### 2. Fallas de validación
-
-Una vez leído el archivo, el contenido puede fallar por reglas de calidad o estructura.
-
-Casos típicos:
-
-- faltan columnas;
-- sobran columnas;
-- el nombre de una columna no coincide con el catálogo configurado;
-- una columna tiene tipo incorrecto;
-- una columna obligatoria viene vacía;
-- un valor no pertenece al dominio permitido (`isin`);
-- un número está por debajo del mínimo (`gte`);
-- un número supera el máximo (`lte`);
-- un texto no cumple la longitud mínima (`min_length`);
-- un texto no cumple la longitud esperada (`str_length`);
-- un valor no cumple el patrón configurado (`regex`).
-
-#### 3. Fallas de carga a BD
-
-Incluso si el archivo pasa la validación, la carga todavía puede fallar al escribir en el destino.
-
-Casos típicos:
-
-- error de conexión a `SingleStore` o `Hive`;
-- permisos insuficientes sobre la tabla destino;
-- error SQL en `overwrite`, `append` o `reproceso`;
-- error operativo del servidor o de red.
-
-Resumen:
-
-- **lectura**: el archivo no se pudo interpretar correctamente;
-- **validación**: el archivo se leyó, pero sus datos no cumplen reglas;
-- **carga**: el archivo pasó validación, pero falló al persistirse en la BD.
-
-Los errores técnicos de infraestructura, por ejemplo IPs, puertos, códigos SQL
-o trazas de conexión, se registran en logs/auditoría para soporte. En la UI se
-muestran mensajes simples y accionables para el usuario final.
-
----
-
-## Estrategias de carga
-
-| Estrategia | SingleStore | Hive |
-|---|---|---|
-| `append` | Inserta acumulando | Inserta acumulando |
-| `overwrite` | `TRUNCATE + INSERT` con transacción | `INSERT OVERWRITE` |
-| `reproceso` | Borra por fecha y vuelve a insertar | Sobrescribe particiones afectadas |
-
----
-
-## Auditoría y ZIP
-
-Cada carga genera:
-
-- un `operation_id` único por operación;
-- un registro en `log_auditoria`;
-- un ZIP del archivo original en `AUDIT_STORAGE_PATH`;
-- un `audit_manifest.json` dentro del ZIP con `operation_id`, usuario, catálogo,
-  nombre original, tamaño en bytes y hash `SHA-256` del archivo subido.
-
-Ruta del ZIP:
-
-```text
-AUDIT_STORAGE_PATH/<catalog_id>/<YYYYMMDD>/<timestamp>_<estado>_<usuario>_<operation_id>_<archivo>.zip
-```
-
-Ejemplo:
-
-```text
-/app/audit_storage/dg_au_agd_agencias__desembolsos_catalogo_agencias/20260522/20260522_052231_exito_vcastro_d0c8ac9dcb7f_db_catalogos_manuales.desembolsos_catalogo_agencias.csv.zip
-```
-
-Protecciones aplicadas por la app:
-
-- sanitiza `catalog_id`, usuario y nombre del archivo antes de construir rutas;
-- bloquea rutas fuera de `AUDIT_STORAGE_PATH`;
-- crea directorios con permisos `AUDIT_STORAGE_DIR_MODE` si el sistema lo permite;
-- deja el ZIP final como solo lectura con `AUDIT_STORAGE_FILE_MODE` cuando
-  `AUDIT_STORAGE_READONLY_AFTER_WRITE=true`;
-- conserva el detalle técnico en logs si el sistema operativo no permite aplicar
-  permisos.
-
-La inmutabilidad fuerte debe completarse a nivel de infraestructura: volumen con
-permisos restringidos, backups, retención y control de quién puede borrar archivos.
-
----
-
-## Modelo de metadata
-
-Base: `gatekeeper_meta`
+Data Gatekeeper es un portal interno para ordenar, controlar y auditar la carga
+de catálogos manuales hacia las bases de datos corporativas.
+
+El sistema busca resolver un problema común en procesos de datos: los archivos
+manuales suelen llegar por canales informales, con estructuras distintas,
+errores de formato, valores inválidos o cambios no controlados. Cuando esos
+archivos se cargan directamente o mediante procesos batch poco visibles, el
+riesgo se traslada a las tablas finales y los errores aparecen tarde, cuando ya
+afectaron reportes, procesos operativos o análisis de negocio.
+
+Data Gatekeeper propone un punto único de ingreso. El usuario publicador carga
+su archivo, selecciona el proyecto y catálogo correspondiente, revisa una
+previsualización y ejecuta validaciones antes de que los datos lleguen a
+SingleStore o Hive. Si el archivo no cumple la estructura o las reglas definidas
+para el catálogo, la carga se rechaza y el usuario recibe el detalle de los
+errores para corregirlos en origen.
+
+Con esto, la responsabilidad de la calidad del dato se acerca al usuario que
+conoce el archivo, mientras que el sistema protege las tablas destino con
+validaciones previas, trazabilidad, control de permisos y registro de auditoría.
+
+En términos prácticos, el sistema ayuda a:
+
+- descentralizar la carga de catálogos manuales sin perder control;
+- validar estructura, tipos de datos, nulabilidad y reglas de negocio antes de
+  escribir en base de datos;
+- evitar que archivos incorrectos impacten tablas finales;
+- registrar quién cargó qué archivo, cuándo, hacia qué catálogo y con qué
+  resultado;
+- conservar evidencia auditada del archivo original cargado;
+- administrar catálogos, permisos y usuarios desde un panel interno.
+
+El objetivo final es que la carga manual de información deje de depender de
+intervenciones técnicas repetitivas y pase a un flujo controlado, validado y
+auditable.
+
+## Modelo de configuración y auditoría
+
+Para que el portal no dependa de configuraciones quemadas en el código, se
+propone mantener un esquema administrativo llamado `gatekeeper_meta`. Este
+esquema guarda la metadata necesaria para saber qué catálogos existen, quién
+puede cargarlos, qué reglas deben cumplir los archivos y qué ocurrió en cada
+intento de carga.
+
+La idea es separar claramente dos mundos:
+
+- las **tablas de negocio**, donde finalmente aterrizan los catálogos;
+- las **tablas de control**, donde Data Gatekeeper guarda configuración,
+  permisos y auditoría.
 
 ### `proyectos`
 
-```sql
-project_id   VARCHAR(50)  PRIMARY KEY
-nombre       VARCHAR(200) NOT NULL
-descripcion  TEXT
-activo       TINYINT(1)   DEFAULT 1
-```
+Agrupa catálogos bajo una unidad lógica de negocio o dominio de datos.
+
+Campos principales:
+
+- `project_id`: identificador único del proyecto.
+- `nombre`: nombre legible del proyecto.
+- `descripcion`: detalle opcional.
+- `activo`: permite ocultar o deshabilitar proyectos sin borrarlos.
 
 ### `catalogos_config`
 
-```sql
-catalog_id     VARCHAR(100) PRIMARY KEY
-project_id     VARCHAR(50)  NOT NULL
-nombre         VARCHAR(200) NOT NULL
-descripcion    TEXT
-base_datos     VARCHAR(100) NOT NULL
-tabla_destino  VARCHAR(200) NOT NULL
-destino        VARCHAR(20)  DEFAULT 'singlestore'
-estrategia     VARCHAR(20)  DEFAULT 'overwrite'
-schema_json    JSON         NOT NULL
-activo         TINYINT(1)   DEFAULT 1
-```
+Es la tabla central de configuración. Define qué catálogos puede cargar el
+portal, hacia dónde deben escribirse y qué validaciones deben aplicarse antes de
+la carga.
+
+Campos principales:
+
+- `catalog_id`: identificador único del catálogo.
+- `project_id`: proyecto al que pertenece.
+- `nombre`: nombre visible para el usuario.
+- `base_datos`: base donde está la tabla destino.
+- `tabla_destino`: tabla final donde se cargarán los datos.
+- `destino`: motor de persistencia, por ejemplo `singlestore` o `hive`.
+- `estrategia`: modo de carga, por ejemplo `append`, `overwrite` o `reproceso`.
+- `schema_json`: definición de columnas, tipos, nulabilidad y reglas de calidad.
+- `activo`: permite deshabilitar el catálogo sin perder su configuración.
+
+Esta tabla permite que un administrador registre o ajuste catálogos desde el
+portal, sin modificar el código de la aplicación.
 
 ### `usuarios`
 
-```sql
-username       VARCHAR(100) PRIMARY KEY
-nombre         VARCHAR(200)
-email          VARCHAR(200)
-rol            VARCHAR(50)  DEFAULT 'Publicador'
-activo         TINYINT(1)   DEFAULT 1
-ultimo_acceso  DATETIME
-```
+Guarda los usuarios que han ingresado o que pueden ser administrados desde el
+portal. No reemplaza al Active Directory; funciona como una capa interna para
+roles y estado dentro de Data Gatekeeper.
+
+Campos principales:
+
+- `username`: usuario corporativo.
+- `nombre`: nombre completo.
+- `email`: correo.
+- `rol`: perfil dentro del portal, por ejemplo `Admin` o `Publicador`.
+- `activo`: permite bloquear el acceso al portal sin tocar Active Directory.
+- `ultimo_acceso`: última fecha de ingreso.
 
 ### `permisos_catalogo`
 
-```sql
-catalog_id   VARCHAR(100) NOT NULL
-tipo         VARCHAR(20)  NOT NULL
-valor        VARCHAR(100) NOT NULL
-PRIMARY KEY (catalog_id, tipo, valor)
-```
+Controla qué usuarios o roles pueden cargar cada catálogo.
+
+Campos principales:
+
+- `catalog_id`: catálogo al que aplica el permiso.
+- `tipo`: tipo de permiso, por ejemplo `rol` o `usuario`.
+- `valor`: valor asociado al permiso, por ejemplo `Publicador` o un username.
+
+Con esta tabla se puede permitir que algunos catálogos sean públicos para todos
+los publicadores y otros queden restringidos a usuarios específicos.
 
 ### `log_auditoria`
 
-```sql
-id                      BIGINT        AUTO_INCREMENT PRIMARY KEY
-operation_id            VARCHAR(20)
-timestamp_carga         DATETIME      DEFAULT NOW()
-usuario_ad              VARCHAR(100)  NOT NULL
-project_id              VARCHAR(50)   NOT NULL
-id_catalogo             VARCHAR(100)  NOT NULL
-nombre_archivo_original VARCHAR(500)  NOT NULL
-filas_procesadas        INT           DEFAULT 0
-estrategia_usada        VARCHAR(50)   NOT NULL
-destino                 VARCHAR(50)   NOT NULL
-estado_carga            VARCHAR(20)   NOT NULL
-errores_json            JSON
-ruta_zip_auditoria      VARCHAR(1000)
+Registra cada intento de carga, exitoso o fallido. Esta tabla es clave para la
+trazabilidad operativa y para responder preguntas como quién cargó un archivo,
+cuándo, hacia qué catálogo y con qué resultado.
+
+Campos principales:
+
+- `operation_id`: identificador único de la operación.
+- `timestamp_carga`: fecha y hora de la carga.
+- `usuario_ad`: usuario que ejecutó la operación.
+- `project_id`: proyecto relacionado.
+- `id_catalogo`: catálogo cargado.
+- `nombre_archivo_original`: nombre del archivo recibido.
+- `filas_procesadas`: cantidad de filas procesadas.
+- `estrategia_usada`: estrategia aplicada en la carga.
+- `destino`: motor destino usado.
+- `estado_carga`: resultado, por ejemplo `Exito` o `Fallo`.
+- `errores_json`: detalle técnico o funcional del error, si aplica.
+- `ruta_zip_auditoria`: ubicación del ZIP auditado del archivo original.
+
+Con este modelo, Data Gatekeeper puede administrar su propia configuración y
+mantener una bitácora confiable de las cargas sin mezclarse con las tablas de
+negocio.
+
+## Flujo del administrador
+
+El administrador es responsable de preparar el entorno para que los publicadores
+puedan cargar archivos sin intervención técnica en cada operación.
+
+Desde su panel, el administrador puede revisar el estado general del portal,
+registrar catálogos, ajustar reglas de validación, administrar permisos y
+gestionar usuarios.
+
+El flujo principal del administrador es:
+
+1. Ingresa al portal con perfil `Admin`.
+2. Accede al panel de administración.
+3. Revisa un resumen operativo con catálogos activos, usuarios, cargas recientes
+   y fallos.
+4. Explora las bases y tablas disponibles en SingleStore o Hive.
+5. Selecciona una o varias tablas que desea habilitar como catálogos cargables.
+6. Define o confirma el proyecto al que pertenece cada catálogo.
+7. Configura el catálogo:
+   - nombre visible;
+   - tabla destino;
+   - motor destino;
+   - estrategia de carga;
+   - estructura esperada del archivo;
+   - tipos de datos;
+   - campos obligatorios o permitidos como nulos;
+   - reglas de calidad.
+8. Guarda la configuración en `catalogos_config`.
+9. Define permisos por rol o por usuario en `permisos_catalogo`.
+10. Revisa los catálogos activos y, si es necesario, los edita, desactiva o
+    respalda.
+11. Administra usuarios del portal, sus roles y su estado activo/inactivo.
+12. Consulta el historial global de cargas para seguimiento y control.
+
+El administrador no carga necesariamente todos los archivos. Su función principal
+es dejar preparado el catálogo para que el publicador pueda operar de forma
+controlada.
+
+## Flujo del publicador
+
+El publicador es el usuario de negocio responsable de cargar el archivo manual.
+El sistema lo guía para que el archivo sea validado antes de llegar a las tablas
+finales.
+
+El flujo principal del publicador es:
+
+1. Ingresa al portal con sus credenciales corporativas.
+2. Selecciona el proyecto disponible según sus permisos.
+3. Selecciona el catálogo que desea cargar.
+4. Revisa la información del catálogo:
+   - tabla destino;
+   - estrategia de carga;
+   - motor destino;
+   - columnas esperadas.
+5. Sube uno o varios archivos en formato CSV, TXT o Excel.
+6. Si el archivo lo requiere, ajusta delimitador, codificación u hoja de Excel.
+7. Revisa la previsualización de los datos.
+8. Ejecuta la validación.
+9. Si la validación falla:
+   - el sistema no escribe nada en la base de datos;
+   - muestra errores por fila, columna, valor y regla incumplida;
+   - permite descargar un reporte de errores;
+   - el usuario corrige el archivo en origen y vuelve a cargarlo.
+10. Si la validación es exitosa:
+    - el usuario confirma la carga;
+    - el sistema escribe en SingleStore o Hive según la estrategia configurada;
+    - guarda evidencia auditada del archivo original;
+    - registra la operación en `log_auditoria`.
+11. El publicador puede consultar su historial de cargas y exportarlo si lo
+    necesita.
+
+Este flujo permite que el usuario de negocio conserve el control sobre sus
+archivos, pero dentro de un marco de validación, permisos y auditoría definido
+por la organización.
+
+## Variables de entorno
+
+La aplicación se configura mediante un archivo `.env`. Este archivo no debe
+versionarse con credenciales reales. Para ambientes productivos se recomienda
+mantenerlo fuera del repositorio y montarlo desde una ruta controlada por
+infraestructura.
+
+### Aplicación
+
+```env
+APP_ENV=production
+APP_PORT=8501
+LOG_LEVEL=INFO
 ```
 
-### Ejemplo de `schema_json`
+- `APP_ENV`: identifica el ambiente de ejecución.
+- `APP_PORT`: puerto interno usado por Streamlit.
+- `LOG_LEVEL`: nivel de logs de la aplicación.
 
-```json
-{
-  "columnas": [
-    { "nombre": "codigo", "tipo": "str", "nullable": false, "reglas": [] },
-    { "nombre": "estado", "tipo": "str", "nullable": false,
-      "reglas": [{ "tipo": "isin", "valor": ["A", "I"] }] },
-    { "nombre": "monto", "tipo": "float", "nullable": true,
-      "reglas": [{ "tipo": "gte", "valor": 0 }] }
-  ]
-}
+### SingleStore
+
+```env
+SS_HOST=
+SS_PORT=3306
+SS_DATABASE=gatekeeper_meta
+SS_USER=
+SS_PASSWORD=
+SS_USE_BALANCER=false
+SS_DIRECT_HOST=
+SS_BALANCER_HOST=
+DB_NAME_FILTERS=
 ```
 
----
+- `SS_HOST`: host activo de SingleStore.
+- `SS_PORT`: puerto de conexión.
+- `SS_DATABASE`: base administrativa donde vive `gatekeeper_meta`.
+- `SS_USER` y `SS_PASSWORD`: credenciales de conexión.
+- `SS_USE_BALANCER`: permite elegir si se usa balanceador.
+- `SS_DIRECT_HOST`: host directo.
+- `SS_BALANCER_HOST`: host del balanceador.
+- `DB_NAME_FILTERS`: filtro opcional para mostrar solo ciertas bases en el panel admin.
 
-## Backups lógicos
+### Hive
 
-### Catálogos activos
-
-Exporta un JSON con:
-
-- proyectos;
-- catálogos;
-- permisos.
-
-No respalda datos de negocio, solo metadata de configuración.
-
-### Usuarios
-
-Exporta un JSON con:
-
-- `username`
-- `nombre`
-- `email`
-- `rol`
-- `activo`
-
-No respalda LDAP real ni contraseñas.
-
----
-
-## Variables importantes
-
-| Variable | Uso |
-|---|---|
-| `LDAP_AUTH_METHOD` | `NTLM` para AD real, `SIMPLE` para OpenLDAP |
-| `SS_HOST`, `SS_PORT`, `SS_USER`, `SS_PASSWORD` | SingleStore |
-| `HIVE_HOST`, `HIVE_PORT`, `HIVE_USER`, `HIVE_PASSWORD` | Hive |
-| `AUDIT_STORAGE_PATH` | Ruta donde se guardan los ZIP |
-| `AUDIT_STORAGE_READONLY_AFTER_WRITE` | Deja el ZIP en solo lectura después de escribirlo |
-| `AUDIT_STORAGE_DIR_MODE`, `AUDIT_STORAGE_FILE_MODE` | Permisos Unix para directorios y ZIPs auditados |
-| `MAX_FILE_SIZE_MB` | Límite por archivo |
-| `MAX_ROWS_IN_MEMORY` | Límite total en RAM |
-| `ALERTS_ENABLED` | Activa alertas webhook |
-| `ALERT_WEBHOOK_URL` | URL del webhook |
-| `ALERT_ON_SUCCESS` | También alerta cargas exitosas |
-| `TBL_PROYECTOS`, `TBL_CATALOGOS`, `TBL_USUARIOS`, `TBL_PERMISOS`, `TBL_LOG_AUDITORIA` | Nombres configurables de tablas metadata |
-
----
-
-## Ejecución
-
-### Local sin Docker
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
+```env
+HIVE_HOST=
+HIVE_PORT=10000
+HIVE_DATABASE=default
+HIVE_USER=
+HIVE_PASSWORD=
 ```
 
-### Prueba local con Docker
+- `HIVE_HOST`: host de HiveServer2.
+- `HIVE_PORT`: puerto de conexión.
+- `HIVE_DATABASE`: base por defecto.
+- `HIVE_USER` y `HIVE_PASSWORD`: credenciales o usuario de conexión, según la configuración del entorno.
 
-```bash
-docker compose -f docker/docker-compose.prueba.yml up -d --build
+### LDAP / Active Directory
 
-docker exec -i gatekeeper_singlestore singlestore -uroot -pgatekeeper123 < docker/init_db/00_create_db.sql
-docker exec -i gatekeeper_singlestore singlestore -uroot -pgatekeeper123 gatekeeper_meta < docker/init_db/01_init.sql
-
-docker compose -f docker/docker-compose.prueba.yml logs -f app
-docker compose -f docker/docker-compose.prueba.yml down
+```env
+LDAP_SERVER=
+LDAP_PORT=389
+LDAP_DOMAIN=
+LDAP_AUTH_METHOD=NTLM
+LDAP_BASE_DN=
+LDAP_USE_SSL=false
+LDAP_REQUIRED_GROUP=
 ```
 
-### Banco / servidor real
+Para Active Directory real se recomienda `LDAP_AUTH_METHOD=NTLM`. En ese modo el
+usuario final se autentica con su usuario y contraseña corporativos desde la
+pantalla de login.
+
+Para OpenLDAP o pruebas con `SIMPLE`, también pueden requerirse:
+
+```env
+LDAP_BIND_USER=
+LDAP_BIND_PASSWORD=
+LDAP_USERS_OU=
+LDAP_GROUPS_OU=
+LDAP_ADMIN_DN=
+LDAP_ADMIN_PASSWORD=
+```
+
+Estas variables corresponden a una cuenta técnica o a rutas internas del árbol
+LDAP. No son las credenciales de los publicadores.
+
+### Administrador local
+
+```env
+SYSTEM_ADMIN_USERNAME=admin
+SYSTEM_ADMIN_PASSWORD=
+```
+
+Permite tener un acceso administrativo temporal si LDAP todavía no está
+disponible. Debe usarse con clave fuerte y solo como contingencia o para pruebas.
+
+### Tablas metadata
+
+```env
+TBL_PROYECTOS=proyectos
+TBL_CATALOGOS=catalogos_config
+TBL_USUARIOS=usuarios
+TBL_PERMISOS=permisos_catalogo
+TBL_LOG_AUDITORIA=log_auditoria
+```
+
+Permiten cambiar los nombres físicos de las tablas administrativas si el entorno
+lo requiere.
+
+### Auditoría
+
+```env
+AUDIT_STORAGE_PATH=/app/audit_storage
+AUDIT_STORAGE_READONLY_AFTER_WRITE=true
+AUDIT_STORAGE_DIR_MODE=750
+AUDIT_STORAGE_FILE_MODE=440
+```
+
+- `AUDIT_STORAGE_PATH`: ruta donde se guardan los ZIP auditados.
+- `AUDIT_STORAGE_READONLY_AFTER_WRITE`: deja el ZIP en modo solo lectura después de crearlo.
+- `AUDIT_STORAGE_DIR_MODE`: permisos para directorios de auditoría.
+- `AUDIT_STORAGE_FILE_MODE`: permisos para archivos ZIP.
+
+La inmutabilidad fuerte debe completarse a nivel de infraestructura con permisos
+de volumen, backups, retención y control de acceso al servidor.
+
+### Validaciones
+
+```env
+MAX_UPLOAD_SIZE_MB=100
+MAX_FILE_SIZE_MB=100
+MAX_ROWS_IN_MEMORY=500000
+```
+
+- `MAX_FILE_SIZE_MB`: tamaño máximo por archivo.
+- `MAX_ROWS_IN_MEMORY`: máximo de filas que pueden mantenerse en memoria durante una carga.
+
+### Alertas
+
+```env
+ALERTS_ENABLED=false
+ALERT_WEBHOOK_URL=
+ALERT_ON_SUCCESS=false
+```
+
+Permiten enviar notificaciones operativas a un webhook cuando una carga falla o,
+si se habilita, también cuando finaliza exitosamente.
+
+## Construcción y despliegue con Docker
+
+El proyecto incluye Docker para empaquetar la aplicación Streamlit y ejecutarla
+detrás de Nginx.
+
+### Componentes Docker
+
+- `docker/Dockerfile`: construye la imagen Python/Streamlit de la app.
+- `docker/docker-compose.yml`: despliegue pensado para servidor real; levanta
+  `app` y `nginx`, conectándose a SingleStore, Hive y LDAP externos.
+- `docker/docker-compose.prueba.yml`: entorno local de prueba; levanta
+  SingleStore, Hive, OpenLDAP, la app y Nginx.
+- `docker/nginx.conf`: proxy inverso hacia Streamlit.
+- `docker/init_db/`: scripts para crear el esquema administrativo.
+
+### Construir y levantar en servidor real
+
+En el servidor real, la app espera que SingleStore, Hive y LDAP ya existan fuera
+del compose. El archivo de entorno productivo se referencia desde:
+
+```text
+/opt/configs/data-gatekeeper/.env.prod
+```
+
+Comando:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-O, si primero quieres probar solo la app:
+Esto construye la imagen de la aplicación, levanta el contenedor `gatekeeper_app`
+y publica el acceso mediante `gatekeeper_nginx` en el puerto `80`.
+
+Para revisar logs:
 
 ```bash
-streamlit run app.py
+docker compose -f docker/docker-compose.yml logs -f app
 ```
 
----
+Para detener:
 
-## Docker
+```bash
+docker compose -f docker/docker-compose.yml down
+```
 
-### `docker/docker-compose.prueba.yml`
+### Levantar entorno local de prueba
 
-Levanta la simulación completa:
+El compose de prueba simula la infraestructura completa:
 
-- `SingleStore`
-- `Hive`
-- `LDAP`
-- `phpLDAPadmin`
-- `app`
-- `nginx`
+- SingleStore;
+- Hive;
+- OpenLDAP;
+- phpLDAPadmin;
+- Streamlit app;
+- Nginx.
 
-### `docker/docker-compose.yml`
+Comando:
 
-Levanta solo:
+```bash
+docker compose -f docker/docker-compose.prueba.yml up -d --build
+```
 
-- `app`
-- `nginx`
+La primera vez se debe inicializar la base administrativa:
 
-Y consume `SingleStore`, `Hive` y `LDAP` reales desde tu `.env`.
+```bash
+docker exec -i gatekeeper_singlestore singlestore -uroot -pgatekeeper123 < docker/init_db/00_create_db.sql
+docker exec -i gatekeeper_singlestore singlestore -uroot -pgatekeeper123 gatekeeper_meta < docker/init_db/01_init.sql
+```
 
----
+Luego se puede revisar la app desde Nginx:
 
-## Healthchecks
+```text
+http://localhost
+```
 
-| Componente | Check |
-|---|---|
-| App | `python scripts/healthcheck.py --mode liveness` |
-| App readiness | `python scripts/healthcheck.py --mode readiness` |
-| Nginx | `GET /healthz` |
+Y revisar logs:
 
----
+```bash
+docker compose -f docker/docker-compose.prueba.yml logs -f app
+```
 
-## Roles
+### Volumen de auditoría
 
-| Funcionalidad | Publicador | Admin |
-|---|---|---|
-| Subir y cargar archivos | ✅ | ✅ |
-| Ver historial propio | ✅ | ✅ |
-| Ver historial global | ❌ | ✅ |
-| Descargar reporte de errores | ✅ | ✅ |
-| Registrar catálogos | ❌ | ✅ |
-| Editar / desactivar catálogos | ❌ | ✅ |
-| Gestionar permisos | ❌ | ✅ |
-| Gestionar usuarios | ❌ | ✅ |
-| Backup / restauración metadata | ❌ | ✅ |
+El compose monta la carpeta de auditoría como volumen:
 
----
+```yaml
+volumes:
+  - ../audit_storage:/app/audit_storage
+```
 
-## Pendiente real
+Esto permite que los ZIP auditados sobrevivan aunque el contenedor se reconstruya
+o reinicie.
 
-Lo que falta ya no es rehacer la app, sino validarla y conectarla en el entorno real:
+### Healthchecks
 
-- probar LDAP `NTLM` del banco;
-- validar SingleStore y Hive reales;
-- confirmar despliegue final con `nginx` y healthchecks;
-- conectar logs y alertas a la plataforma operativa del banco;
-- ejecutar pruebas end-to-end en servidor.
+La app expone el healthcheck de Streamlit:
+
+```text
+http://localhost:8501/_stcore/health
+```
+
+Nginx expone:
+
+```text
+http://localhost/healthz
+```
+
+Además, el script `scripts/healthcheck.py` valida conectividad básica hacia la
+app, SingleStore, LDAP y, si está configurado, Hive.
