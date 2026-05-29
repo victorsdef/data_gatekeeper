@@ -118,12 +118,7 @@ Vistas principales:
 
 ### 3.2 Capa de autenticacion
 
-La autenticacion se implementa con `ldap3`.
-
-Modos soportados:
-
-- `NTLM`: orientado a Active Directory corporativo;
-- `SIMPLE`: orientado a OpenLDAP o pruebas locales.
+La autenticacion se implementa con el binario del sistema `ldapsearch`.
 
 Adicionalmente existe un administrador local de contingencia definido por
 configuracion.
