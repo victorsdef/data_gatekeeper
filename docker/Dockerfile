@@ -24,7 +24,7 @@ EXPOSE 8501
 # Healthcheck
 HEALTHCHECK CMD python scripts/healthcheck.py --mode liveness || exit 1
 
-# Arrancar Streamlit
+# Arrancar Streamlit.
 CMD ["streamlit", "run", "app.py", \
      "--server.port=8501", \
      "--server.address=0.0.0.0", \
