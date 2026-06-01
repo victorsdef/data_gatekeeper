@@ -1,10 +1,11 @@
 """
-utils/file_handler.py
+storage/file_handler.py
 Lectura de archivos en memoria con pandas.
 Soporta CSV, TXT y Excel. Detecta encoding y delimitadores automáticamente.
 """
 from __future__ import annotations
 from typing import Optional, Tuple, Dict, Any
+import csv
 import io
 import pandas as pd
 
@@ -46,13 +47,36 @@ def read_uploaded_file(
         elif ext in (".xlsx", ".xls"):
             return _read_excel(file_bytes, sheet_name)
     except Exception as exc:
-        return None, f"Error leyendo el archivo: {str(exc)}"
+        return None, _friendly_file_error(exc, ext)
 
     return None, "Formato no reconocido."
 
 
+def detect_file_delimiter(file_bytes: bytes, encoding: str = "utf-8") -> str:
+    """Detecta el delimitador de un CSV/TXT analizando los primeros 4 KB."""
+    return _detect_delimiter(file_bytes, encoding)
+
+
+def get_excel_sheets(file_bytes: bytes) -> list:
+    """Retorna los nombres de las hojas de un archivo Excel."""
+    try:
+        xl = pd.ExcelFile(io.BytesIO(file_bytes))
+        return xl.sheet_names
+    except Exception:
+        return []
+
+
+def _detect_delimiter(file_bytes: bytes, encoding: str) -> str:
+    try:
+        sample = file_bytes[:4096].decode(encoding, errors="ignore")
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        return dialect.delimiter
+    except Exception:
+        return ","
+
+
 def _read_csv(file_bytes: bytes, delimiter: str, encoding: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """Lee CSV/TXT con detección de errores de encoding."""
+    """Lee CSV/TXT con detección automática de encoding y delimitador."""
     encodings_to_try = [encoding, "utf-8", "latin-1", "iso-8859-1", "cp1252"]
     tried = []
 
@@ -61,23 +85,23 @@ def _read_csv(file_bytes: bytes, delimiter: str, encoding: str) -> Tuple[Optiona
             continue
         tried.append(enc)
         try:
+            sep = delimiter if delimiter != "," else _detect_delimiter(file_bytes, enc)
             df = pd.read_csv(
                 io.BytesIO(file_bytes),
-                sep=delimiter,
+                sep=sep,
                 encoding=enc,
-                dtype=str,           # Leer todo como str primero; pandera hace el casteo
+                dtype=str,
                 keep_default_na=True,
                 skipinitialspace=True,
             )
-            # Limpiar nombres de columnas
             df.columns = [c.strip() for c in df.columns]
             return df, None
         except UnicodeDecodeError:
             continue
         except Exception as exc:
-            return None, str(exc)
+            return None, _friendly_file_error(exc, ".csv")
 
-    return None, f"No se pudo decodificar el archivo. Prueba con encoding: latin-1 o utf-8."
+    return None, "No se pudo decodificar el archivo. Prueba con encoding: latin-1 o utf-8."
 
 
 def _read_excel(file_bytes: bytes, sheet_name: Optional[str]) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
@@ -96,6 +120,19 @@ def _get_extension(filename: str) -> str:
     import os
     _, ext = os.path.splitext(filename.lower())
     return ext
+
+
+def _friendly_file_error(exc: Exception, ext: str) -> str:
+    text = str(exc).lower()
+    if "encoding" in text or "decode" in text or "codec" in text:
+        return "No se pudo leer la codificación del archivo. Prueba con Latin-1, ISO-8859-1 o Windows-1252."
+    if "delimiter" in text or "tokenizing" in text or "expected" in text or "fields" in text:
+        return "No se pudo separar correctamente las columnas. Revisa el delimitador seleccionado."
+    if ext in (".xlsx", ".xls") or "excel" in text or "workbook" in text:
+        return "No se pudo leer el archivo Excel. Verifica que no esté dañado y que la hoja seleccionada tenga datos."
+    if "empty" in text or "no columns" in text:
+        return "El archivo no contiene columnas o filas de datos."
+    return "No se pudo leer el archivo. Verifica el formato, delimitador y codificación."
 
 
 def get_file_stats(df: pd.DataFrame, file_bytes: bytes) -> Dict[str, Any]:

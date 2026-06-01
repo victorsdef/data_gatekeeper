@@ -1,5 +1,5 @@
 """
-utils/report_builder.py
+reports/report_builder.py
 Genera el reporte Excel de errores de validación.
 Hoja 1 (Resumen): metadata de la carga + conteo por tipo de error + leyenda.
 Hoja 2 (Detalle):  tabla completa con filas coloreadas por categoría de error.

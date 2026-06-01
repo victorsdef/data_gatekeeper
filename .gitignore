@@ -9,11 +9,13 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 
 # Variables de entorno (credenciales)
 .env
 .env.*
 !.env.example
+!deploy/.env.prod.example
 
 # Streamlit
 .streamlit/secrets.toml
@@ -32,3 +34,7 @@ Thumbs.db
 # Carpeta duplicada generada por error
 data_gatekeeper/
 {auth,config,validators,views,utils,.streamlit}/
+
+
+gatekeeper.dbml
+gatekeeper.sql
