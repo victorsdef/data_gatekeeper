@@ -1,85 +1,21 @@
-# ------------------------------------------------------------------
-# Data Gatekeeper — Docker Compose PRODUCCIÓN
-# ------------------------------------------------------------------
-# Arquitectura:
-#
-#   Nginx  →  Streamlit App
-#                  ├── SingleStore
-#                  ├── Hive
-#                  └── LDAP / Active Directory
-#
-# Todas las IPs y credenciales vienen desde archivos .env
-# para evitar quemar configuraciones dentro del compose.
-#
-# ------------------------------------------------------------------
-
 version: "3.9"
 
 services:
-  # ────────────────────────────────────────────────────────────────
-  # Aplicación principal
-  # ────────────────────────────────────────────────────────────────
   app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-
     container_name: gatekeeper_app
-
     env_file:
-      - /opt/configs/data-gatekeeper/.env.prod
-
-    expose:
-      - "8501"
-
+      - .env
+    ports:
+      - "8501:8501"
     volumes:
       - ../audit_storage:/app/audit_storage
-
     healthcheck:
       test: ["CMD", "python", "scripts/healthcheck.py", "--mode", "readiness"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
-    networks:
-      - gatekeeper_net
-
     restart: unless-stopped
-
-  # ────────────────────────────────────────────────────────────────
-  # Nginx Reverse Proxy
-  # ────────────────────────────────────────────────────────────────
-  nginx:
-    image: nginx:1.25-alpine
-
-    container_name: gatekeeper_nginx
-
-    ports:
-      - "80:80"
-
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-
-    depends_on:
-      app:
-        condition: service_healthy
-
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-    networks:
-      - gatekeeper_net
-
-    restart: unless-stopped
-
-# ──────────────────────────────────────────────────────────────────
-# Redes
-# ──────────────────────────────────────────────────────────────────
-networks:
-  gatekeeper_net:
-    driver: bridge
