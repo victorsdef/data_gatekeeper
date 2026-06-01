@@ -6,6 +6,7 @@ Recibe un dataframe y un schema JSON y retorna un ValidationResult.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -188,7 +189,7 @@ def validate_dataframe(df: pd.DataFrame, schema_config: Dict[str, Any]) -> Valid
                 columna="general",
                 valor="—",
                 regla="error_inesperado",
-                detalle=str(exc),
+                detalle="No se pudo completar la validación por un error interno del esquema. Contacta al administrador.",
             )
         )
 
@@ -326,6 +327,38 @@ def _apply_rules(
                         valor=raw_value,
                         regla="longitud",
                         detalle=f"El valor '{raw_value}' en '{col_name}' no cumple longitud entre {min_l} y {max_l}.",
+                    )
+                )
+            continue
+
+        if tipo == "regex":
+            pattern = str(regla.get("valor", "")).strip()
+            if not pattern:
+                continue
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                errors.append(
+                    ValidationError(
+                        fila=0,
+                        columna=col_name,
+                        valor=pattern,
+                        regla="regex_invalido",
+                        detalle=f"El patrón regex configurado para '{col_name}' es inválido: {exc}.",
+                    )
+                )
+                continue
+
+            text = series_original.astype("string")
+            mask = text.notna() & (~text.str.fullmatch(compiled, na=False))
+            for idx, raw_value in series_original[mask].items():
+                errors.append(
+                    ValidationError(
+                        fila=int(idx) + 2,
+                        columna=col_name,
+                        valor=raw_value,
+                        regla="regex",
+                        detalle=f"El valor '{raw_value}' en '{col_name}' no cumple el patrón requerido.",
                     )
                 )
             continue
