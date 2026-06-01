@@ -60,8 +60,9 @@ def check_readiness() -> int:
         print(f"LDAP is unreachable at {ldap_host}:{ldap_port}")
         return 1
 
+    hive_enabled = os.getenv("HIVE_ENABLED", "true").lower() == "true"
     hive_host = os.getenv("HIVE_HOST")
-    if hive_host:
+    if hive_enabled and hive_host:
         hive_port = int(os.getenv("HIVE_PORT", "10000"))
         if not _tcp_ok(hive_host, hive_port):
             print(f"Hive is unreachable at {hive_host}:{hive_port}")

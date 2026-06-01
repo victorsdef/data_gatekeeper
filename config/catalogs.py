@@ -33,6 +33,7 @@ SS_PASSWORD = _setting("SS_PASSWORD")
 TBL_PROYECTOS = _setting("TBL_PROYECTOS", "proyectos")
 TBL_CATALOGOS = _setting("TBL_CATALOGOS", "catalogos_config")
 TBL_PERMISOS = _setting("TBL_PERMISOS", "permisos_catalogo")
+HIVE_ENABLED = str(_setting("HIVE_ENABLED", "true")).lower() == "true"
 
 
 def _connect():
@@ -110,6 +111,8 @@ def get_catalogs_by_project(
                 (project_id, rol, rol, username),
             )
             rows = _fetchall_dict(cur)
+            if not HIVE_ENABLED:
+                rows = [r for r in rows if str(r.get("destino", "")).lower() != "hive"]
             return [
                 {
                     "catalog_id":    str(r["catalog_id"]),
@@ -147,6 +150,8 @@ def get_catalog_by_id(project_id: str, catalog_id: str) -> Dict[str, Any]:
             if not rows:
                 return {}
             r = rows[0]
+            if not HIVE_ENABLED and str(r.get("destino", "")).lower() == "hive":
+                return {}
             return {
                 "catalog_id":    str(r["catalog_id"]),
                 "nombre":        str(r["nombre"]),

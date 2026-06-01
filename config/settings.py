@@ -33,6 +33,7 @@ DB_NAME_FILTERS = os.getenv("DB_NAME_FILTERS", "")
 # HIVE
 # ==========================================================
 
+HIVE_ENABLED = os.getenv("HIVE_ENABLED", "true").lower() == "true"
 HIVE_HOST = os.getenv("HIVE_HOST")
 HIVE_PORT = int(os.getenv("HIVE_PORT", 10000))
 

@@ -1,698 +1,871 @@
 # Data Gatekeeper
 
-## Documento Tecnico del Sistema
+## Manual tecnico del sistema
 
-Este documento describe la arquitectura tecnica actual de Data Gatekeeper,
-sus componentes principales, el flujo interno de la aplicacion, la estructura
-del codigo y los criterios funcionales que gobiernan la carga y validacion de
-catalogos.
+Este documento describe la arquitectura tecnica de Data Gatekeeper para
+desarrolladores y responsables de soporte. Explica como esta organizado el
+codigo, como fluye una carga de catalogo, que contratos internos usa la
+aplicacion y que configuracion debe revisarse antes de desplegar o modificar
+el sistema.
 
-## 1. Proposito del sistema
+El objetivo no es repetir el README funcional, sino dejar claro como mantener
+el sistema sin romper autenticacion, permisos, validaciones, auditoria o carga
+a destino.
 
-Data Gatekeeper es una aplicacion interna orientada a controlar la ingesta de
-catalogos manuales hacia bases de datos corporativas.
+## 1. Alcance tecnico
 
-El sistema busca resolver estos problemas:
+Data Gatekeeper es una aplicacion interna para cargar catalogos manuales de
+forma controlada.
 
-- cargas manuales realizadas por canales no controlados;
-- archivos con estructura variable;
-- errores de formato detectados demasiado tarde;
-- falta de trazabilidad sobre quien cargo que archivo y con que resultado;
-- dependencia de soporte tecnico para operaciones repetitivas de carga.
+Desde el punto de vista tecnico, el sistema hace cuatro cosas principales:
 
-La aplicacion introduce un punto unico de entrada donde el archivo es leido,
-previsualizado, validado en memoria y, solo si cumple las reglas definidas para
-su catalogo, cargado al destino final.
+1. autentica al usuario contra LDAP/Active Directory usando `ldapsearch`;
+2. resuelve su rol interno y los catalogos a los que tiene acceso;
+3. lee, previsualiza y valida archivos CSV, TXT o Excel contra una
+   configuracion de catalogo;
+4. carga datos validos a SingleStore o Hive y registra evidencia de auditoria.
 
-## 2. Vision general de arquitectura
+La aplicacion esta construida en Python con Streamlit. La UI y la logica de
+orquestacion corren en el mismo proceso de aplicacion; las operaciones de base
+de datos, validacion, auditoria y autenticacion estan separadas en modulos.
 
-La solucion esta construida principalmente sobre `Streamlit`, con una
-arquitectura unificada de interfaz y backend ligero en Python.
+## 2. Vista tecnica rapida
 
-Los bloques funcionales son:
+| Area | Implementacion |
+| --- | --- |
+| UI principal | Streamlit |
+| Entrada de aplicacion | `app.py` |
+| Autenticacion | `auth/ldap_auth.py` mediante binario `ldapsearch` |
+| Sesion | `st.session_state` |
+| Metadata | SingleStore, base `gatekeeper_meta` |
+| Carga destino | SingleStore y, opcionalmente, Hive |
+| Flag Hive | `HIVE_ENABLED` |
+| Validacion | `validators/` |
+| Persistencia destino | `services/db_writer.py` |
+| Administracion | `views/admin_catalogs_view.py` y `services/db_admin.py` |
+| Historial | `views/history_view.py` y `services/audit_service.py` |
+| Evidencia auditada | `audit_storage/` |
+| Docker | `docker/Dockerfile` y compose en `docker/` |
 
-- interfaz web en `Streamlit`;
-- autenticacion corporativa por `LDAP / Active Directory`;
-- lectura y preprocesamiento de archivos con `pandas`;
-- validacion declarativa por esquema JSON mediante un motor propio;
-- escritura a `SingleStore` o `Hive`;
-- auditoria de cargas en metadata de `SingleStore`;
-- almacenamiento auditado del archivo original en ZIP;
-- despliegue soportado con `Docker` y `Nginx`.
+## 3. Mapa de ejecucion
 
-### 2.1 Diagrama general de arquitectura
+El flujo general de la aplicacion es este:
 
-```mermaid
-flowchart LR
-    U[Usuario<br/>Admin o Publicador]
-    N[Nginx<br/>Proxy inverso]
-    S[Streamlit App<br/>UI + logica]
-    A[LDAP / Active Directory<br/>Autenticacion]
-    C[SingleStore<br/>Metadata gatekeeper_meta]
-    D[SingleStore o Hive<br/>Tablas destino]
-    F[Audit Storage<br/>ZIP + manifest]
-    W[Webhook<br/>Alertas opcionales]
+1. `app.py` carga variables de entorno, configura Streamlit e inicializa estado
+   de sesion.
+2. Si no existe usuario autenticado en sesion, se muestra `views/login_view.py`.
+3. El login llama a `auth/ldap_auth.py`.
+4. Si la autenticacion es correcta, se registra o actualiza el usuario interno
+   en metadata.
+5. Segun rol, el usuario entra al portal de carga o al panel de administracion.
+6. El portal carga catalogos activos desde metadata y los filtra por permisos.
+7. El usuario sube archivos, el sistema los lee y muestra previsualizacion.
+8. El validador compara columnas, tipos, nulabilidad y reglas de calidad.
+9. Si hay errores, se bloquea la carga y se permite descargar reporte.
+10. Si todo esta correcto, `services/db_writer.py` carga a destino.
+11. `services/audit_service.py` registra resultado, usuario, archivo,
+    operacion y ruta auditada.
 
-    U --> N
-    N --> S
-    S --> A
-    S --> C
-    S --> D
-    S --> F
-    S --> W
+## 4. Componentes principales
+
+### `app.py`
+
+Es el punto de entrada. Sus responsabilidades son:
+
+- cargar configuracion general;
+- inicializar `st.session_state`;
+- decidir si mostrar login, portal, administracion o historial;
+- aplicar estilos globales;
+- mantener una navegacion simple entre vistas.
+
+Este archivo no deberia contener reglas de negocio pesadas. Si una validacion,
+consulta o carga crece, debe vivir en `validators/`, `services/` o `config/`.
+
+### `views/login_view.py`
+
+Renderiza el formulario de login.
+
+Responsabilidades:
+
+- pedir usuario y contrasena;
+- llamar al servicio de autenticacion;
+- guardar datos de sesion si el login es valido;
+- mostrar error generico si falla.
+
+No debe conocer detalles del comando `ldapsearch`; eso pertenece a
+`auth/ldap_auth.py`.
+
+### `auth/ldap_auth.py`
+
+Modulo de autenticacion. Actualmente no usa `ldap3`.
+
+La autenticacion soportada ejecuta el binario del sistema `ldapsearch` mediante
+`subprocess`. Esto permite trabajar tanto con Active Directory real como con un
+LDAP simulado en Docker, siempre que el contenedor o servidor tenga disponible
+el binario.
+
+Responsabilidades:
+
+- construir el comando `ldapsearch`;
+- hacer bind con el usuario;
+- buscar atributos del usuario autenticado;
+- detectar credenciales invalidas;
+- resolver datos basicos como nombre, correo y grupos;
+- aplicar fallback de admin local si esta configurado.
+
+### `views/main_view.py`
+
+Vista principal del publicador y tambien punto de carga para admins.
+
+Responsabilidades:
+
+- mostrar proyectos y catalogos permitidos;
+- mostrar informacion del catalogo seleccionado;
+- recibir archivos;
+- leer y previsualizar datos;
+- ejecutar validacion;
+- confirmar carga si la validacion fue exitosa;
+- mostrar resultado final y resumen de auditoria.
+
+### `views/admin_catalogs_view.py`
+
+Panel tecnico-funcional del administrador.
+
+Responsabilidades:
+
+- explorar bases y tablas disponibles;
+- registrar catalogos desde SingleStore o Hive;
+- definir nombre legible, proyecto, estrategia y destino;
+- configurar columnas, tipos, nulabilidad y reglas;
+- administrar catalogos activos;
+- editar configuracion existente;
+- editar permisos por rol o usuario;
+- respaldar/restaurar configuraciones JSON;
+- administrar usuarios internos.
+
+Cuando `HIVE_ENABLED=false`, las opciones de Hive no deben mostrarse ni quedar
+disponibles para registro o carga.
+
+### `views/history_view.py`
+
+Vista de auditoria de cargas.
+
+Responsabilidades:
+
+- mostrar filtros por fecha y estado;
+- mostrar totales, exitos, fallos y filas procesadas;
+- mostrar tendencias;
+- listar cargas en tabla;
+- exportar historial a CSV.
+
+Regla importante:
+
+- un publicador solo ve sus propias cargas;
+- un admin ve cargas de todos los usuarios.
+
+### `config/settings.py`
+
+Centraliza variables de entorno.
+
+Las variables de entorno deben leerse aqui o mediante funciones de este modulo,
+para evitar que la configuracion quede repartida por todo el codigo.
+
+### `config/catalogs.py`
+
+Normaliza y filtra catalogos disponibles.
+
+Responsabilidades:
+
+- leer catalogos activos desde metadata;
+- aplicar filtros de permisos;
+- ocultar catalogos Hive cuando `HIVE_ENABLED=false`;
+- entregar estructuras estables para las vistas.
+
+### `services/db_admin.py`
+
+Servicio de administracion de metadata y exploracion de bases.
+
+Responsabilidades:
+
+- listar bases y tablas disponibles;
+- leer esquemas;
+- registrar catalogos;
+- actualizar catalogos;
+- activar o desactivar catalogos;
+- guardar permisos;
+- exportar/importar configuraciones.
+
+### `services/db_writer.py`
+
+Servicio que escribe datos validados al destino.
+
+Responsabilidades:
+
+- recibir un `DataFrame` ya validado;
+- aplicar estrategia de carga;
+- escribir a SingleStore o Hive;
+- devolver resultado de carga;
+- bloquear Hive si `HIVE_ENABLED=false`.
+
+La validacion debe ocurrir antes de llamar a este servicio.
+
+### `validators/`
+
+Contiene la logica de calidad de datos.
+
+Responsabilidades:
+
+- revisar columnas requeridas;
+- detectar columnas no esperadas;
+- validar tipos;
+- validar nulabilidad;
+- aplicar reglas por columna;
+- producir errores descargables.
+
+El validador no debe escribir en base de datos.
+
+### `services/audit_service.py`
+
+Registra trazabilidad.
+
+Responsabilidades:
+
+- crear identificador de operacion;
+- guardar resultado en metadata;
+- registrar usuario, archivo, catalogo, estado y filas;
+- guardar evidencia en almacenamiento auditado;
+- alimentar el historial.
+
+## 5. Contratos internos
+
+### Catalogo activo
+
+Las vistas trabajan con una estructura de catalogo que debe contener, como
+minimo:
+
+| Campo | Uso |
+| --- | --- |
+| `catalog_id` | Identificador interno del catalogo |
+| `project_id` | Agrupador tecnico del proyecto |
+| `project_name` | Nombre visible del proyecto |
+| `display_name` | Nombre visible del catalogo |
+| `database_name` | Base origen o destino |
+| `table_name` | Tabla fisica |
+| `destination` | `singlestore` o `hive` |
+| `load_strategy` | Estrategia de carga |
+| `schema_json` | Definicion de columnas y reglas |
+| `allowed_roles` | Roles permitidos |
+| `allowed_users` | Usuarios especificos permitidos |
+| `is_active` | Estado de publicacion |
+
+Si `allowed_users` esta vacio, el permiso aplica segun roles. Si roles y
+usuarios estan vacios, el catalogo queda accesible para publicadores segun la
+regla de negocio definida en administracion.
+
+### Esquema de columnas
+
+Cada columna configurada debe representar:
+
+| Campo | Descripcion |
+| --- | --- |
+| `name` | Nombre esperado en el archivo |
+| `type` | Tipo logico: `str`, `int`, `float`, `date`, etc. |
+| `nullable` | Si permite valores vacios |
+| `rules` | Lista de reglas de calidad |
+
+Las reglas dependen del tipo. Ejemplos:
+
+- minimo o maximo para numeros;
+- dominio de valores permitidos para texto;
+- longitud minima o maxima;
+- formato esperado;
+- obligatoriedad.
+
+### Resultado de validacion
+
+El proceso de validacion debe devolver informacion suficiente para decidir si
+se puede cargar:
+
+| Dato | Uso |
+| --- | --- |
+| `success` | Indica si no hay errores |
+| `errors` | Lista tabular de errores |
+| `rows_validated` | Filas revisadas |
+| `columns_validated` | Columnas revisadas |
+| `error_report` | Archivo descargable si hay errores |
+
+Si existen errores, no se debe llamar a `db_writer`.
+
+### Sesion Streamlit
+
+Las claves de sesion mas sensibles son las relacionadas con:
+
+- usuario autenticado;
+- rol actual;
+- catalogo seleccionado;
+- archivo cargado;
+- datos previsualizados;
+- resultado de validacion;
+- paso actual del flujo.
+
+Cuando se cambia de catalogo o se inicia nueva carga, se debe limpiar el estado
+asociado al archivo anterior para evitar que una validacion vieja se use en un
+catalogo distinto.
+
+## 6. Autenticacion LDAP/AD
+
+El sistema usa `ldapsearch` nativo del sistema operativo o del contenedor.
+
+No se debe agregar nuevamente `ldap3` salvo que se decida cambiar formalmente
+la estrategia de autenticacion.
+
+### Comando base
+
+La forma general del comando es:
+
+```bash
+ldapsearch -x \
+  -H ldap://servidor:389 \
+  -D "<bind_del_usuario>" \
+  -w "<password>" \
+  -b "<base_dn>" \
+  "(<atributo>=<usuario>)"
 ```
 
-### 2.2 Diagrama logico por capas
+Para Active Directory real, el bind normalmente usa:
 
-```mermaid
-flowchart TD
-    UI[Capa de presentacion<br/>views/*.py]
-    AUTH[Capa de autenticacion<br/>auth/ldap_auth.py]
-    CFG[Capa de configuracion<br/>config/settings.py<br/>config/catalogs.py]
-    FILE[Capa de lectura<br/>storage/file_handler.py]
-    VAL[Capa de validacion<br/>dg_validators/engine.py]
-    REP[Capa de reportes<br/>reports/report_builder.py]
-    DB[Capa de persistencia<br/>services/db_writer.py]
-    ADM[Capa administrativa<br/>services/db_admin.py<br/>services/user_service.py]
-    AUD[Capa de auditoria<br/>log_auditoria + ZIP]
-
-    UI --> AUTH
-    UI --> CFG
-    UI --> FILE
-    FILE --> VAL
-    VAL --> REP
-    VAL --> DB
-    DB --> AUD
-    UI --> ADM
-    ADM --> CFG
+```text
+usuario@dominio
 ```
 
-## 3. Componentes principales
+Para el LDAP simulado en Docker, el bind usa un DN completo:
 
-### 3.1 Capa de presentacion
+```text
+uid=usuario,ou=users,dc=austro,dc=grpfin
+```
 
-La presentacion esta implementada en `Streamlit`.
+### Variables LDAP principales
+
+| Variable | Uso |
+| --- | --- |
+| `LDAP_SERVER` | URL del servidor, por ejemplo `ldap://austro.grpfin:389` |
+| `LDAP_DOMAIN` | Dominio usado para bind tipo `usuario@dominio` |
+| `LDAP_BASE_DN` | Base de busqueda |
+| `LDAP_SEARCH_ATTRIBUTE` | Atributo para localizar usuario: `sAMAccountName` o `uid` |
+| `LDAP_BIND_TEMPLATE` | Plantilla opcional para construir el bind DN |
+| `LDAPSEARCH_BIN` | Nombre o ruta del binario `ldapsearch` |
+| `LDAP_REQUIRED_GROUP` | Grupo requerido para permitir ingreso |
+| `LDAP_SEARCH_BIND_DN` | Bind tecnico opcional para completar busqueda |
+| `LDAP_SEARCH_BIND_PASSWORD` | Contrasena del bind tecnico |
+
+### Real vs simulado
+
+Configuracion tipica para AD real:
+
+```env
+LDAP_SERVER=ldap://austro.grpfin:389
+LDAP_DOMAIN=austro.grpfin
+LDAP_BASE_DN=DC=austro,DC=grpfin
+LDAP_SEARCH_ATTRIBUTE=sAMAccountName
+LDAP_BIND_TEMPLATE={username}@{domain}
+LDAPSEARCH_BIN=ldapsearch
+```
+
+Configuracion tipica para Docker simulado:
+
+```env
+LDAP_SERVER=ldap://ldap:389
+LDAP_DOMAIN=austro.grpfin
+LDAP_BASE_DN=dc=austro,dc=grpfin
+LDAP_SEARCH_ATTRIBUTE=uid
+LDAP_BIND_TEMPLATE=uid={username},ou=users,{base_dn}
+LDAPSEARCH_BIN=ldapsearch
+LDAP_SEARCH_BIND_DN=cn=admin,dc=austro,dc=grpfin
+LDAP_SEARCH_BIND_PASSWORD=admin
+```
+
+### Roles
+
+El rol interno no debe depender solo del texto ingresado en login. El sistema
+debe registrar o actualizar al usuario en metadata y asignarle rol de acuerdo
+con:
+
+- grupos LDAP/AD cuando esten disponibles;
+- configuracion interna de usuarios;
+- fallback local para administrador tecnico si esta habilitado.
+
+## 7. Metadata
+
+La metadata vive en SingleStore, usualmente en la base `gatekeeper_meta`.
+
+Tablas esperadas:
+
+| Tabla | Proposito |
+| --- | --- |
+| `usuarios` | Usuarios internos, rol, estado y ultimo acceso |
+| `catalogos_config` | Configuracion de catalogos activos o inactivos |
+| `permisos_catalogo` | Permisos por rol o usuario, si aplica |
+| `log_auditoria` | Registro de cargas y resultados |
+
+### `catalogos_config`
+
+Debe guardar la configuracion necesaria para que el publicador pueda cargar sin
+conocer detalles tecnicos:
+
+- proyecto;
+- tabla fisica;
+- nombre legible;
+- destino;
+- estrategia;
+- esquema esperado;
+- reglas por columna;
+- permisos;
+- estado activo/inactivo.
+
+### `usuarios`
+
+Se actualiza al iniciar sesion. Permite:
+
+- diferenciar `Admin` y `Publicador`;
+- desactivar acceso al sistema;
+- recordar ultimo acceso;
+- respaldar/restaurar usuarios internos.
+
+### `log_auditoria`
+
+Registra cada intento de carga:
+
+- fecha y hora;
+- usuario;
+- proyecto;
+- catalogo;
+- archivo;
+- filas;
+- estrategia;
+- destino;
+- estado;
+- operacion;
+- ruta auditada.
+
+## 8. Administracion de catalogos
+
+El panel admin se divide en cuatro secciones: resumen, registrar catalogos,
+catalogos activos y usuarios.
+
+### Resumen
+
+Muestra una vista general de actividad y estado de configuraciones. Sirve como
+entrada rapida para revisar si el sistema tiene catalogos activos, usuarios y
+cargas registradas.
+
+### Registrar catalogos
+
+El registro usa dos pasos.
+
+Paso 1: seleccion de tablas.
+
+- El admin escoge el motor disponible: SingleStore o Hive.
+- Si `HIVE_ENABLED=false`, Hive no aparece.
+- El explorador lista bases disponibles.
+- Al seleccionar una base, se listan sus tablas.
+- El admin puede buscar, refrescar y seleccionar una o varias tablas.
+- La tabla activa muestra su estructura de columnas.
+- Cada columna muestra tipo y si acepta nulos.
+- Desde la misma vista se pueden agregar reglas de calidad por columna.
+
+Paso 2: configuracion y registro.
+
+- El admin define o acepta el ID del proyecto.
+- El admin define el nombre visible del proyecto.
+- El sistema genera el ID tecnico del catalogo.
+- El admin define el nombre legible del catalogo.
+- Puede agregar descripcion.
+- Selecciona estrategia de carga.
+- Selecciona destino.
+- Define roles permitidos.
+- Define usuarios especificos si el acceso debe limitarse.
+
+Si no se seleccionan usuarios especificos, el acceso se controla por roles. Si
+la configuracion queda abierta segun la regla de negocio, el catalogo puede
+quedar disponible para todos los publicadores permitidos.
+
+### Registro de varias tablas
+
+Cuando se selecciona mas de una tabla, el flujo es el mismo, pero el sistema
+registra un lote.
+
+El proyecto funciona como carpeta logica. Por ejemplo, varias tablas de un
+mismo dominio, como COMEX o SRI, pueden guardarse bajo el mismo proyecto y
+luego mostrarse al usuario con su nombre legible.
+
+Cada tabla conserva:
+
+- tabla fisica;
+- nombre legible;
+- esquema;
+- reglas;
+- estrategia;
+- destino;
+- permisos.
+
+### Catalogos activos
+
+Esta seccion permite mantener lo ya registrado.
 
 Funciones principales:
 
-- login del usuario;
-- seleccion de proyecto y catalogo;
-- carga de archivo;
-- previsualizacion del contenido;
-- ejecucion de validaciones;
-- visualizacion de errores;
-- confirmacion de carga;
-- historial de operaciones;
-- administracion de catalogos y usuarios.
+- preparar backup JSON de configuraciones;
+- restaurar configuraciones desde JSON;
+- decidir si se sobrescriben catalogos existentes;
+- buscar catalogos por nombre, base o tabla;
+- ver catalogos agrupados por proyecto;
+- abrir una carpeta de proyecto para ver sus tablas;
+- editar configuracion;
+- editar permisos;
+- desactivar catalogos.
 
-Punto de entrada:
+Editar configuracion permite cambiar nombre, descripcion, estrategia, destino,
+columnas, tipos, nulabilidad y reglas.
 
-- [app.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/app.py)
+Editar permisos permite ajustar roles y usuarios especificos. Esto afecta que
+catalogos ve cada usuario en el portal de carga.
 
-Vistas principales:
+Desactivar no deberia borrar historico. Solo impide que el catalogo siga
+disponible para nuevas cargas.
 
-- [views/login_view.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/views/login_view.py)
-- [views/main_view.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/views/main_view.py)
-- [views/history_view.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/views/history_view.py)
-- [views/admin_catalogs_view.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/views/admin_catalogs_view.py)
+### Usuarios
 
-### 3.2 Capa de autenticacion
+La seccion de usuarios administra usuarios internos detectados por login.
 
-La autenticacion se implementa con el binario del sistema `ldapsearch`.
+Funciones principales:
 
-Adicionalmente existe un administrador local de contingencia definido por
-configuracion.
+- preparar backup JSON de usuarios;
+- restaurar usuarios desde JSON;
+- sobrescribir usuarios existentes si se marca la opcion;
+- cambiar rol entre `Admin` y `Publicador`;
+- activar o desactivar acceso al sistema;
+- ver ultimo acceso.
 
-Archivo principal:
+Desactivar un usuario impide usar el sistema aunque sus credenciales LDAP sean
+validas.
 
-- [auth/ldap_auth.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/auth/ldap_auth.py)
+## 9. Portal de carga
 
-Capacidades:
+El portal de carga es usado por publicadores y tambien por admins cuando
+necesitan cargar archivos.
 
-- validacion de credenciales;
-- lectura de atributos de usuario;
-- resolucion de rol por grupos;
-- restriccion opcional por grupo requerido;
-- soporte para admin local.
+### Seleccion de proyecto y catalogo
 
-### 3.3 Capa de configuracion
+El usuario solo ve proyectos y catalogos permitidos.
 
-La configuracion se centraliza en variables de entorno cargadas por
-`python-dotenv`.
+El filtro se calcula con:
 
-Archivo principal:
+- rol interno;
+- usuario especifico;
+- estado activo del catalogo;
+- destino habilitado;
+- configuracion de permisos.
 
-- [config/settings.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/config/settings.py)
+La barra lateral muestra informacion del catalogo:
 
-La resolucion de proyectos y catalogos se realiza desde metadata persistida en
-SingleStore.
+- tabla fisica;
+- estrategia;
+- destino;
+- columnas esperadas.
 
-Archivo principal:
+### Paso 1: subir archivo
 
-- [config/catalogs.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/config/catalogs.py)
+El usuario puede cargar uno o varios archivos permitidos.
 
-Funciones relevantes:
+El sistema:
 
-- listar proyectos activos;
-- listar catalogos de un proyecto;
-- filtrar catalogos por permisos;
-- obtener configuracion individual de un catalogo.
+- detecta separador en CSV/TXT cuando aplica;
+- lee Excel cuando aplica;
+- muestra cantidad de filas, columnas y archivos;
+- presenta una previsualizacion;
+- permite ajustar lectura si las columnas no se ven correctamente.
 
-### 3.4 Capa de lectura de archivos
+La previsualizacion no carga datos a la base. Solo confirma que el archivo se
+lee de forma esperada.
 
-La lectura del archivo se realiza en memoria usando `pandas`.
+### Paso 2: validar
 
-Archivo principal:
+El usuario ejecuta la validacion antes de cargar.
 
-- [storage/file_handler.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/storage/file_handler.py)
+Validaciones principales:
 
-Formatos soportados:
+- archivo legible;
+- archivo no vacio;
+- columnas requeridas presentes;
+- columnas no esperadas detectadas;
+- tipos compatibles;
+- campos obligatorios no vacios;
+- reglas de calidad por columna.
 
-- `csv`
-- `txt`
-- `xlsx`
-- `xls`
+### Validacion con errores
 
-Capacidades:
+Si falla la validacion:
 
-- lectura de archivos binarios desde la UI;
-- deteccion de delimitador;
-- soporte para ajuste manual de codificacion;
-- lectura de hojas Excel;
-- devolucion de errores amigables de lectura;
-- estadisticas basicas del archivo para mostrar en la interfaz.
+- no se carga nada a la base;
+- se muestra un resumen de errores;
+- se lista fila, columna, valor encontrado, regla y detalle;
+- se permite descargar un reporte `.xlsx`;
+- el usuario debe corregir el archivo en origen y volver a intentarlo.
 
-### 3.5 Capa de validacion
+### Validacion exitosa
 
-La validacion no usa `pandera` actualmente. El sistema implementa un motor
-propio basado en definiciones JSON por catalogo.
+Si la validacion no encuentra errores:
 
-Archivo principal:
+- se muestran filas validadas;
+- se muestra conteo de errores en cero;
+- se habilita la confirmacion de carga;
+- el usuario puede volver al archivo si necesita revisar antes de confirmar.
 
-- [dg_validators/engine.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/dg_validators/engine.py)
+La validacion exitosa todavia no implica carga final; la carga ocurre al
+confirmar.
 
-El esquema esperado se almacena en `catalogos_config.schema_json` y se compone
-principalmente por una lista de columnas con:
+### Paso 3: resultado
 
-- nombre;
-- tipo;
-- nullable;
-- reglas.
+Cuando el usuario confirma:
 
-Tipos soportados:
+- se ejecuta la carga a destino;
+- se aplica la estrategia configurada;
+- se registra auditoria;
+- se guarda evidencia del archivo;
+- se muestra estado final.
 
-- `str`
-- `int`
-- `float`
-- `bool`
+Si la carga termina correctamente, la pantalla muestra:
 
-Reglas soportadas:
+- filas cargadas;
+- tabla destino;
+- estrategia;
+- estado;
+- operacion;
+- usuario;
+- archivo;
+- fecha;
+- ruta auditada.
 
-- `isin`
-- `gte`
-- `lte`
-- `min_length`
-- `str_length`
-- `regex`
+## 10. Estrategias de carga
 
-Validaciones estructurales:
+Las estrategias pueden variar por catalogo. Las comunes son:
 
-- columnas exactas esperadas;
-- columnas faltantes;
-- columnas adicionales;
-- archivo no vacio.
+| Estrategia | Descripcion |
+| --- | --- |
+| `append` | Inserta nuevas filas sin limpiar la tabla |
+| `overwrite` | Reemplaza el contenido destino antes de insertar |
+| `reproceso` | Aplica logica especial de reproceso si esta implementada |
 
-Validaciones por contenido:
+La estrategia debe resolverse en `services/db_writer.py` y no en la vista.
 
-- casteo seguro de tipos;
-- nulabilidad;
-- dominio;
-- limites minimos y maximos;
-- longitud de texto;
-- expresion regular.
+## 11. Destinos de datos
 
-Salida del motor:
+### SingleStore
 
-- `ValidationResult`
-- lista de `ValidationError`
-- conversion a `DataFrame` para mostrar errores en UI
+Es el destino principal.
 
-### 3.6 Capa de reporte de errores
+La conexion se configura con variables `SS_*`. Las operaciones administrativas
+pueden explorar bases, tablas y esquemas para registrar catalogos.
 
-Cuando la validacion falla, el sistema puede construir un archivo Excel con el
-detalle de errores encontrados.
+### Hive
 
-Archivo principal:
+Hive es opcional y esta controlado por:
 
-- [reports/report_builder.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/reports/report_builder.py)
-
-El reporte incluye:
-
-- hoja de resumen;
-- metadatos de la carga;
-- conteo por tipo de error;
-- hoja de detalle;
-- coloreado visual por categoria de problema.
-
-### 3.7 Capa de persistencia y carga
-
-La escritura a bases de datos esta encapsulada en servicios.
-
-Archivo principal:
-
-- [services/db_writer.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/services/db_writer.py)
-
-Destinos soportados:
-
-- `SingleStore`
-- `Hive`
-
-Estrategias soportadas:
-
-- `append`
-- `overwrite`
-- `reproceso`
-
-#### SingleStore
-
-La carga a `SingleStore` usa SQL parametrizado y operaciones por lotes.
-
-Comportamiento por estrategia:
-
-- `append`: insercion incremental;
-- `overwrite`: `TRUNCATE` seguido de `INSERT` dentro de bloque transaccional;
-- `reproceso`: borrado por fechas detectadas en el archivo e insercion posterior
-  dentro de bloque transaccional.
-
-#### Hive
-
-La carga a `Hive` usa `pyhive` y sentencias `INSERT`.
-
-Comportamiento por estrategia:
-
-- `append`: `INSERT INTO`;
-- `overwrite`: `INSERT OVERWRITE`;
-- `reproceso`: `INSERT OVERWRITE` por particion o por valor de fecha.
-
-Observacion importante:
-
-`Hive` no se maneja con la misma semantica transaccional que `SingleStore`.
-En el estado actual del proyecto, la consistencia en Hive depende del patron de
-insercion y del manejo de particiones, no de `BEGIN/COMMIT` como en
-SingleStore.
-
-### 3.8 Capa de auditoria
-
-La auditoria tiene dos dimensiones:
-
-- metadata de la operacion en `SingleStore`;
-- almacenamiento del archivo original comprimido en disco.
-
-La metadata se guarda en `log_auditoria`.
-
-La evidencia fisica se guarda como ZIP en la ruta de auditoria configurada.
-
-Capacidades:
-
-- generacion de `operation_id`;
-- almacenamiento del archivo original;
-- generacion de `audit_manifest.json`;
-- renombrado del ZIP segun estado final;
-- endurecimiento de permisos del archivo auditado;
-- consulta del historial de cargas.
-
-### 3.9 Capa administrativa
-
-La administracion funcional del sistema se implementa en:
-
-- [services/db_admin.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/services/db_admin.py)
-- [services/user_service.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/services/user_service.py)
-
-Capacidades administrativas:
-
-- descubrimiento de bases y tablas en SingleStore;
-- descubrimiento de bases y tablas en Hive;
-- construccion inicial de esquema JSON desde una tabla;
-- creacion de proyectos;
-- registro y edicion de catalogos;
-- activacion y desactivacion de catalogos;
-- gestion de permisos;
-- gestion de usuarios;
-- exportacion e importacion de backups funcionales de catalogos y usuarios.
-
-### 3.10 Notificaciones
-
-El sistema incluye un notificador por webhook HTTP.
-
-Archivo principal:
-
-- [services/notifier.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/services/notifier.py)
-
-Eventos soportados:
-
-- carga exitosa;
-- carga fallida.
-
-Las alertas pueden habilitarse o deshabilitarse por configuracion.
-
-## 4. Flujo tecnico de extremo a extremo
-
-### 4.1 Diagrama del flujo de carga
-
-```mermaid
-flowchart TD
-    I[Inicio de sesion]
-    L[Autenticacion LDAP<br/>o admin local]
-    P[Seleccion de proyecto<br/>y catalogo]
-    U[Subida de archivo]
-    R[Lectura en memoria<br/>pandas]
-    V[Previsualizacion]
-    Q[Validacion de estructura<br/>y reglas]
-    E{Validacion exitosa?}
-    X[Mostrar errores<br/>y generar reporte]
-    C[Confirmacion del usuario]
-    Z[Guardar evidencia auditada<br/>estado pendiente]
-    G[Escritura en destino<br/>SingleStore o Hive]
-    H{Carga exitosa?}
-    OK[Renombrar auditoria a exito<br/>registrar log<br/>notificar]
-    NO[Renombrar auditoria a fallo<br/>registrar log<br/>notificar]
-    F[Fin]
-
-    I --> L --> P --> U --> R --> V --> Q --> E
-    E -- No --> X --> F
-    E -- Si --> C --> Z --> G --> H
-    H -- Si --> OK --> F
-    H -- No --> NO --> F
+```env
+HIVE_ENABLED=true
 ```
 
-### 4.2 Secuencia resumida
+Cuando `HIVE_ENABLED=false`:
 
-```mermaid
-sequenceDiagram
-    participant User as Usuario
-    participant App as Streamlit App
-    participant LDAP as LDAP / AD
-    participant Meta as SingleStore Metadata
-    participant Dest as SingleStore / Hive
-    participant Audit as Audit Storage
+- no se muestran opciones Hive en administracion;
+- no se listan catalogos Hive;
+- no se permite cargar a Hive;
+- el healthcheck no exige Hive.
 
-    User->>App: Inicia sesion
-    App->>LDAP: Valida credenciales
-    LDAP-->>App: Usuario y rol
-    App->>Meta: Consulta/registro de usuario y catalogos
-    User->>App: Sube archivo
-    App->>App: Lee y valida en memoria
-    alt Validacion fallida
-        App-->>User: Muestra errores y reporte
-    else Validacion exitosa
-        User->>App: Confirma carga
-        App->>Audit: Guarda ZIP pendiente
-        App->>Dest: Ejecuta carga
-        App->>Meta: Registra auditoria
-        App-->>User: Muestra resultado
-    end
+Esto permite operar el sistema en ambientes donde Hive no esta disponible.
+
+## 12. Auditoria y almacenamiento
+
+Toda carga debe dejar evidencia.
+
+La auditoria tiene dos niveles:
+
+1. registro estructurado en metadata;
+2. archivo auditado en almacenamiento local o volumen.
+
+El almacenamiento auditado debe conservar el archivo original y datos de la
+operacion. La ruta se muestra en resultado final y queda disponible en el
+historial.
+
+Reglas tecnicas:
+
+- cada carga debe tener `operation_id`;
+- las cargas fallidas tambien deben registrarse cuando aplique;
+- una validacion fallida no debe insertar datos;
+- el archivo original no debe modificarse;
+- la evidencia no debe contener credenciales.
+
+## 13. Configuracion por entorno
+
+Los archivos `.env` controlan comportamiento del sistema.
+
+Variables importantes:
+
+| Variable | Descripcion |
+| --- | --- |
+| `APP_ENV` | Ambiente logico |
+| `SS_HOST` | Host SingleStore |
+| `SS_PORT` | Puerto SingleStore |
+| `SS_USER` | Usuario SingleStore |
+| `SS_PASSWORD` | Contrasena SingleStore |
+| `SS_DATABASE` | Base metadata o destino por defecto |
+| `HIVE_ENABLED` | Activa/oculta Hive |
+| `HIVE_HOST` | Host Hive |
+| `HIVE_PORT` | Puerto Hive |
+| `LDAP_SERVER` | Servidor LDAP/AD |
+| `LDAP_BASE_DN` | Base DN |
+| `LDAP_DOMAIN` | Dominio de bind |
+| `LDAP_BIND_TEMPLATE` | Plantilla de bind |
+| `LDAP_SEARCH_ATTRIBUTE` | Atributo de busqueda |
+| `LDAPSEARCH_BIN` | Binario ldapsearch |
+| `AUDIT_STORAGE_PATH` | Ruta de evidencia auditada |
+
+Buenas practicas:
+
+- no versionar credenciales reales;
+- mantener `.env.example` sin secretos;
+- usar `.env.local-sim-real` solo para pruebas locales;
+- documentar cambios de variables cuando cambie el codigo.
+
+## 14. Docker local
+
+El Dockerfile instala dependencias del sistema, incluyendo `ldap-utils`, porque
+la autenticacion depende de `ldapsearch`.
+
+Para levantar el ambiente local simulado con LDAP parecido al real:
+
+```bash
+docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real up -d --build
 ```
 
-El flujo tecnico principal es el siguiente:
+Para ver logs de la app:
 
-1. El usuario inicia sesion.
-2. El sistema autentica contra LDAP o admin local.
-3. Se recupera o registra el usuario en metadata.
-4. El usuario selecciona proyecto y catalogo.
-5. El sistema consulta metadata del catalogo y permisos.
-6. El usuario sube uno o varios archivos.
-7. El archivo se lee en memoria con `pandas`.
-8. Se detecta delimitador, hoja o codificacion si aplica.
-9. Se muestra una previsualizacion.
-10. Se ejecuta la validacion sobre el `DataFrame`.
-11. Si falla la validacion, no se escribe nada y se devuelve el detalle.
-12. Si la validacion es exitosa, el usuario confirma la carga.
-13. Se almacena primero la evidencia auditada en estado `pendiente`.
-14. Se ejecuta la estrategia de escritura en el destino configurado.
-15. Si la carga finaliza bien, la auditoria pasa a estado `exito`.
-16. Si la carga falla, la auditoria pasa a estado `fallo`.
-17. Se registra la operacion en `log_auditoria`.
-18. Opcionalmente se emite una notificacion webhook.
+```bash
+docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real logs -f app
+```
 
-## 5. Modelo de datos administrativo
+Para bajar el ambiente:
 
-La base administrativa esperada es `gatekeeper_meta`.
+```bash
+docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real down
+```
 
-Tablas principales:
+Usuarios de prueba del LDAP simulado:
 
-- `proyectos`
-- `catalogos_config`
-- `usuarios`
-- `permisos_catalogo`
-- `log_auditoria`
+| Usuario | Contrasena | Rol esperado |
+| --- | --- | --- |
+| `vcastro` | `demo123` | Publicador |
+| `admin` | `admin123` | Admin LDAP simulado, si se usa esa ruta |
 
-Definicion base:
+Tambien puede existir admin local segun configuracion del sistema.
 
-- [docker/init_db/01_init.sql](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/docker/init_db/01_init.sql)
+## 15. Healthcheck y observabilidad
 
-### 5.1 proyectos
+El healthcheck vive en:
 
-Agrupa catalogos por unidad logica.
+```text
+scripts/healthcheck.py
+```
 
-Campos principales:
+Debe validar:
 
-- `project_id`
-- `nombre`
-- `descripcion`
-- `activo`
+- que la aplicacion pueda responder;
+- que SingleStore este disponible;
+- que Hive se revise solo si `HIVE_ENABLED=true`;
+- que errores sean visibles en logs.
 
-### 5.2 catalogos_config
+Logs importantes:
 
-Tabla central de configuracion.
+- errores de autenticacion LDAP;
+- fallos de lectura de archivo;
+- errores de validacion;
+- fallos de escritura a destino;
+- errores de auditoria.
 
-Campos principales:
+No se deben imprimir contrasenas en logs.
 
-- `catalog_id`
-- `project_id`
-- `nombre`
-- `descripcion`
-- `base_datos`
-- `tabla_destino`
-- `destino`
-- `estrategia`
-- `schema_json`
-- `activo`
+## 16. Reglas de mantenimiento
 
-### 5.3 usuarios
+Antes de modificar una parte del sistema, revisar estas dependencias:
 
-Tabla interna de usuarios del portal.
+| Si cambias | Revisa tambien |
+| --- | --- |
+| Login | `auth/ldap_auth.py`, `views/login_view.py`, usuarios metadata |
+| Roles | permisos de catalogo, usuarios, historial |
+| Registro de catalogos | `db_admin`, schema JSON, filtros del publicador |
+| Validaciones | reporte de errores, UI de validacion, tests |
+| Carga destino | auditoria, historial, rollback o limpieza |
+| Hive | `HIVE_ENABLED`, admin, writer, healthcheck |
+| Docker | variables `.env`, Dockerfile, compose, healthcheck |
 
-Campos principales:
+## 17. Pruebas recomendadas
 
-- `username`
-- `nombre`
-- `email`
-- `rol`
-- `activo`
-- `ultimo_acceso`
+Pruebas minimas por cambio:
 
-### 5.4 permisos_catalogo
+1. Login correcto con usuario publicador.
+2. Login incorrecto.
+3. Admin puede entrar al panel.
+4. Publicador solo ve catalogos permitidos.
+5. Admin ve catalogos segun configuracion.
+6. Archivo correcto muestra previsualizacion.
+7. Archivo con columnas erroneas falla validacion.
+8. Reporte de errores se descarga.
+9. Validacion exitosa habilita confirmar carga.
+10. Carga exitosa registra auditoria.
+11. Historial de publicador muestra solo sus cargas.
+12. Historial de admin muestra todas.
+13. Con `HIVE_ENABLED=false`, Hive no aparece ni se usa.
 
-Restringe acceso a catalogos.
+Pruebas tecnicas utiles en Docker:
 
-Campos principales:
+```bash
+docker exec -it gatekeeper_app sh -c "env | grep LDAP"
+docker exec -it gatekeeper_app sh -c "ldapsearch -x -H ldap://ldap:389 -D 'uid=vcastro,ou=users,dc=austro,dc=grpfin' -w demo123 -b 'dc=austro,dc=grpfin' '(uid=vcastro)'"
+docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real logs -f app
+```
 
-- `catalog_id`
-- `tipo`
-- `valor`
+## 18. Puntos de extension
 
-### 5.5 log_auditoria
+El sistema puede crecer de forma ordenada en estos puntos:
 
-Registro de intentos de carga.
+- nuevos tipos de regla en `validators/`;
+- nuevos destinos en `services/db_writer.py`;
+- nuevos motores de exploracion en `services/db_admin.py`;
+- integracion con almacenamiento externo para auditoria;
+- permisos mas granulares por proyecto;
+- reportes historicos mas completos;
+- pruebas automatizadas de validacion y carga.
 
-Campos principales:
+Cada extension debe respetar tres reglas:
 
-- `id`
-- `operation_id`
-- `timestamp_carga`
-- `usuario_ad`
-- `project_id`
-- `id_catalogo`
-- `nombre_archivo_original`
-- `filas_procesadas`
-- `estrategia_usada`
-- `destino`
-- `estado_carga`
-- `errores_json`
-- `ruta_zip_auditoria`
-
-## 6. Gestion de roles
-
-El sistema maneja dos perfiles funcionales:
-
-- `Admin`
-- `Publicador`
-
-Resolucion del rol:
-
-- por grupo LDAP en autenticacion;
-- por admin local de contingencia;
-- por persistencia posterior en tabla `usuarios`.
-
-Comportamiento esperado:
-
-- `Admin` accede a vistas administrativas, usuarios y catalogos;
-- `Publicador` accede a carga e historial propio;
-- los permisos de catalogo limitan lo visible y operable.
-
-## 7. Estructura del proyecto
-
-Resumen de carpetas principales:
-
-- `assets/`: imagenes del portal y recursos visuales;
-- `auth/`: autenticacion;
-- `config/`: settings y proveedor de catalogos;
-- `dg_validators/`: motor de validacion;
-- `docker/`: despliegue y scripts auxiliares;
-- `reports/`: reportes de errores;
-- `scripts/`: healthchecks y utilitarios;
-- `services/`: reglas de integracion con BD, auditoria, usuarios y admin;
-- `storage/`: lectura de archivos;
-- `tests/`: pruebas automatizadas;
-- `utils/`: logging y mensajes de error;
-- `views/`: pantallas Streamlit.
-
-## 8. Configuracion operativa
-
-La aplicacion usa variables de entorno para:
-
-- app y logging;
-- SingleStore;
-- Hive;
-- LDAP;
-- admin local;
-- nombres de tablas metadata;
-- auditoria;
-- limites de carga;
-- alertas.
-
-Archivos de referencia:
-
-- [config/settings.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/config/settings.py)
-- [`.env.example`](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/.env.example)
-- [`deploy/.env.prod.example`](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/deploy/.env.prod.example)
-
-## 9. Despliegue
-
-El proyecto soporta despliegue con `Docker`.
-
-Archivos relevantes:
-
-- [docker/Dockerfile](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/docker/Dockerfile)
-- [docker/docker-compose.yml](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/docker/docker-compose.yml)
-- [docker/docker-compose.prueba.yml](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/docker/docker-compose.prueba.yml)
-- [docker/nginx.conf](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/docker/nginx.conf)
-- [scripts/healthcheck.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/scripts/healthcheck.py)
-
-### 9.1 Escenario productivo
-
-El compose productivo contempla:
-
-- contenedor `app`;
-- contenedor `nginx`;
-- conexiones hacia SingleStore, Hive y LDAP externos.
-
-### 9.2 Escenario local de prueba
-
-El compose de prueba contempla:
-
-- SingleStore simulado;
-- Hive simulado;
-- OpenLDAP;
-- phpLDAPadmin;
-- aplicacion;
-- Nginx.
-
-## 10. Healthchecks y observabilidad
-
-Healthchecks disponibles:
-
-- Streamlit: `/_stcore/health`
-- Nginx: `/healthz`
-
-El script de readiness valida:
-
-- variables minimas requeridas;
-- salud HTTP de Streamlit;
-- conectividad TCP a SingleStore;
-- conectividad TCP a LDAP;
-- conectividad TCP a Hive, si esta configurado.
-
-Archivo:
-
-- [scripts/healthcheck.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/scripts/healthcheck.py)
-
-## 11. Pruebas automatizadas
-
-El proyecto incluye pruebas sobre componentes clave.
-
-Archivos:
-
-- [tests/test_engine.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/tests/test_engine.py)
-- [tests/test_file_handler.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/tests/test_file_handler.py)
-- [tests/test_db_admin_filters.py](/d:/USERS/ue01006628/Documents/Data%20Gatekeeper/data_gatekeeper/tests/test_db_admin_filters.py)
-
-Cobertura funcional actual:
-
-- validacion de reglas principales;
-- lectura de archivos y fallback de delimitador/codificacion;
-- filtrado de bases visibles por patron.
-
-## 12. Limitaciones actuales
-
-Puntos importantes del estado actual del sistema:
-
-- no existe backend HTTP separado tipo `FastAPI`;
-- la validacion no usa `pandera`, sino un motor propio;
-- no hay reglas nativas de unicidad entre filas;
-- no hay validaciones cruzadas entre columnas;
-- no hay referencias contra tablas externas;
-- no existe descarga del archivo auditado desde la interfaz;
-- la inmutabilidad de auditoria depende tambien de la infraestructura;
-- el manejo de reproceso asume la presencia de una columna de fecha conocida.
-
-## 13. Riesgos y consideraciones tecnicas
-
-- el proyecto depende fuertemente de metadata correcta en `catalogos_config`;
-- una mala configuracion del `schema_json` puede bloquear o desviar cargas;
-- las estrategias `overwrite` y `reproceso` deben usarse con mucho cuidado;
-- el flujo de Hive puede variar segun capacidades reales del cluster;
-- el uso de Streamlit simplifica el desarrollo, pero no separa claramente UI y
-  API;
-- el archivo `.env` debe tratarse como sensible y no exponerse en repositorios
-  ni compartirse por canales inseguros.
-
-## 14. Posibles evoluciones
-
-Lineas naturales de mejora:
-
-- separar backend y frontend si se requiere API formal;
-- incorporar `pandera` o un motor de esquemas mas expresivo;
-- agregar validaciones cruzadas y unicidad;
-- versionar esquemas de catalogos;
-- ampliar observabilidad y metricas;
-- exponer descarga controlada de evidencias auditadas;
-- agregar mas pruebas sobre carga a destinos y permisos.
-
-## 15. Resumen tecnico
-
-Data Gatekeeper es una aplicacion de ingesta controlada con enfoque en calidad
-previa, trazabilidad y autonomia operativa.
-
-Su diseño actual combina:
-
-- UI y backend ligero en Streamlit;
-- autenticacion LDAP;
-- validacion en memoria con pandas;
-- metadata administrativa en SingleStore;
-- destinos de carga en SingleStore y Hive;
-- evidencia auditada del archivo original;
-- despliegue soportado con Docker y Nginx.
-
-La arquitectura es apropiada para un portal interno de negocio con reglas de
-validacion centralizadas y necesidades fuertes de control de carga.
+1. validar antes de cargar;
+2. registrar auditoria;
+3. no mostrar opciones que el entorno tenga deshabilitadas.
+
+## 19. Resumen para desarrolladores
+
+Data Gatekeeper es un portal Streamlit con logica backend modular. El usuario
+entra por LDAP, selecciona un catalogo permitido, sube un archivo, valida contra
+la configuracion almacenada en metadata y solo entonces carga a destino.
+
+La parte critica del sistema esta en estos contratos:
+
+- autenticacion por `ldapsearch`;
+- permisos por rol/usuario;
+- `schema_json` de catalogos;
+- validacion previa obligatoria;
+- `HIVE_ENABLED` para ocultar o bloquear Hive;
+- auditoria obligatoria de cada carga.
+
+Si esos contratos se mantienen, el sistema puede evolucionar sin perder control
+sobre seguridad, calidad de datos y trazabilidad.

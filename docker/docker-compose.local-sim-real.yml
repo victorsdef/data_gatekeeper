@@ -1,31 +1,22 @@
 # ------------------------------------------------------------------
-# Data Gatekeeper — Docker Compose PRUEBA LOCAL
+# Data Gatekeeper — Docker Compose LOCAL SIMULANDO AD REAL
 # ------------------------------------------------------------------
-# Simula localmente la infraestructura real del banco:
+# Uso pensado para tu maquina local:
 #
-#   Servicio real          Simulado por
-#   ─────────────────────────────────────────────────────────
-#   SingleStore  10.16.190.51:3306    →  contenedor singlestore
-#   Hive         10.16.190.21:10000   →  contenedor hive
-#   LDAP / AD    austro.grpfin:389    →  contenedor ldap
-#   Nginx        (instalado en srv)   →  contenedor nginx :80
+# - SingleStore: contenedor local
+# - Hive: contenedor local
+# - LDAP: OpenLDAP local con estructura parecida al AD real
+# - Nginx: contenedor local
 #
 # Uso:
-#   docker compose -f docker/docker-compose.prueba.yml up -d --build
-#   docker compose -f docker/docker-compose.prueba.yml logs -f app
-#   docker compose -f docker/docker-compose.prueba.yml down
-#
-# Primera vez (inicializar la BD):
-#   docker exec -i gatekeeper_singlestore singlestore \
-#     -uroot -pgatekeeper123 < docker/init_db/00_create_db.sql
-#   docker exec -i gatekeeper_singlestore singlestore \
-#     -uroot -pgatekeeper123 gatekeeper_meta < docker/init_db/01_init.sql
+#   docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real up -d --build
+#   docker compose -f docker/docker-compose.local-sim-real.yml logs -f app
+#   docker compose -f docker/docker-compose.local-sim-real.yml down
 # ------------------------------------------------------------------
 
 version: "3.9"
 
 services:
-
   singlestore:
     image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
     container_name: gatekeeper_singlestore
@@ -72,27 +63,28 @@ services:
 
   ldap:
     image: osixia/openldap:1.5.0
-    container_name: gatekeeper_ldap
+    container_name: gatekeeper_ldap_realish
     environment:
-      LDAP_ORGANISATION: "Banco del Austro"
-      LDAP_DOMAIN: baustro.fin.ec
+      LDAP_ORGANISATION: "Austro"
+      LDAP_DOMAIN: austro.grpfin
       LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD}"
       LDAP_REMOVE_CONFIG_AFTER_SETUP: "false"
     volumes:
-      - ldap_data:/var/lib/ldap
-      - ldap_config:/etc/ldap/slapd.d
-      - ./ldap:/container/service/slapd/assets/config/bootstrap/ldif/custom
+      - ldap_realish_data:/var/lib/ldap
+      - ldap_realish_config:/etc/ldap/slapd.d
+      - ./ldap-realish:/container/service/slapd/assets/config/bootstrap/ldif/custom
     ports:
       - "389:389"
     networks:
       gatekeeper_net:
         aliases:
           - austro.grpfin
+          - ldap
     restart: unless-stopped
 
   ldap-admin:
     image: osixia/phpldapadmin:0.9.0
-    container_name: gatekeeper_ldap_admin
+    container_name: gatekeeper_ldap_admin_realish
     environment:
       PHPLDAPADMIN_LDAP_HOSTS: ldap
       PHPLDAPADMIN_HTTPS: "false"
@@ -110,12 +102,12 @@ services:
       dockerfile: docker/Dockerfile
     container_name: gatekeeper_app
     env_file:
-      - .env
+      - .env.local-sim-real
     environment:
       SS_HOST: singlestore
+      SS_DIRECT_HOST: singlestore
       HIVE_HOST: hive
-      LDAP_SERVER: ldap://ldap
-      LDAP_AUTH_METHOD: SIMPLE
+      LDAP_SERVER: ldap://ldap:389
     expose:
       - "8501"
     volumes:
@@ -160,8 +152,8 @@ services:
 volumes:
   singlestore_data:
   hive_warehouse:
-  ldap_data:
-  ldap_config:
+  ldap_realish_data:
+  ldap_realish_config:
 
 networks:
   gatekeeper_net:

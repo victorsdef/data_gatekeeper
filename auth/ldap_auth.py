@@ -23,6 +23,9 @@ SYSTEM_ADMIN_PASSWORD = _setting("SYSTEM_ADMIN_PASSWORD")
 LDAP_REQUIRED_GROUP = _setting("LDAP_REQUIRED_GROUP", "")
 LDAP_SEARCH_ATTRIBUTE = _setting("LDAP_SEARCH_ATTRIBUTE", "sAMAccountName")
 LDAPSEARCH_BIN = _setting("LDAPSEARCH_BIN", "ldapsearch")
+LDAP_BIND_TEMPLATE = _setting("LDAP_BIND_TEMPLATE", "{username}@{domain}")
+LDAP_SEARCH_BIND_DN = _setting("LDAP_SEARCH_BIND_DN", "")
+LDAP_SEARCH_BIND_PASSWORD = _setting("LDAP_SEARCH_BIND_PASSWORD", "")
 logger = get_logger(__name__)
 
 
@@ -67,31 +70,14 @@ def _ldapsearch_authenticate(username: str, password: str) -> Optional[Dict[str,
         return None
 
     bind_user = _ldap_bind_user(username)
-    command = [
-        shutil.which(LDAPSEARCH_BIN) or LDAPSEARCH_BIN,
-        "-x",
-        "-LLL",
-        "-H",
-        server_uri,
-        "-D",
-        bind_user,
-        "-w",
-        password,
-        "-b",
-        LDAP_BASE_DN,
-        f"({LDAP_SEARCH_ATTRIBUTE}={username})",
-        "cn",
-        "mail",
-        "memberOf",
-    ]
+    command = _build_ldapsearch_command(
+        bind_dn=bind_user,
+        bind_password=password,
+        search_filter=f"({LDAP_SEARCH_ATTRIBUTE}={username})",
+    )
 
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = _run_command(command)
     except FileNotFoundError:
         logger.exception("No se encontro el binario ldapsearch para autenticacion.")
         return None
@@ -99,7 +85,27 @@ def _ldapsearch_authenticate(username: str, password: str) -> Optional[Dict[str,
         logger.exception("Fallo inesperado ejecutando ldapsearch para usuario '%s'.", username)
         return None
 
-    if result.returncode != 0:
+    if result.returncode == 0:
+        attributes = _parse_ldapsearch_output(result.stdout)
+    elif _should_retry_with_search_bind(result):
+        search_bind_dn = str(LDAP_SEARCH_BIND_DN or "").strip()
+        search_bind_password = str(LDAP_SEARCH_BIND_PASSWORD or "").strip()
+        retry = _build_ldapsearch_command(
+            bind_dn=search_bind_dn,
+            bind_password=search_bind_password,
+            search_filter=f"({LDAP_SEARCH_ATTRIBUTE}={username})",
+        )
+        result = _run_command(retry)
+        if result.returncode != 0:
+            logger.warning(
+                "ldapsearch fallback fallo para usuario=%s codigo=%s stderr=%s",
+                username.lower(),
+                result.returncode,
+                (result.stderr or "").strip(),
+            )
+            return None
+        attributes = _parse_ldapsearch_output(result.stdout)
+    else:
         logger.warning(
             "ldapsearch fallo para usuario=%s codigo=%s stderr=%s",
             username.lower(),
@@ -108,7 +114,6 @@ def _ldapsearch_authenticate(username: str, password: str) -> Optional[Dict[str,
         )
         return None
 
-    attributes = _parse_ldapsearch_output(result.stdout)
     if not attributes:
         logger.warning(
             "ldapsearch autentico pero no devolvio atributos para usuario '%s'.",
@@ -146,10 +151,16 @@ def _ldap_server_uri() -> str:
 
 
 def _ldap_bind_user(username: str) -> str:
-    domain = str(LDAP_DOMAIN or "").strip()
-    if not domain or "@" in username or "\\" in username:
+    if "@" in username or "\\" in username:
         return username
-    return f"{username}@{domain}"
+    template = str(LDAP_BIND_TEMPLATE or "").strip()
+    if not template:
+        template = "{username}@{domain}"
+    return template.format(
+        username=username,
+        domain=str(LDAP_DOMAIN or "").strip(),
+        base_dn=str(LDAP_BASE_DN or "").strip(),
+    )
 
 
 def _default_email(username: str) -> str:
@@ -193,3 +204,41 @@ def _parse_ldapsearch_output(output: str) -> Dict[str, list]:
 def _first_attr(attributes: Dict[str, list], name: str) -> str:
     values = attributes.get(name, [])
     return str(values[0]).strip() if values else ""
+
+
+def _build_ldapsearch_command(bind_dn: str, bind_password: str, search_filter: str) -> list:
+    return [
+        shutil.which(LDAPSEARCH_BIN) or LDAPSEARCH_BIN,
+        "-x",
+        "-LLL",
+        "-H",
+        _ldap_server_uri(),
+        "-D",
+        bind_dn,
+        "-w",
+        bind_password,
+        "-b",
+        str(LDAP_BASE_DN or "").strip(),
+        search_filter,
+        "cn",
+        "mail",
+        "memberOf",
+    ]
+
+
+def _run_command(command: list):
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _should_retry_with_search_bind(result) -> bool:
+    search_bind_dn = str(LDAP_SEARCH_BIND_DN or "").strip()
+    search_bind_password = str(LDAP_SEARCH_BIND_PASSWORD or "").strip()
+    if not search_bind_dn or not search_bind_password:
+        return False
+    stderr = (result.stderr or "").lower()
+    return result.returncode == 32 or "no such object" in stderr

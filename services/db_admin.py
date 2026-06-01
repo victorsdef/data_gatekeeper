@@ -23,6 +23,7 @@ SS_DATABASE = _setting("SS_DATABASE")
 HIVE_HOST = _setting("HIVE_HOST")
 HIVE_PORT = int(_setting("HIVE_PORT", 10000))
 HIVE_USER = _setting("HIVE_USER", "hive")
+HIVE_ENABLED = str(_setting("HIVE_ENABLED", "true")).lower() == "true"
 DB_NAME_FILTERS = _setting("DB_NAME_FILTERS", "")
 
 TBL_PROYECTOS = _setting("TBL_PROYECTOS", "proyectos")
@@ -165,7 +166,10 @@ def get_active_catalogs() -> List[Dict]:
                 ORDER BY proyecto, c.nombre
             """)
             cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+            if not HIVE_ENABLED:
+                rows = [r for r in rows if str(r.get("destino", "")).lower() != "hive"]
+            return rows
 
 
 def get_catalog_schema(catalog_id: str) -> Dict:
@@ -492,6 +496,8 @@ _HIVE_SYSTEM_DBS = {"information_schema", "sys", "default"}
 
 
 def _connect_hive():
+    if not HIVE_ENABLED:
+        raise ValueError("Hive está deshabilitado en la configuración.")
     try:
         from pyhive import hive as pyhive_conn
     except ImportError:

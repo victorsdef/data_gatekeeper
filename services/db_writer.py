@@ -37,6 +37,7 @@ SS_USER = _setting("SS_USER")
 SS_PASSWORD = _setting("SS_PASSWORD")
 SS_DATABASE = _setting("SS_DATABASE")
 TBL_LOG_AUDITORIA = _setting("TBL_LOG_AUDITORIA", "log_auditoria")
+HIVE_ENABLED = str(_setting("HIVE_ENABLED", "true")).lower() == "true"
 
 _BATCH_SIZE = 500
 logger = get_logger(__name__)
@@ -109,6 +110,8 @@ def execute_load(
         if destino == "singlestore":
             _write_singlestore(df, base_datos, tabla, estrategia)
         elif destino == "hive":
+            if not HIVE_ENABLED:
+                raise ValueError("Hive está deshabilitado en la configuración.")
             _write_hive(df, base_datos, tabla, estrategia)
         else:
             raise ValueError(f"Destino desconocido: '{destino}'")

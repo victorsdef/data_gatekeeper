@@ -18,6 +18,7 @@ from typing import Dict, List, Set
 import pandas as pd
 import streamlit as st
 
+from config import settings
 from services.db_admin import (
     get_all_databases, get_tables_from_db, get_mapped_tables,
     describe_table, build_schema_json,
@@ -38,7 +39,8 @@ from services.user_service import (
 
 _TIPOS       = ["str", "int", "float", "bool"]
 _ESTRATEGIAS = ["overwrite", "append", "reproceso"]
-_DESTINOS    = ["singlestore", "hive"]
+HIVE_ENABLED = bool(getattr(settings, "HIVE_ENABLED", True))
+_DESTINOS    = ["singlestore"] + (["hive"] if HIVE_ENABLED else [])
 _ROLES       = ["Publicador", "Admin"]
 _REGLA_TIPOS = ["isin", "gte", "lte", "min_length", "str_length", "regex"]
 _REGLAS_POR_TIPO = {
@@ -549,9 +551,10 @@ def _tab_registro() -> None:
         return
 
     # ── Selector de fuente ────────────────────────────────────────────
+    fuentes = ["SingleStore"] + (["Hive"] if HIVE_ENABLED else [])
     fuente = st.radio(
         "Fuente de datos",
-        ["SingleStore", "Hive"],
+        fuentes,
         horizontal=True,
         key="adm_fuente",
         label_visibility="collapsed",
@@ -601,7 +604,8 @@ def _tab_registro() -> None:
 
         if st.button("↺ Refrescar tablas", key="adm_refresh_tables", use_container_width=True):
             get_tables_from_db.clear()
-            get_hive_tables.clear()
+            if HIVE_ENABLED:
+                get_hive_tables.clear()
             st.rerun()
 
         ph_tables = st.empty()
@@ -1071,7 +1075,7 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
     with c1:
         bk_est  = st.selectbox("Estrategia", _ESTRATEGIAS, key="adm_bk_est")
     with c2:
-        _dest_default = 1 if st.session_state.get("adm_step2_fuente") == "Hive" else 0
+        _dest_default = 1 if HIVE_ENABLED and st.session_state.get("adm_step2_fuente") == "Hive" else 0
         bk_dest = st.selectbox("Destino", _DESTINOS, index=_dest_default, key="adm_bk_dest")
 
     _render_permisos_selector("bk")
@@ -1585,7 +1589,7 @@ def _render_registro_form(
         with c1:
             estrategia = st.selectbox("Estrategia", _ESTRATEGIAS, key=f"{key_prefix}_est")
         with c2:
-            _dest_idx = 1 if st.session_state.get("adm_step2_fuente") == "Hive" else 0
+            _dest_idx = 1 if HIVE_ENABLED and st.session_state.get("adm_step2_fuente") == "Hive" else 0
             destino = st.selectbox("Destino", _DESTINOS, index=_dest_idx, key=f"{key_prefix}_dest")
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         _render_permisos_selector(key_prefix)
