@@ -2,870 +2,955 @@
 
 ## Manual tecnico del sistema
 
-Este documento describe la arquitectura tecnica de Data Gatekeeper para
-desarrolladores y responsables de soporte. Explica como esta organizado el
-codigo, como fluye una carga de catalogo, que contratos internos usa la
-aplicacion y que configuracion debe revisarse antes de desplegar o modificar
-el sistema.
+Este documento describe como esta construido Data Gatekeeper, como se configura,
+como fluye una carga de catalogo y que debe revisar un desarrollador, soporte o
+infraestructura para mantener el sistema.
 
-El objetivo no es repetir el README funcional, sino dejar claro como mantener
-el sistema sin romper autenticacion, permisos, validaciones, auditoria o carga
-a destino.
+El README principal esta orientado a usuarios funcionales. Este archivo esta
+orientado a personas que necesitan entender, operar, desplegar o modificar la
+aplicacion.
 
-## 1. Alcance tecnico
+## 1. Objetivo tecnico
 
-Data Gatekeeper es una aplicacion interna para cargar catalogos manuales de
-forma controlada.
+Data Gatekeeper es una aplicacion web interna para cargar catalogos manuales de
+forma controlada. El sistema lee archivos, valida estructura y reglas de calidad
+en memoria, y solo despues de una validacion exitosa escribe los datos en el
+destino configurado.
 
-Desde el punto de vista tecnico, el sistema hace cuatro cosas principales:
+El sistema busca cubrir estos puntos:
 
-1. autentica al usuario contra LDAP/Active Directory usando `ldapsearch`;
-2. resuelve su rol interno y los catalogos a los que tiene acceso;
-3. lee, previsualiza y valida archivos CSV, TXT o Excel contra una
-   configuracion de catalogo;
-4. carga datos validos a SingleStore o Hive y registra evidencia de auditoria.
+- centralizar cargas manuales de catalogos;
+- evitar cargas directas sin validacion;
+- validar columnas, tipos, nulabilidad y reglas de negocio;
+- controlar permisos por usuario o rol;
+- registrar auditoria de cargas exitosas y fallidas;
+- conservar evidencia del archivo original cargado;
+- permitir administracion funcional de catalogos desde el portal.
 
-La aplicacion esta construida en Python con Streamlit. La UI y la logica de
-orquestacion corren en el mismo proceso de aplicacion; las operaciones de base
-de datos, validacion, auditoria y autenticacion estan separadas en modulos.
+## 2. Arquitectura general
 
-## 2. Vista tecnica rapida
+La aplicacion usa una arquitectura Python/Streamlit. La interfaz y la
+orquestacion corren en el mismo proceso, mientras que la logica de autenticacion,
+validacion, lectura de archivos, administracion, carga y auditoria esta separada
+en modulos.
 
-| Area | Implementacion |
-| --- | --- |
-| UI principal | Streamlit |
-| Entrada de aplicacion | `app.py` |
-| Autenticacion | `auth/ldap_auth.py` mediante binario `ldapsearch` |
-| Sesion | `st.session_state` |
-| Metadata | SingleStore, base `gatekeeper_meta` |
-| Carga destino | SingleStore y, opcionalmente, Hive |
-| Flag Hive | `HIVE_ENABLED` |
-| Validacion | `validators/` |
-| Persistencia destino | `services/db_writer.py` |
-| Administracion | `views/admin_catalogs_view.py` y `services/db_admin.py` |
-| Historial | `views/history_view.py` y `services/audit_service.py` |
-| Evidencia auditada | `audit_storage/` |
-| Docker | `docker/Dockerfile` y compose en `docker/` |
+```mermaid
+flowchart LR
+    U[Usuario] --> N[Navegador]
+    N --> S[Streamlit App]
+    S --> A[LDAP / Active Directory]
+    S --> M[SingleStore Metadata]
+    S --> D[SingleStore o Hive]
+    S --> F[Audit Storage]
+    S --> W[Webhook opcional]
+```
 
-## 3. Mapa de ejecucion
+Componentes principales:
 
-El flujo general de la aplicacion es este:
+- `Streamlit`: interfaz web y flujo de sesion.
+- `LDAP / Active Directory`: autenticacion de usuarios.
+- `pandas`: lectura y manejo de archivos en memoria.
+- `dg_validators`: motor de validacion.
+- `SingleStore`: metadata, auditoria y destino de datos.
+- `Hive`: destino opcional de datos.
+- `Audit Storage`: almacenamiento ZIP del archivo original.
+- `Docker / Nginx`: despliegue y proxy inverso.
 
-1. `app.py` carga variables de entorno, configura Streamlit e inicializa estado
-   de sesion.
-2. Si no existe usuario autenticado en sesion, se muestra `views/login_view.py`.
+## 3. Estructura del proyecto
+
+```text
+data_gatekeeper/
+  app.py
+  auth/
+  config/
+  dg_validators/
+  storage/
+  reports/
+  services/
+  views/
+  utils/
+  scripts/
+  docker/
+  deploy/
+  docs/
+  tests/
+  assets/
+```
+
+Responsabilidad por carpeta:
+
+- `app.py`: punto de entrada Streamlit.
+- `auth/`: autenticacion LDAP/AD.
+- `config/`: settings y lectura de catalogos desde metadata.
+- `dg_validators/`: motor de validacion de DataFrames.
+- `storage/`: lectura de CSV, TXT y Excel.
+- `reports/`: generacion del reporte Excel de errores.
+- `services/`: integracion con bases, auditoria, usuarios y notificaciones.
+- `views/`: pantallas Streamlit.
+- `utils/`: logging y mensajes seguros para usuario.
+- `scripts/`: healthchecks y utilitarios operativos.
+- `docker/`: Dockerfile, compose, Nginx e inicializacion de base.
+- `deploy/`: ejemplo de variables para produccion.
+- `docs/`: documentacion.
+- `tests/`: pruebas automatizadas.
+- `assets/`: imagenes usadas por README y UI.
+
+## 4. Flujo de ejecucion
+
+```mermaid
+sequenceDiagram
+    participant User as Usuario
+    participant App as Streamlit
+    participant LDAP as LDAP/AD
+    participant Meta as SingleStore Metadata
+    participant Val as Motor Validacion
+    participant Dest as SingleStore/Hive
+    participant Audit as Audit Storage
+
+    User->>App: Ingresa credenciales
+    App->>LDAP: Autentica usuario
+    LDAP-->>App: Atributos y grupos
+    App->>Meta: Registra/actualiza usuario
+    App->>Meta: Consulta proyectos/catalogos permitidos
+    User->>App: Sube archivo
+    App->>App: Lee archivo con pandas
+    App->>Val: Valida contra schema_json
+    alt Validacion fallida
+        App-->>User: Muestra errores y reporte
+    else Validacion exitosa
+        User->>App: Confirma carga
+        App->>Audit: Guarda ZIP pendiente
+        App->>Dest: Ejecuta estrategia de carga
+        App->>Meta: Registra log_auditoria
+        App-->>User: Muestra resultado
+    end
+```
+
+Pasos principales:
+
+1. `app.py` inicializa logging, pagina y estado de sesion.
+2. Si el usuario no esta autenticado, se muestra `views/login_view.py`.
 3. El login llama a `auth/ldap_auth.py`.
-4. Si la autenticacion es correcta, se registra o actualiza el usuario interno
-   en metadata.
-5. Segun rol, el usuario entra al portal de carga o al panel de administracion.
-6. El portal carga catalogos activos desde metadata y los filtra por permisos.
-7. El usuario sube archivos, el sistema los lee y muestra previsualizacion.
-8. El validador compara columnas, tipos, nulabilidad y reglas de calidad.
-9. Si hay errores, se bloquea la carga y se permite descargar reporte.
-10. Si todo esta correcto, `services/db_writer.py` carga a destino.
-11. `services/audit_service.py` registra resultado, usuario, archivo,
-    operacion y ruta auditada.
+4. El usuario se registra o actualiza en `usuarios`.
+5. Se cargan proyectos y catalogos activos desde `catalogos_config`.
+6. La UI filtra catalogos por permisos.
+7. El usuario sube archivo y `storage/file_handler.py` lo lee.
+8. `dg_validators/engine.py` valida estructura y contenido.
+9. Si falla, se muestra detalle y se puede descargar reporte.
+10. Si pasa, `services/db_writer.py` ejecuta carga y auditoria.
+11. El historial se consulta desde `log_auditoria`.
 
-## 4. Componentes principales
+## 5. Entrada de aplicacion
 
-### `app.py`
+Archivo principal:
 
-Es el punto de entrada. Sus responsabilidades son:
+- `app.py`
 
-- cargar configuracion general;
+Responsabilidades:
+
+- configurar Streamlit;
 - inicializar `st.session_state`;
-- decidir si mostrar login, portal, administracion o historial;
-- aplicar estilos globales;
-- mantener una navegacion simple entre vistas.
-
-Este archivo no deberia contener reglas de negocio pesadas. Si una validacion,
-consulta o carga crece, debe vivir en `validators/`, `services/` o `config/`.
-
-### `views/login_view.py`
-
-Renderiza el formulario de login.
-
-Responsabilidades:
-
-- pedir usuario y contrasena;
-- llamar al servicio de autenticacion;
-- guardar datos de sesion si el login es valido;
-- mostrar error generico si falla.
-
-No debe conocer detalles del comando `ldapsearch`; eso pertenece a
-`auth/ldap_auth.py`.
-
-### `auth/ldap_auth.py`
-
-Modulo de autenticacion. Actualmente no usa `ldap3`.
-
-La autenticacion soportada ejecuta el binario del sistema `ldapsearch` mediante
-`subprocess`. Esto permite trabajar tanto con Active Directory real como con un
-LDAP simulado en Docker, siempre que el contenedor o servidor tenga disponible
-el binario.
-
-Responsabilidades:
-
-- construir el comando `ldapsearch`;
-- hacer bind con el usuario;
-- buscar atributos del usuario autenticado;
-- detectar credenciales invalidas;
-- resolver datos basicos como nombre, correo y grupos;
-- aplicar fallback de admin local si esta configurado.
-
-### `views/main_view.py`
-
-Vista principal del publicador y tambien punto de carga para admins.
-
-Responsabilidades:
-
-- mostrar proyectos y catalogos permitidos;
-- mostrar informacion del catalogo seleccionado;
-- recibir archivos;
-- leer y previsualizar datos;
-- ejecutar validacion;
-- confirmar carga si la validacion fue exitosa;
-- mostrar resultado final y resumen de auditoria.
-
-### `views/admin_catalogs_view.py`
-
-Panel tecnico-funcional del administrador.
-
-Responsabilidades:
-
-- explorar bases y tablas disponibles;
-- registrar catalogos desde SingleStore o Hive;
-- definir nombre legible, proyecto, estrategia y destino;
-- configurar columnas, tipos, nulabilidad y reglas;
-- administrar catalogos activos;
-- editar configuracion existente;
-- editar permisos por rol o usuario;
-- respaldar/restaurar configuraciones JSON;
-- administrar usuarios internos.
-
-Cuando `HIVE_ENABLED=false`, las opciones de Hive no deben mostrarse ni quedar
-disponibles para registro o carga.
-
-### `views/history_view.py`
-
-Vista de auditoria de cargas.
-
-Responsabilidades:
-
-- mostrar filtros por fecha y estado;
-- mostrar totales, exitos, fallos y filas procesadas;
-- mostrar tendencias;
-- listar cargas en tabla;
-- exportar historial a CSV.
-
-Regla importante:
-
-- un publicador solo ve sus propias cargas;
-- un admin ve cargas de todos los usuarios.
-
-### `config/settings.py`
-
-Centraliza variables de entorno.
-
-Las variables de entorno deben leerse aqui o mediante funciones de este modulo,
-para evitar que la configuracion quede repartida por todo el codigo.
-
-### `config/catalogs.py`
-
-Normaliza y filtra catalogos disponibles.
-
-Responsabilidades:
-
-- leer catalogos activos desde metadata;
-- aplicar filtros de permisos;
-- ocultar catalogos Hive cuando `HIVE_ENABLED=false`;
-- entregar estructuras estables para las vistas.
-
-### `services/db_admin.py`
-
-Servicio de administracion de metadata y exploracion de bases.
-
-Responsabilidades:
-
-- listar bases y tablas disponibles;
-- leer esquemas;
-- registrar catalogos;
-- actualizar catalogos;
-- activar o desactivar catalogos;
-- guardar permisos;
-- exportar/importar configuraciones.
-
-### `services/db_writer.py`
-
-Servicio que escribe datos validados al destino.
-
-Responsabilidades:
-
-- recibir un `DataFrame` ya validado;
-- aplicar estrategia de carga;
-- escribir a SingleStore o Hive;
-- devolver resultado de carga;
-- bloquear Hive si `HIVE_ENABLED=false`.
-
-La validacion debe ocurrir antes de llamar a este servicio.
-
-### `validators/`
-
-Contiene la logica de calidad de datos.
-
-Responsabilidades:
-
-- revisar columnas requeridas;
-- detectar columnas no esperadas;
-- validar tipos;
-- validar nulabilidad;
-- aplicar reglas por columna;
-- producir errores descargables.
-
-El validador no debe escribir en base de datos.
-
-### `services/audit_service.py`
-
-Registra trazabilidad.
-
-Responsabilidades:
-
-- crear identificador de operacion;
-- guardar resultado en metadata;
-- registrar usuario, archivo, catalogo, estado y filas;
-- guardar evidencia en almacenamiento auditado;
-- alimentar el historial.
-
-## 5. Contratos internos
-
-### Catalogo activo
-
-Las vistas trabajan con una estructura de catalogo que debe contener, como
-minimo:
-
-| Campo | Uso |
-| --- | --- |
-| `catalog_id` | Identificador interno del catalogo |
-| `project_id` | Agrupador tecnico del proyecto |
-| `project_name` | Nombre visible del proyecto |
-| `display_name` | Nombre visible del catalogo |
-| `database_name` | Base origen o destino |
-| `table_name` | Tabla fisica |
-| `destination` | `singlestore` o `hive` |
-| `load_strategy` | Estrategia de carga |
-| `schema_json` | Definicion de columnas y reglas |
-| `allowed_roles` | Roles permitidos |
-| `allowed_users` | Usuarios especificos permitidos |
-| `is_active` | Estado de publicacion |
-
-Si `allowed_users` esta vacio, el permiso aplica segun roles. Si roles y
-usuarios estan vacios, el catalogo queda accesible para publicadores segun la
-regla de negocio definida en administracion.
-
-### Esquema de columnas
-
-Cada columna configurada debe representar:
-
-| Campo | Descripcion |
-| --- | --- |
-| `name` | Nombre esperado en el archivo |
-| `type` | Tipo logico: `str`, `int`, `float`, `date`, etc. |
-| `nullable` | Si permite valores vacios |
-| `rules` | Lista de reglas de calidad |
-
-Las reglas dependen del tipo. Ejemplos:
-
-- minimo o maximo para numeros;
-- dominio de valores permitidos para texto;
-- longitud minima o maxima;
-- formato esperado;
-- obligatoriedad.
-
-### Resultado de validacion
-
-El proceso de validacion debe devolver informacion suficiente para decidir si
-se puede cargar:
-
-| Dato | Uso |
-| --- | --- |
-| `success` | Indica si no hay errores |
-| `errors` | Lista tabular de errores |
-| `rows_validated` | Filas revisadas |
-| `columns_validated` | Columnas revisadas |
-| `error_report` | Archivo descargable si hay errores |
-
-Si existen errores, no se debe llamar a `db_writer`.
-
-### Sesion Streamlit
-
-Las claves de sesion mas sensibles son las relacionadas con:
-
-- usuario autenticado;
-- rol actual;
-- catalogo seleccionado;
-- archivo cargado;
-- datos previsualizados;
-- resultado de validacion;
-- paso actual del flujo.
-
-Cuando se cambia de catalogo o se inicia nueva carga, se debe limpiar el estado
-asociado al archivo anterior para evitar que una validacion vieja se use en un
-catalogo distinto.
+- configurar logging;
+- decidir vista actual;
+- enrutar a login, portal principal, administracion o historial.
+
+Estado de sesion relevante:
+
+- `authenticated`
+- `user_info`
+- `current_view`
+- `selected_project_id`
+- `selected_catalog`
+- `uploaded_df`
+- `validation_result`
+- `current_step`
+- `carga_ejecutada`
 
 ## 6. Autenticacion LDAP/AD
 
-El sistema usa `ldapsearch` nativo del sistema operativo o del contenedor.
+Archivo principal:
 
-No se debe agregar nuevamente `ldap3` salvo que se decida cambiar formalmente
-la estrategia de autenticacion.
+- `auth/ldap_auth.py`
 
-### Comando base
+El sistema soporta dos formas de prueba/autenticacion:
 
-La forma general del comando es:
+- `LDAPSEARCH`
+- `LDAP3_SIMPLE`
 
-```bash
-ldapsearch -x \
-  -H ldap://servidor:389 \
-  -D "<bind_del_usuario>" \
-  -w "<password>" \
-  -b "<base_dn>" \
-  "(<atributo>=<usuario>)"
-```
-
-Para Active Directory real, el bind normalmente usa:
-
-```text
-usuario@dominio
-```
-
-Para el LDAP simulado en Docker, el bind usa un DN completo:
-
-```text
-uid=usuario,ou=users,dc=austro,dc=grpfin
-```
-
-### Variables LDAP principales
-
-| Variable | Uso |
-| --- | --- |
-| `LDAP_SERVER` | URL del servidor, por ejemplo `ldap://austro.grpfin:389` |
-| `LDAP_DOMAIN` | Dominio usado para bind tipo `usuario@dominio` |
-| `LDAP_BASE_DN` | Base de busqueda |
-| `LDAP_SEARCH_ATTRIBUTE` | Atributo para localizar usuario: `sAMAccountName` o `uid` |
-| `LDAP_BIND_TEMPLATE` | Plantilla opcional para construir el bind DN |
-| `LDAPSEARCH_BIN` | Nombre o ruta del binario `ldapsearch` |
-| `LDAP_REQUIRED_GROUP` | Grupo requerido para permitir ingreso |
-| `LDAP_SEARCH_BIND_DN` | Bind tecnico opcional para completar busqueda |
-| `LDAP_SEARCH_BIND_PASSWORD` | Contrasena del bind tecnico |
-
-### Real vs simulado
-
-Configuracion tipica para AD real:
+El modo se selecciona con:
 
 ```env
+LDAP_AUTH_METHOD=LDAPSEARCH
+```
+
+o:
+
+```env
+LDAP_AUTH_METHOD=LDAP3_SIMPLE
+```
+
+### 6.1 Modo LDAPSEARCH
+
+Este modo ejecuta el binario del sistema `ldapsearch` mediante `subprocess`.
+
+Equivale al comando:
+
+```powershell
+ldapsearch -x -H "ldap://austro.grpfin:389" -D "usuario@austro.grpfin" -w "password" -b "DC=austro,DC=grpfin" "(sAMAccountName=usuario)" cn mail memberOf
+```
+
+Variables usadas:
+
+```env
+LDAP_AUTH_METHOD=LDAPSEARCH
 LDAP_SERVER=ldap://austro.grpfin:389
 LDAP_DOMAIN=austro.grpfin
 LDAP_BASE_DN=DC=austro,DC=grpfin
 LDAP_SEARCH_ATTRIBUTE=sAMAccountName
-LDAP_BIND_TEMPLATE={username}@{domain}
 LDAPSEARCH_BIN=ldapsearch
+LDAP_BIND_TEMPLATE={username}@{domain}
+LDAP_SEARCH_BIND_DN=
+LDAP_SEARCH_BIND_PASSWORD=
+LDAP_REQUIRED_GROUP=
 ```
 
-Configuracion tipica para Docker simulado:
+Consideraciones:
+
+- requiere que `ldapsearch` exista en el sistema operativo o contenedor;
+- en Windows puede requerir instalar OpenLDAP o definir una ruta completa en
+  `LDAPSEARCH_BIN`;
+- si no existe el binario, el login falla antes de llegar al servidor LDAP;
+- si el servidor responde `invalidCredentials`, el problema ya es usuario,
+  password o formato de bind.
+
+### 6.2 Modo LDAP3_SIMPLE
+
+Este modo usa la libreria Python `ldap3`. Es util cuando no existe el binario
+`ldapsearch` en la maquina local.
+
+Variables usadas:
 
 ```env
-LDAP_SERVER=ldap://ldap:389
+LDAP_AUTH_METHOD=LDAP3_SIMPLE
+LDAP_SERVER=ldap://austro.grpfin:389
+LDAP_PORT=389
 LDAP_DOMAIN=austro.grpfin
-LDAP_BASE_DN=dc=austro,dc=grpfin
-LDAP_SEARCH_ATTRIBUTE=uid
-LDAP_BIND_TEMPLATE=uid={username},ou=users,{base_dn}
-LDAPSEARCH_BIN=ldapsearch
-LDAP_SEARCH_BIND_DN=cn=admin,dc=austro,dc=grpfin
-LDAP_SEARCH_BIND_PASSWORD=admin
+LDAP_USE_SSL=false
+LDAP_BASE_DN=DC=austro,DC=grpfin
+LDAP_SEARCH_ATTRIBUTE=sAMAccountName
+LDAP_BIND_TEMPLATE={username}@{domain}
+LDAP_REQUIRED_GROUP=
 ```
 
-### Roles
+Consideraciones:
 
-El rol interno no debe depender solo del texto ingresado en login. El sistema
-debe registrar o actualizar al usuario en metadata y asignarle rol de acuerdo
-con:
+- `ldap3` hace simple bind con el usuario final;
+- el usuario de bind se construye con `LDAP_BIND_TEMPLATE`;
+- el host se obtiene desde `LDAP_SERVER`, pero `LDAP_PORT` tambien debe estar
+  definido;
+- `LDAP_USE_SSL=true` debe usarse solo si el servidor LDAP expone LDAPS;
+- `LDAP_REQUIRED_GROUP` permite exigir pertenencia a un grupo.
 
-- grupos LDAP/AD cuando esten disponibles;
-- configuracion interna de usuarios;
-- fallback local para administrador tecnico si esta habilitado.
+### 6.3 Grupos y roles
 
-## 7. Metadata
+El sistema busca el atributo `memberOf`.
 
-La metadata vive en SingleStore, usualmente en la base `gatekeeper_meta`.
+Reglas actuales:
 
-Tablas esperadas:
+- si `memberOf` contiene `GATEKEEPER_ADMIN`, el rol resuelto es `Admin`;
+- si no contiene ese grupo, el rol por defecto es `Publicador`;
+- si `LDAP_REQUIRED_GROUP` tiene valor, el usuario debe pertenecer a ese grupo
+  para poder entrar.
 
-| Tabla | Proposito |
-| --- | --- |
-| `usuarios` | Usuarios internos, rol, estado y ultimo acceso |
-| `catalogos_config` | Configuracion de catalogos activos o inactivos |
-| `permisos_catalogo` | Permisos por rol o usuario, si aplica |
-| `log_auditoria` | Registro de cargas y resultados |
+Para el caso de grupos como `Usuarios_Hadoop`, se puede usar:
 
-### `catalogos_config`
+```env
+LDAP_REQUIRED_GROUP=Usuarios_Hadoop
+```
 
-Debe guardar la configuracion necesaria para que el publicador pueda cargar sin
-conocer detalles tecnicos:
+Si el usuario autentica pero no tiene el grupo requerido, el sistema rechaza el
+login.
 
-- proyecto;
-- tabla fisica;
-- nombre legible;
-- destino;
-- estrategia;
-- esquema esperado;
-- reglas por columna;
-- permisos;
-- estado activo/inactivo.
+### 6.4 Preguntas necesarias para AD
 
-### `usuarios`
+Antes de cerrar una configuracion LDAP real, confirmar:
 
-Se actualiza al iniciar sesion. Permite:
+- servidor LDAP o DNS correcto;
+- puerto correcto, normalmente `389` o `636`;
+- si se usa SSL/LDAPS;
+- formato de login aceptado: `usuario@dominio`, `DOMINIO\usuario` o DN;
+- `Base DN` correcto;
+- atributo de busqueda correcto, normalmente `sAMAccountName`;
+- grupo requerido para acceder;
+- si el atributo `memberOf` esta disponible para el usuario.
 
-- diferenciar `Admin` y `Publicador`;
-- desactivar acceso al sistema;
-- recordar ultimo acceso;
-- respaldar/restaurar usuarios internos.
+## 7. Configuracion
 
-### `log_auditoria`
+Archivo principal:
 
-Registra cada intento de carga:
+- `.env`
 
-- fecha y hora;
-- usuario;
-- proyecto;
-- catalogo;
-- archivo;
-- filas;
-- estrategia;
-- destino;
-- estado;
-- operacion;
-- ruta auditada.
+Archivo de referencia:
 
-## 8. Administracion de catalogos
+- `.env.example`
 
-El panel admin se divide en cuatro secciones: resumen, registrar catalogos,
-catalogos activos y usuarios.
+La configuracion se carga en:
 
-### Resumen
+- `config/settings.py`
 
-Muestra una vista general de actividad y estado de configuraciones. Sirve como
-entrada rapida para revisar si el sistema tiene catalogos activos, usuarios y
-cargas registradas.
+Bloques principales:
 
-### Registrar catalogos
+- `APP`: ambiente, puerto y logs;
+- `ADMIN LOCAL`: usuario de emergencia;
+- `SINGLESTORE`: conexion a metadata y destino;
+- `HIVE`: habilitacion y conexion a Hive;
+- `LDAP`: autenticacion y grupos;
+- `METADATA`: nombres de tablas;
+- `AUDITORIA`: ruta y permisos de evidencia;
+- `LIMITES`: tamano y filas maximas;
+- `ALERTAS`: webhook operativo.
 
-El registro usa dos pasos.
+Variables sensibles:
 
-Paso 1: seleccion de tablas.
+- `SS_PASSWORD`
+- `SYSTEM_ADMIN_PASSWORD`
+- passwords LDAP si se usan cuentas tecnicas;
+- `ALERT_WEBHOOK_URL` si contiene token.
 
-- El admin escoge el motor disponible: SingleStore o Hive.
-- Si `HIVE_ENABLED=false`, Hive no aparece.
-- El explorador lista bases disponibles.
-- Al seleccionar una base, se listan sus tablas.
-- El admin puede buscar, refrescar y seleccionar una o varias tablas.
-- La tabla activa muestra su estructura de columnas.
-- Cada columna muestra tipo y si acepta nulos.
-- Desde la misma vista se pueden agregar reglas de calidad por columna.
+No se deben versionar valores reales en repositorios compartidos.
 
-Paso 2: configuracion y registro.
+## 8. Metadata administrativa
 
-- El admin define o acepta el ID del proyecto.
-- El admin define el nombre visible del proyecto.
-- El sistema genera el ID tecnico del catalogo.
-- El admin define el nombre legible del catalogo.
-- Puede agregar descripcion.
-- Selecciona estrategia de carga.
-- Selecciona destino.
-- Define roles permitidos.
-- Define usuarios especificos si el acceso debe limitarse.
+La base administrativa esperada es:
 
-Si no se seleccionan usuarios especificos, el acceso se controla por roles. Si
-la configuracion queda abierta segun la regla de negocio, el catalogo puede
-quedar disponible para todos los publicadores permitidos.
+```text
+gatekeeper_meta
+```
 
-### Registro de varias tablas
+El script inicial vive en:
 
-Cuando se selecciona mas de una tabla, el flujo es el mismo, pero el sistema
-registra un lote.
+- `docker/init_db/01_init.sql`
 
-El proyecto funciona como carpeta logica. Por ejemplo, varias tablas de un
-mismo dominio, como COMEX o SRI, pueden guardarse bajo el mismo proyecto y
-luego mostrarse al usuario con su nombre legible.
+Tablas principales:
 
-Cada tabla conserva:
+- `proyectos`
+- `catalogos_config`
+- `usuarios`
+- `permisos_catalogo`
+- `log_auditoria`
 
-- tabla fisica;
-- nombre legible;
-- esquema;
-- reglas;
-- estrategia;
-- destino;
-- permisos.
+### 8.1 proyectos
 
-### Catalogos activos
+Agrupa catalogos por dominio funcional.
 
-Esta seccion permite mantener lo ya registrado.
+Campos:
+
+- `project_id`
+- `nombre`
+- `descripcion`
+- `activo`
+
+### 8.2 catalogos_config
+
+Define catalogos cargables, destino y reglas.
+
+Campos:
+
+- `catalog_id`
+- `project_id`
+- `nombre`
+- `descripcion`
+- `base_datos`
+- `tabla_destino`
+- `destino`
+- `estrategia`
+- `schema_json`
+- `activo`
+
+### 8.3 usuarios
+
+Mantiene informacion interna del portal.
+
+Campos:
+
+- `username`
+- `nombre`
+- `email`
+- `rol`
+- `activo`
+- `ultimo_acceso`
+
+### 8.4 permisos_catalogo
+
+Permite limitar catalogos por usuario o rol.
+
+Campos:
+
+- `catalog_id`
+- `tipo`
+- `valor`
+
+Ejemplos:
+
+```text
+tipo=rol, valor=Publicador
+tipo=usuario, valor=jberrezueta
+```
+
+### 8.5 log_auditoria
+
+Registra cada intento de carga.
+
+Campos:
+
+- `operation_id`
+- `timestamp_carga`
+- `usuario_ad`
+- `project_id`
+- `id_catalogo`
+- `nombre_archivo_original`
+- `filas_procesadas`
+- `estrategia_usada`
+- `destino`
+- `estado_carga`
+- `errores_json`
+- `ruta_zip_auditoria`
+
+## 9. Catalogos y permisos
+
+La lectura de proyectos y catalogos para el usuario ocurre en:
+
+- `config/catalogs.py`
 
 Funciones principales:
 
-- preparar backup JSON de configuraciones;
-- restaurar configuraciones desde JSON;
-- decidir si se sobrescriben catalogos existentes;
-- buscar catalogos por nombre, base o tabla;
-- ver catalogos agrupados por proyecto;
-- abrir una carpeta de proyecto para ver sus tablas;
-- editar configuracion;
-- editar permisos;
-- desactivar catalogos.
+- `get_proyectos_list()`
+- `get_catalogs_by_project(project_id, username, rol)`
+- `get_catalog_by_id(project_id, catalog_id)`
 
-Editar configuracion permite cambiar nombre, descripcion, estrategia, destino,
-columnas, tipos, nulabilidad y reglas.
+Reglas de visibilidad:
 
-Editar permisos permite ajustar roles y usuarios especificos. Esto afecta que
-catalogos ve cada usuario en el portal de carga.
+- un `Admin` ve todos los catalogos activos del proyecto;
+- un catalogo sin permisos configurados queda visible para todos;
+- si hay permisos, se valida por `rol` o por `usuario`;
+- los catalogos inactivos no aparecen.
 
-Desactivar no deberia borrar historico. Solo impide que el catalogo siga
-disponible para nuevas cargas.
+La administracion funcional vive en:
 
-### Usuarios
+- `views/admin_catalogs_view.py`
+- `services/db_admin.py`
 
-La seccion de usuarios administra usuarios internos detectados por login.
+Capacidades del admin:
+
+- descubrir bases y tablas;
+- registrar catalogos;
+- generar `schema_json` desde una tabla;
+- configurar reglas;
+- editar catalogos;
+- desactivar catalogos;
+- asignar permisos;
+- administrar usuarios;
+- exportar e importar respaldos funcionales.
+
+## 10. Lectura de archivos
+
+Archivo:
+
+- `storage/file_handler.py`
+
+Formatos soportados:
+
+- `.csv`
+- `.txt`
+- `.xlsx`
+- `.xls`
 
 Funciones principales:
 
-- preparar backup JSON de usuarios;
-- restaurar usuarios desde JSON;
-- sobrescribir usuarios existentes si se marca la opcion;
-- cambiar rol entre `Admin` y `Publicador`;
-- activar o desactivar acceso al sistema;
-- ver ultimo acceso.
+- `read_uploaded_file()`
+- `detect_file_delimiter()`
+- `get_excel_sheets()`
+- `get_file_stats()`
 
-Desactivar un usuario impide usar el sistema aunque sus credenciales LDAP sean
-validas.
+Comportamiento:
 
-## 9. Portal de carga
+- los CSV/TXT se leen con `pandas.read_csv`;
+- se intenta detectar delimitador si el separador no fue ajustado;
+- Excel se lee con `pandas.read_excel`;
+- las columnas se normalizan quitando espacios al inicio y final;
+- los errores de lectura se traducen a mensajes entendibles para la UI.
 
-El portal de carga es usado por publicadores y tambien por admins cuando
-necesitan cargar archivos.
+## 11. Motor de validacion
 
-### Seleccion de proyecto y catalogo
+Archivo:
 
-El usuario solo ve proyectos y catalogos permitidos.
+- `dg_validators/engine.py`
 
-El filtro se calcula con:
+Funcion principal:
 
-- rol interno;
-- usuario especifico;
-- estado activo del catalogo;
-- destino habilitado;
-- configuracion de permisos.
+- `validate_dataframe(df, schema_config)`
 
-La barra lateral muestra informacion del catalogo:
+Estructuras:
 
-- tabla fisica;
-- estrategia;
-- destino;
-- columnas esperadas.
+- `ValidationError`
+- `ValidationResult`
 
-### Paso 1: subir archivo
+Tipos soportados:
 
-El usuario puede cargar uno o varios archivos permitidos.
+- `str`
+- `int`
+- `float`
+- `bool`
 
-El sistema:
+Validaciones estructurales:
 
-- detecta separador en CSV/TXT cuando aplica;
-- lee Excel cuando aplica;
-- muestra cantidad de filas, columnas y archivos;
-- presenta una previsualizacion;
-- permite ajustar lectura si las columnas no se ven correctamente.
+- columnas faltantes;
+- columnas extras;
+- archivo vacio.
 
-La previsualizacion no carga datos a la base. Solo confirma que el archivo se
-lee de forma esperada.
+Validaciones por dato:
 
-### Paso 2: validar
+- tipo de dato;
+- no nulo;
+- dominio;
+- minimo;
+- maximo;
+- longitud minima;
+- longitud entre minimo y maximo;
+- expresion regular.
 
-El usuario ejecuta la validacion antes de cargar.
+Reglas JSON soportadas:
 
-Validaciones principales:
+```json
+{"tipo": "isin", "valor": ["A", "I"]}
+{"tipo": "gte", "valor": 0}
+{"tipo": "lte", "valor": 100}
+{"tipo": "min_length", "valor": 3}
+{"tipo": "str_length", "min": 5, "max": 10}
+{"tipo": "regex", "valor": "^[A-Z]{3}-\\d{3}$"}
+```
 
-- archivo legible;
-- archivo no vacio;
-- columnas requeridas presentes;
-- columnas no esperadas detectadas;
-- tipos compatibles;
-- campos obligatorios no vacios;
-- reglas de calidad por columna.
+Si la validacion falla, no se ejecuta escritura a base.
 
-### Validacion con errores
+## 12. Reporte de errores
 
-Si falla la validacion:
+Archivo:
 
-- no se carga nada a la base;
-- se muestra un resumen de errores;
-- se lista fila, columna, valor encontrado, regla y detalle;
-- se permite descargar un reporte `.xlsx`;
-- el usuario debe corregir el archivo en origen y volver a intentarlo.
+- `reports/report_builder.py`
 
-### Validacion exitosa
+Funcion:
 
-Si la validacion no encuentra errores:
+- `build_error_report()`
 
-- se muestran filas validadas;
-- se muestra conteo de errores en cero;
-- se habilita la confirmacion de carga;
-- el usuario puede volver al archivo si necesita revisar antes de confirmar.
+Salida:
 
-La validacion exitosa todavia no implica carga final; la carga ocurre al
-confirmar.
+- archivo Excel en memoria;
+- hoja de resumen;
+- hoja de detalle;
+- conteo por tipo de error;
+- colores por categoria.
 
-### Paso 3: resultado
+El reporte se ofrece al usuario desde la vista principal cuando la validacion
+falla.
 
-Cuando el usuario confirma:
+## 13. Carga a destino
 
-- se ejecuta la carga a destino;
-- se aplica la estrategia configurada;
-- se registra auditoria;
-- se guarda evidencia del archivo;
-- se muestra estado final.
+Archivo:
 
-Si la carga termina correctamente, la pantalla muestra:
+- `services/db_writer.py`
 
-- filas cargadas;
-- tabla destino;
-- estrategia;
-- estado;
-- operacion;
-- usuario;
-- archivo;
-- fecha;
-- ruta auditada.
+Funcion principal:
 
-## 10. Estrategias de carga
+- `execute_load()`
 
-Las estrategias pueden variar por catalogo. Las comunes son:
+Responsabilidades:
 
-| Estrategia | Descripcion |
-| --- | --- |
-| `append` | Inserta nuevas filas sin limpiar la tabla |
-| `overwrite` | Reemplaza el contenido destino antes de insertar |
-| `reproceso` | Aplica logica especial de reproceso si esta implementada |
+- preparar `operation_id`;
+- guardar ZIP auditado inicial;
+- escribir en SingleStore o Hive;
+- renombrar evidencia a `exito` o `fallo`;
+- registrar `log_auditoria`;
+- enviar alerta si corresponde.
 
-La estrategia debe resolverse en `services/db_writer.py` y no en la vista.
+### 13.1 SingleStore
 
-## 11. Destinos de datos
+Estrategias:
 
-### SingleStore
+- `append`: inserta filas nuevas;
+- `overwrite`: `TRUNCATE TABLE` + `INSERT` dentro de transaccion;
+- `reproceso`: borra por columna de fecha e inserta dentro de transaccion.
 
-Es el destino principal.
+La columna de reproceso se detecta entre:
 
-La conexion se configura con variables `SS_*`. Las operaciones administrativas
-pueden explorar bases, tablas y esquemas para registrar catalogos.
+- `fecha_proceso`
+- `fecha`
+- `fecha_carga`
+- `date`
 
-### Hive
+### 13.2 Hive
 
-Hive es opcional y esta controlado por:
+Hive se controla con:
 
 ```env
 HIVE_ENABLED=true
 ```
 
-Cuando `HIVE_ENABLED=false`:
+Si esta en `false`, el sistema bloquea operaciones Hive.
 
-- no se muestran opciones Hive en administracion;
-- no se listan catalogos Hive;
-- no se permite cargar a Hive;
-- el healthcheck no exige Hive.
+Estrategias:
 
-Esto permite operar el sistema en ambientes donde Hive no esta disponible.
+- `append`: `INSERT INTO`;
+- `overwrite`: `INSERT OVERWRITE`;
+- `reproceso`: `INSERT OVERWRITE` por particion o fecha.
 
-## 12. Auditoria y almacenamiento
+Consideracion local:
 
-Toda carga debe dejar evidencia.
+En Windows, dependencias como `sasl` pueden fallar al instalarse por falta de
+headers nativos. Para desarrollo local sin Hive, usar:
 
-La auditoria tiene dos niveles:
-
-1. registro estructurado en metadata;
-2. archivo auditado en almacenamiento local o volumen.
-
-El almacenamiento auditado debe conservar el archivo original y datos de la
-operacion. La ruta se muestra en resultado final y queda disponible en el
-historial.
-
-Reglas tecnicas:
-
-- cada carga debe tener `operation_id`;
-- las cargas fallidas tambien deben registrarse cuando aplique;
-- una validacion fallida no debe insertar datos;
-- el archivo original no debe modificarse;
-- la evidencia no debe contener credenciales.
-
-## 13. Configuracion por entorno
-
-Los archivos `.env` controlan comportamiento del sistema.
-
-Variables importantes:
-
-| Variable | Descripcion |
-| --- | --- |
-| `APP_ENV` | Ambiente logico |
-| `SS_HOST` | Host SingleStore |
-| `SS_PORT` | Puerto SingleStore |
-| `SS_USER` | Usuario SingleStore |
-| `SS_PASSWORD` | Contrasena SingleStore |
-| `SS_DATABASE` | Base metadata o destino por defecto |
-| `HIVE_ENABLED` | Activa/oculta Hive |
-| `HIVE_HOST` | Host Hive |
-| `HIVE_PORT` | Puerto Hive |
-| `LDAP_SERVER` | Servidor LDAP/AD |
-| `LDAP_BASE_DN` | Base DN |
-| `LDAP_DOMAIN` | Dominio de bind |
-| `LDAP_BIND_TEMPLATE` | Plantilla de bind |
-| `LDAP_SEARCH_ATTRIBUTE` | Atributo de busqueda |
-| `LDAPSEARCH_BIN` | Binario ldapsearch |
-| `AUDIT_STORAGE_PATH` | Ruta de evidencia auditada |
-
-Buenas practicas:
-
-- no versionar credenciales reales;
-- mantener `.env.example` sin secretos;
-- usar `.env.local-sim-real` solo para pruebas locales;
-- documentar cambios de variables cuando cambie el codigo.
-
-## 14. Docker local
-
-El Dockerfile instala dependencias del sistema, incluyendo `ldap-utils`, porque
-la autenticacion depende de `ldapsearch`.
-
-Para levantar el ambiente local simulado con LDAP parecido al real:
-
-```bash
-docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real up -d --build
+```env
+HIVE_ENABLED=false
 ```
 
-Para ver logs de la app:
+## 14. Auditoria
 
-```bash
-docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real logs -f app
-```
+La auditoria tiene dos partes:
 
-Para bajar el ambiente:
+- registro en `log_auditoria`;
+- ZIP del archivo original en `AUDIT_STORAGE_PATH`.
 
-```bash
-docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real down
-```
+El ZIP incluye:
 
-Usuarios de prueba del LDAP simulado:
+- archivo original;
+- `audit_manifest.json`;
+- hash SHA-256;
+- usuario;
+- catalogo;
+- `operation_id`;
+- fecha de creacion.
 
-| Usuario | Contrasena | Rol esperado |
-| --- | --- | --- |
-| `vcastro` | `demo123` | Publicador |
-| `admin` | `admin123` | Admin LDAP simulado, si se usa esa ruta |
-
-Tambien puede existir admin local segun configuracion del sistema.
-
-## 15. Healthcheck y observabilidad
-
-El healthcheck vive en:
+Patron de ruta:
 
 ```text
-scripts/healthcheck.py
+{AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{usuario}_{operation_id}_{archivo}.zip
 ```
 
-Debe validar:
+Estados:
 
-- que la aplicacion pueda responder;
-- que SingleStore este disponible;
-- que Hive se revise solo si `HIVE_ENABLED=true`;
-- que errores sean visibles en logs.
+- `pendiente`;
+- `exito`;
+- `fallo`.
 
-Logs importantes:
+El archivo se intenta dejar en modo solo lectura si:
 
-- errores de autenticacion LDAP;
-- fallos de lectura de archivo;
-- errores de validacion;
-- fallos de escritura a destino;
-- errores de auditoria.
+```env
+AUDIT_STORAGE_READONLY_AFTER_WRITE=true
+```
 
-No se deben imprimir contrasenas en logs.
+## 15. Historial
 
-## 16. Reglas de mantenimiento
+Vista:
 
-Antes de modificar una parte del sistema, revisar estas dependencias:
+- `views/history_view.py`
 
-| Si cambias | Revisa tambien |
-| --- | --- |
-| Login | `auth/ldap_auth.py`, `views/login_view.py`, usuarios metadata |
-| Roles | permisos de catalogo, usuarios, historial |
-| Registro de catalogos | `db_admin`, schema JSON, filtros del publicador |
-| Validaciones | reporte de errores, UI de validacion, tests |
-| Carga destino | auditoria, historial, rollback o limpieza |
-| Hive | `HIVE_ENABLED`, admin, writer, healthcheck |
-| Docker | variables `.env`, Dockerfile, compose, healthcheck |
+Fuente:
 
-## 17. Pruebas recomendadas
+- `services/db_writer.get_audit_log()`
 
-Pruebas minimas por cambio:
+Comportamiento:
 
-1. Login correcto con usuario publicador.
-2. Login incorrecto.
-3. Admin puede entrar al panel.
-4. Publicador solo ve catalogos permitidos.
-5. Admin ve catalogos segun configuracion.
-6. Archivo correcto muestra previsualizacion.
-7. Archivo con columnas erroneas falla validacion.
-8. Reporte de errores se descarga.
-9. Validacion exitosa habilita confirmar carga.
-10. Carga exitosa registra auditoria.
-11. Historial de publicador muestra solo sus cargas.
-12. Historial de admin muestra todas.
-13. Con `HIVE_ENABLED=false`, Hive no aparece ni se usa.
+- los admins pueden consultar todas las cargas;
+- los publicadores consultan sus propias cargas;
+- se filtra por fecha, estado y usuario;
+- se muestran metricas y tendencias;
+- se puede exportar CSV.
 
-Pruebas tecnicas utiles en Docker:
+## 16. Notificaciones
+
+Archivo:
+
+- `services/notifier.py`
+
+Variables:
+
+```env
+ALERTS_ENABLED=false
+ALERT_WEBHOOK_URL=
+ALERT_ON_SUCCESS=false
+```
+
+Eventos:
+
+- `load_failed`
+- `load_succeeded`
+
+Por defecto solo conviene alertar fallos.
+
+## 17. Docker y despliegue
+
+Archivos:
+
+- `docker/Dockerfile`
+- `docker/docker-compose.yml`
+- `docker/docker-compose.local-sim-real.yml`
+- `docker/nginx.conf`
+- `docker/init_db/00_create_db.sql`
+- `docker/init_db/01_init.sql`
+
+Escenarios:
+
+- local Windows con Streamlit directo;
+- local o laboratorio con Docker;
+- servidor con app + Nginx y servicios externos;
+- simulacion con LDAP/OpenLDAP o servicios de prueba.
+
+Comando base productivo:
 
 ```bash
-docker exec -it gatekeeper_app sh -c "env | grep LDAP"
-docker exec -it gatekeeper_app sh -c "ldapsearch -x -H ldap://ldap:389 -D 'uid=vcastro,ou=users,dc=austro,dc=grpfin' -w demo123 -b 'dc=austro,dc=grpfin' '(uid=vcastro)'"
-docker compose -f docker/docker-compose.local-sim-real.yml --env-file docker/.env.local-sim-real logs -f app
+docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-## 18. Puntos de extension
+Comando local de simulacion, segun compose disponible:
 
-El sistema puede crecer de forma ordenada en estos puntos:
+```bash
+docker compose -f docker/docker-compose.local-sim-real.yml up -d --build
+```
 
-- nuevos tipos de regla en `validators/`;
-- nuevos destinos en `services/db_writer.py`;
-- nuevos motores de exploracion en `services/db_admin.py`;
-- integracion con almacenamiento externo para auditoria;
-- permisos mas granulares por proyecto;
-- reportes historicos mas completos;
-- pruebas automatizadas de validacion y carga.
+Inicializacion de metadata:
 
-Cada extension debe respetar tres reglas:
+```bash
+docker exec -i gatekeeper_singlestore singlestore -uroot -p<PASSWORD> < docker/init_db/00_create_db.sql
+docker exec -i gatekeeper_singlestore singlestore -uroot -p<PASSWORD> gatekeeper_meta < docker/init_db/01_init.sql
+```
 
-1. validar antes de cargar;
-2. registrar auditoria;
-3. no mostrar opciones que el entorno tenga deshabilitadas.
+## 18. Healthchecks
 
-## 19. Resumen para desarrolladores
+Archivo:
 
-Data Gatekeeper es un portal Streamlit con logica backend modular. El usuario
-entra por LDAP, selecciona un catalogo permitido, sube un archivo, valida contra
-la configuracion almacenada en metadata y solo entonces carga a destino.
+- `scripts/healthcheck.py`
 
-La parte critica del sistema esta en estos contratos:
+Modos:
 
-- autenticacion por `ldapsearch`;
-- permisos por rol/usuario;
-- `schema_json` de catalogos;
-- validacion previa obligatoria;
-- `HIVE_ENABLED` para ocultar o bloquear Hive;
-- auditoria obligatoria de cada carga.
+- `liveness`
+- `readiness`
 
-Si esos contratos se mantienen, el sistema puede evolucionar sin perder control
-sobre seguridad, calidad de datos y trazabilidad.
+Valida:
+
+- health HTTP de Streamlit;
+- conectividad a SingleStore;
+- conectividad a LDAP;
+- conectividad a Hive solo si `HIVE_ENABLED=true`.
+
+Uso:
+
+```bash
+python scripts/healthcheck.py --mode liveness
+python scripts/healthcheck.py --mode readiness
+```
+
+## 19. Pruebas
+
+Carpeta:
+
+- `tests/`
+
+Pruebas actuales:
+
+- `test_engine.py`: motor de validacion;
+- `test_file_handler.py`: lectura de archivos;
+- `test_db_admin_filters.py`: filtro de bases visibles;
+- `test_ldap_auth.py`: parsing y autenticacion simulada por `ldapsearch`.
+
+Comando:
+
+```bash
+pytest
+```
+
+Si se ejecuta en Windows y Hive no es necesario, conviene mantener
+`HIVE_ENABLED=false` para desarrollo local.
+
+## 20. Operacion local
+
+Activar entorno:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\venv\Scripts\Activate.ps1
+```
+
+Instalar dependencias:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Levantar app:
+
+```powershell
+streamlit run app.py
+```
+
+Abrir:
+
+```text
+http://localhost:8501
+```
+
+## 21. Troubleshooting
+
+### Login falla por `ldapsearch` no encontrado
+
+Sintoma:
+
+```text
+No se encontro el binario ldapsearch
+```
+
+Causa:
+
+- `ldapsearch` no esta instalado;
+- `LDAPSEARCH_BIN` no apunta a una ruta valida.
+
+Soluciones:
+
+- instalar cliente OpenLDAP;
+- usar ruta completa en `LDAPSEARCH_BIN`;
+- cambiar a `LDAP_AUTH_METHOD=LDAP3_SIMPLE`.
+
+### Login falla por `invalidCredentials`
+
+Sintoma:
+
+```text
+LDAPBindError: invalidCredentials
+```
+
+Causa probable:
+
+- password incorrecto;
+- formato de bind incorrecto;
+- dominio incorrecto;
+- usuario no autorizado para ese flujo.
+
+Validar:
+
+- `LDAP_BIND_TEMPLATE`;
+- `LDAP_DOMAIN`;
+- formato esperado por AD;
+- si el usuario pertenece al grupo requerido.
+
+### Usuario autentica pero no entra
+
+Validar:
+
+- `LDAP_REQUIRED_GROUP`;
+- atributo `memberOf`;
+- nombre exacto del grupo;
+- rol guardado en tabla `usuarios`;
+- si el usuario esta inactivo.
+
+### No aparecen catalogos
+
+Validar:
+
+- catalogos activos en `catalogos_config`;
+- permisos en `permisos_catalogo`;
+- rol del usuario;
+- proyecto activo;
+- si `HIVE_ENABLED=false` y el catalogo era Hive.
+
+### Falla instalacion de dependencias Hive en Windows
+
+Sintoma comun:
+
+```text
+fatal error C1083: No se puede abrir sasl/sasl.h
+```
+
+Causa:
+
+- falta dependencia nativa SASL en Windows.
+
+Opciones:
+
+- desarrollar sin Hive localmente;
+- usar Docker/Linux para Hive;
+- instalar dependencias nativas necesarias.
+
+### Falla carga por reproceso
+
+Validar que el archivo tenga una columna:
+
+- `fecha_proceso`
+- `fecha`
+- `fecha_carga`
+- `date`
+
+## 22. Reglas de mantenimiento
+
+Recomendaciones:
+
+- mantener validaciones nuevas dentro de `dg_validators/engine.py`;
+- no escribir a destino antes de validar;
+- no mostrar errores tecnicos crudos al usuario;
+- registrar auditoria tanto en exito como en fallo;
+- no mezclar logica de UI con SQL complejo;
+- no versionar credenciales reales;
+- actualizar `.env.example` cuando se agreguen variables nuevas;
+- agregar pruebas cuando cambien contratos de validacion o autenticacion.
+
+## 23. Limitaciones actuales
+
+El sistema actualmente no implementa de forma nativa:
+
+- unicidad entre filas;
+- validaciones cruzadas entre columnas;
+- validacion contra tablas externas;
+- reglas SQL personalizadas por catalogo;
+- API HTTP separada;
+- descarga controlada de ZIP auditado desde UI;
+- versionado historico de `schema_json`.
+
+## 24. Puntos de extension
+
+Mejoras naturales:
+
+- separar backend API si se requiere integracion externa;
+- ampliar reglas de validacion;
+- agregar versionado de catalogos;
+- agregar pruebas de carga a destino con mocks;
+- formalizar observabilidad y metricas;
+- mejorar soporte Windows para pruebas LDAP;
+- agregar manual especifico de operacion para administradores.
+
+## 25. Checklist tecnico antes de produccion
+
+- `.env` productivo fuera del repositorio.
+- `SYSTEM_ADMIN_PASSWORD` fuerte o deshabilitado segun politica.
+- `SS_HOST`, `SS_PORT`, `SS_USER`, `SS_PASSWORD` validados.
+- Metadata inicial creada en `gatekeeper_meta`.
+- `LDAP_AUTH_METHOD` definido y probado.
+- Grupo requerido definido si aplica.
+- `HIVE_ENABLED` definido segun alcance real.
+- Ruta `AUDIT_STORAGE_PATH` con permisos correctos.
+- Nginx publicado y healthcheck activo.
+- Pruebas automatizadas ejecutadas.
+- Primer catalogo validado con archivo correcto y archivo erroneo.
+
+## 26. Resumen
+
+Data Gatekeeper es un portal interno de ingesta controlada. Su valor tecnico
+esta en separar configuracion, permisos, validacion, carga y auditoria para que
+los usuarios puedan publicar catalogos sin impactar tablas finales con archivos
+invalidos.
+
+Las piezas criticas para mantenerlo estable son:
+
+- autenticacion LDAP;
+- metadata `gatekeeper_meta`;
+- `schema_json` por catalogo;
+- motor `dg_validators`;
+- `services/db_writer.py`;
+- `log_auditoria`;
+- almacenamiento auditado.
