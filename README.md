@@ -282,8 +282,7 @@ En esta pantalla se definen datos como:
 - `ID del catalogo`: identificador tecnico unico del catalogo;
 - `Nombre legible`: nombre visible con el que el usuario vera el catalogo;
 - `Descripcion`: texto opcional para explicar el uso del catalogo;
-- `Estrategia`: forma de carga, por ejemplo `overwrite`, `append` o
-  `reproceso`;
+- `Estrategia`: forma de carga, por ejemplo `overwrite` o `append`;
 - `Destino`: sistema al que se escribira la carga, por ejemplo
   `singlestore`;
 - `Roles`: perfiles autorizados para usar ese catalogo;

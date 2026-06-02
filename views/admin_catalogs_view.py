@@ -38,7 +38,11 @@ from services.user_service import (
 )
 
 _TIPOS       = ["str", "int", "float", "bool"]
-_ESTRATEGIAS = ["overwrite", "append", "reproceso"]
+_ESTRATEGIAS = [
+    "overwrite",
+    "append",
+    # "reproceso",  # Oculto por ahora: no mostrar como opcion de registro.
+]
 HIVE_ENABLED = bool(getattr(settings, "HIVE_ENABLED", True))
 _DESTINOS    = ["singlestore"] + (["hive"] if HIVE_ENABLED else [])
 _ROLES       = ["Publicador", "Admin"]

@@ -577,15 +577,10 @@ Responsabilidades:
 Estrategias:
 
 - `append`: inserta filas nuevas;
-- `overwrite`: `TRUNCATE TABLE` + `INSERT` dentro de transaccion;
-- `reproceso`: borra por columna de fecha e inserta dentro de transaccion.
+- `overwrite`: `TRUNCATE TABLE` + `INSERT` dentro de transaccion.
 
-La columna de reproceso se detecta entre:
-
-- `fecha_proceso`
-- `fecha`
-- `fecha_carga`
-- `date`
+La estrategia `reproceso` existe como logica interna heredada, pero no se
+publica en la interfaz de administracion.
 
 ### 13.2 Hive
 
@@ -600,8 +595,7 @@ Si esta en `false`, el sistema bloquea operaciones Hive.
 Estrategias:
 
 - `append`: `INSERT INTO`;
-- `overwrite`: `INSERT OVERWRITE`;
-- `reproceso`: `INSERT OVERWRITE` por particion o fecha.
+- `overwrite`: `INSERT OVERWRITE`.
 
 Consideracion local:
 
@@ -877,15 +871,6 @@ Opciones:
 - desarrollar sin Hive localmente;
 - usar Docker/Linux para Hive;
 - instalar dependencias nativas necesarias.
-
-### Falla carga por reproceso
-
-Validar que el archivo tenga una columna:
-
-- `fecha_proceso`
-- `fecha`
-- `fecha_carga`
-- `date`
 
 ## 22. Reglas de mantenimiento
 

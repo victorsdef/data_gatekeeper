@@ -152,6 +152,13 @@ def _ldapsearch_authenticate(username: str, password: str) -> Optional[Dict[str,
     }
 
 
+def _resolve_role_from_memberof(member_of: Any) -> str:
+    groups_str = str(member_of).upper()
+    if "GATEKEEPER_ADMIN" in groups_str:
+        return "Admin"
+    return "Publicador"
+
+
 def _ldap3_simple_authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
     if not LDAP_SERVER or not LDAP_BASE_DN:
         logger.warning("LDAP3_SIMPLE no configurado: faltan LDAP_SERVER o LDAP_BASE_DN.")
@@ -220,13 +227,6 @@ def _ldap3_simple_authenticate(username: str, password: str) -> Optional[Dict[st
             conn.unbind()
         except Exception:
             pass
-
-
-def _resolve_role_from_memberof(member_of: Any) -> str:
-    groups_str = str(member_of).upper()
-    if "GATEKEEPER_ADMIN" in groups_str:
-        return "Admin"
-    return "Publicador"
 
 
 def _ldap_server_uri() -> str:
