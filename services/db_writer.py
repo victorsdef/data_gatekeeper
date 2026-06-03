@@ -29,6 +29,9 @@ AUDIT_STORAGE_PATH = _setting("AUDIT_STORAGE_PATH", "/app/audit_storage")
 AUDIT_STORAGE_READONLY_AFTER_WRITE = str(
     _setting("AUDIT_STORAGE_READONLY_AFTER_WRITE", "true")
 ).lower() == "true"
+AUDIT_STORE_FAILED_FILES = str(
+    _setting("AUDIT_STORE_FAILED_FILES", "false")
+).lower() == "true"
 AUDIT_STORAGE_DIR_MODE = int(str(_setting("AUDIT_STORAGE_DIR_MODE", "750")), 8)
 AUDIT_STORAGE_FILE_MODE = int(str(_setting("AUDIT_STORAGE_FILE_MODE", "440")), 8)
 SS_HOST = _setting("SS_HOST")
@@ -66,15 +69,14 @@ def execute_load(
         zip_path : str | None
         error    : str | None
     """
-    # Drop pandas unnamed/empty trailing columns (e.g. "Unnamed: 4" from CSV/Excel)
-    df = df.loc[:, ~df.columns.str.match(r"^Unnamed[:\s]*\d*$", na=False)]
-    df = df.loc[:, df.columns.str.strip() != ""]
-
     tabla      = catalog["tabla_destino"]
     base_datos = catalog["base_datos"]
     estrategia = catalog["estrategia"]
     destino    = catalog["destino"]
     catalog_id = catalog["catalog_id"]
+    # Drop pandas unnamed/empty trailing columns (e.g. "Unnamed: 4" from CSV/Excel)
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed[:\s]*\d*$", na=False)]
+    df = df.loc[:, df.columns.str.strip() != ""]
     rows       = len(df)
 
     zip_path:  Optional[str] = None
@@ -95,17 +97,10 @@ def execute_load(
         filename,
     )
 
-    # 1. Cold storage siempre — antes de tocar la BD para tener evidencia incluso en fallo
-    zip_path = _save_cold_storage(
-        file_bytes,
-        filename,
-        catalog_id,
-        username,
-        operation_id=operation_id,
-        estado="pendiente",
-    )
-
     try:
+        df = _normalize_df_for_load(df, catalog.get("schema", {}))
+        rows = len(df)
+
         # 2. Escritura en BD
         if destino == "singlestore":
             _write_singlestore(df, base_datos, tabla, estrategia)
@@ -116,8 +111,18 @@ def execute_load(
         else:
             raise ValueError(f"Destino desconocido: '{destino}'")
 
-        # 3. Renombrar ZIP a "exito" y registrar log
-        zip_path = _rename_cold_storage(zip_path, "exito")
+        # 3. Guardar ZIP exitoso y registrar log
+        zip_path = _save_cold_storage(
+            file_bytes,
+            filename,
+            catalog_id,
+            catalog.get("nombre") or catalog_id,
+            tabla,
+            username,
+            operation_id=operation_id,
+            estado="exito",
+            project_id=project_id,
+        )
         _save_audit_log(
             operation_id=operation_id,
             username=username,
@@ -165,7 +170,18 @@ def execute_load(
             tabla,
             estrategia,
         )
-        zip_path = _rename_cold_storage(zip_path, "fallo")
+        if AUDIT_STORE_FAILED_FILES:
+            zip_path = _save_cold_storage(
+                file_bytes,
+                filename,
+                catalog_id,
+                catalog.get("nombre") or catalog_id,
+                tabla,
+                username,
+                operation_id=operation_id,
+                estado="fallo",
+                project_id=project_id,
+            )
         try:
             _save_audit_log(
                 operation_id=operation_id,
@@ -278,6 +294,105 @@ def _df_to_tuples(df: pd.DataFrame) -> list:
               for v in row)
         for row in df.itertuples(index=False, name=None)
     ]
+
+
+def _normalize_df_for_load(df: pd.DataFrame, schema_config: Dict[str, Any]) -> pd.DataFrame:
+    """
+    Aplica el tipo configurado por el catalogo antes de insertar.
+    El tipo fisico de la tabla puede ser mas flexible, por ejemplo VARCHAR,
+    pero la regla de negocio del catalogo puede exigir int/float/bool.
+    """
+    columnas = schema_config.get("columnas", []) if isinstance(schema_config, dict) else []
+    if not columnas:
+        return df
+
+    normalized = df.copy()
+    for col_def in columnas:
+        col_name = str(col_def.get("nombre", "")).strip()
+        if not col_name or col_name not in normalized.columns:
+            continue
+
+        tipo = str(col_def.get("tipo", "str") or "str").lower().strip()
+        nullable = bool(col_def.get("nullable", True))
+        series = normalized[col_name]
+
+        if tipo == "int":
+            normalized[col_name] = _cast_int_for_load(series, col_name, nullable)
+        elif tipo == "float":
+            normalized[col_name] = _cast_float_for_load(series, col_name, nullable)
+        elif tipo == "bool":
+            normalized[col_name] = _cast_bool_for_load(series, col_name, nullable)
+        else:
+            normalized[col_name] = series.where(~series.isna(), None)
+
+    return normalized
+
+
+def _blank_mask(series: pd.Series) -> pd.Series:
+    text = series.astype("string")
+    return series.isna() | text.str.strip().eq("").fillna(False)
+
+
+def _raise_cast_error(col_name: str, tipo: str, bad_count: int) -> None:
+    raise ValueError(
+        f"No se pudo convertir la columna '{col_name}' a {tipo} para la carga. "
+        f"Valores invalidos detectados: {bad_count}."
+    )
+
+
+def _cast_int_for_load(series: pd.Series, col_name: str, nullable: bool) -> pd.Series:
+    blank = _blank_mask(series)
+    if not nullable and blank.any():
+        _raise_cast_error(col_name, "int", int(blank.sum()))
+
+    numeric = pd.to_numeric(series.where(~blank), errors="coerce")
+    bad = (~blank) & numeric.isna()
+    decimal = numeric.notna() & ((numeric % 1) != 0)
+    if bad.any() or decimal.any():
+        _raise_cast_error(col_name, "int", int(bad.sum() + decimal.sum()))
+
+    return numeric.astype("Int64")
+
+
+def _cast_float_for_load(series: pd.Series, col_name: str, nullable: bool) -> pd.Series:
+    blank = _blank_mask(series)
+    if not nullable and blank.any():
+        _raise_cast_error(col_name, "float", int(blank.sum()))
+
+    numeric = pd.to_numeric(series.where(~blank), errors="coerce")
+    bad = (~blank) & numeric.isna()
+    if bad.any():
+        _raise_cast_error(col_name, "float", int(bad.sum()))
+
+    return numeric.astype("Float64")
+
+
+def _cast_bool_for_load(series: pd.Series, col_name: str, nullable: bool) -> pd.Series:
+    blank = _blank_mask(series)
+    if not nullable and blank.any():
+        _raise_cast_error(col_name, "bool", int(blank.sum()))
+
+    true_values = {"true", "t", "1", "yes", "y", "si", "sí"}
+    false_values = {"false", "f", "0", "no", "n"}
+
+    def parse_one(value: Any) -> Optional[bool]:
+        if pd.isna(value):
+            return None
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in true_values:
+            return True
+        if text in false_values:
+            return False
+        return None
+
+    parsed = series.where(~blank).map(parse_one)
+    bad = (~blank) & parsed.isna()
+    if bad.any():
+        _raise_cast_error(col_name, "bool", int(bad.sum()))
+
+    return parsed.astype("boolean")
 
 
 def _batch_insert(cur, sql: str, rows: list) -> None:
@@ -401,48 +516,88 @@ def _hive_insert(
 # ------------------------------------------------------------------
 # Cold storage
 # ------------------------------------------------------------------
+def save_validation_failure_file(
+    file_bytes: bytes,
+    filename: str,
+    catalog: Dict[str, Any],
+    username: str,
+    project_id: str = "",
+    error_count: int = 0,
+) -> Optional[str]:
+    """Guarda el archivo original cuando falla la validacion, si esta habilitado."""
+    if not AUDIT_STORE_FAILED_FILES:
+        return None
+    operation_id = uuid.uuid4().hex[:12]
+    zip_path = _save_cold_storage(
+        file_bytes=file_bytes,
+        filename=filename,
+        catalog_id=str(catalog.get("catalog_id", "catalogo")),
+        catalog_name=str(catalog.get("nombre") or catalog.get("catalog_id", "catalogo")),
+        table_name=str(catalog.get("tabla_destino", "tabla")),
+        username=username,
+        operation_id=operation_id,
+        estado="fallo",
+        project_id=project_id,
+    )
+    logger.info(
+        "Archivo con validacion fallida guardado operation_id=%s catalog_id=%s errores=%s zip_path=%s",
+        operation_id,
+        catalog.get("catalog_id"),
+        error_count,
+        zip_path,
+    )
+    return zip_path
+
+
 def _save_cold_storage(
     file_bytes: bytes,
     filename: str,
     catalog_id: str,
+    catalog_name: str,
+    table_name: str,
     username: str,
     operation_id: str,
     estado: str = "exito",
+    project_id: str = "",
 ) -> Optional[str]:
     """
     Guarda ZIP del archivo original.
-    Ruta: {AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{user}_{operation_id}_{filename}.zip
+    Ruta: {AUDIT_STORAGE_PATH}/{proyecto}/{catalogo}/{tabla}/{fecha_hora}_{estado}_{usuario}_{archivo}_{hash}.zip
 
     Estructura en disco:
-      audit_storage/
-        {catalog_id}/
-          {YYYYMMDD}/
-            20260516_143022_exito_vcastro_a1b2c3d4e5f6_roles.csv.zip
-            20260516_143055_fallo_vcastro_f6e5d4c3b2a1_roles_malo.csv.zip
+      /data/gatekeeper/
+        {proyecto}/
+          {nombre_catalogo}/
+            {nombre_tabla}/
+              20260603_1430_exito_ba01006646_metadata.csv_a1b2c3d4e5f6.zip
     """
     if not file_bytes:
         return None
     try:
-        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        date_dir   = datetime.now().strftime("%Y%m%d")
-        safe_catalog = _safe_path_part(catalog_id, default="catalogo")
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M")
+        safe_project = _safe_path_part(project_id, default="sin_proyecto")
+        safe_catalog = _safe_path_part(catalog_name or catalog_id, default="catalogo")
+        safe_table = _safe_path_part(table_name, default="tabla")
         safe_user  = _safe_path_part(username, default="usuario")
         safe_name  = _safe_filename(filename)
-        safe_operation = "".join(c for c in operation_id.lower() if c.isalnum())[:12] or "sinopid"
-        zip_name   = f"{timestamp}_{estado}_{safe_user}_{safe_operation}_{safe_name}.zip"
-        target_dir = _safe_join(AUDIT_STORAGE_PATH, safe_catalog, date_dir)
+        safe_estado = _safe_path_part(estado, default="exito")
+        file_hash = hashlib.sha256(file_bytes).hexdigest()[:12]
+        zip_name   = f"{timestamp}_{safe_estado}_{safe_user}_{safe_name}_{file_hash}.zip"
+        target_dir = _safe_join(AUDIT_STORAGE_PATH, safe_project, safe_catalog, safe_table)
 
         os.makedirs(target_dir, exist_ok=True)
         _chmod_best_effort(target_dir, AUDIT_STORAGE_DIR_MODE)
         zip_path = _safe_join(target_dir, zip_name)
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
         manifest = {
             "operation_id": operation_id,
+            "project_id": project_id,
             "catalog_id": catalog_id,
+            "catalog_name": catalog_name,
+            "table_name": table_name,
             "username": username,
             "original_filename": filename,
             "stored_filename": safe_name,
-            "estado_inicial": estado,
+            "estado": estado,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "sha256": file_hash,
             "size_bytes": len(file_bytes),
@@ -466,13 +621,16 @@ def _save_cold_storage(
 
 def _rename_cold_storage(zip_path: Optional[str], estado: str) -> Optional[str]:
     """
-    Renombra el ZIP de 'pendiente' a 'exito' o 'fallo' una vez conocido el resultado.
+    Mantiene compatibilidad con nombres antiguos que incluian 'pendiente'.
+    Los nombres nuevos ya incluyen estado; esto solo corrige ZIP antiguos.
     """
     if not zip_path or not os.path.exists(zip_path):
         return zip_path
     try:
         dir_name = os.path.dirname(zip_path)
         base_name = os.path.basename(zip_path)
+        if "_pendiente_" not in base_name:
+            return zip_path
         nuevo_name = base_name.replace("_pendiente_", f"_{estado}_", 1)
         nuevo_path = _safe_join(dir_name, nuevo_name)
         _chmod_best_effort(zip_path, 0o660)

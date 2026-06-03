@@ -7,7 +7,7 @@ El despliegue usa:
 
 - imagen Docker de la aplicacion;
 - archivo `docker/.env` con variables de produccion;
-- volumen `/data` para auditoria;
+- volumen `/data/gatekeeper` para auditoria;
 - SingleStore por balanceador;
 - autenticacion LDAP/AD;
 - metadata en la base `gatekeeper_meta`.
@@ -25,8 +25,8 @@ El servidor destino debe tener:
 - acceso de red a `singlestore.austro.grpfin:3306`;
 - acceso de red a `austro.grpfin:389`;
 - puerto `8501` disponible, o el puerto que se publique para la aplicacion;
-- ruta `/data` creada para almacenar auditoria;
-- permisos de escritura sobre `/data` para el contenedor.
+- ruta `/data/gatekeeper` creada para almacenar auditoria;
+- permisos de escritura sobre `/data/gatekeeper` para el contenedor.
 
 Validaciones recomendadas desde el servidor:
 
@@ -144,12 +144,14 @@ LDAP_ADMIN_PASSWORD=
 TBL_PROYECTOS=proyectos
 TBL_CATALOGOS=catalogos_config
 TBL_USUARIOS=usuarios
+TBL_LOG_USUARIOS=log_usuarios
 TBL_PERMISOS=permisos_catalogo
 TBL_LOG_AUDITORIA=log_auditoria
 
 # AUDITORIA
-AUDIT_STORAGE_PATH=/data
+AUDIT_STORAGE_PATH=/data/gatekeeper
 AUDIT_STORAGE_READONLY_AFTER_WRITE=true
+AUDIT_STORE_FAILED_FILES=false
 AUDIT_STORAGE_DIR_MODE=750
 AUDIT_STORAGE_FILE_MODE=440
 
@@ -197,13 +199,16 @@ CREATE TABLE IF NOT EXISTS catalogos_config (
 );
 
 CREATE TABLE IF NOT EXISTS usuarios (
+    usuario_id    BIGINT       NOT NULL AUTO_INCREMENT,
     username      VARCHAR(100) NOT NULL,
     nombre        VARCHAR(200),
     email         VARCHAR(200),
     rol           VARCHAR(50)  NOT NULL DEFAULT 'Publicador',
     activo        TINYINT(1)   NOT NULL DEFAULT 1,
-    ultimo_acceso DATETIME,
-    PRIMARY KEY (username)
+    fecha_creacion DATETIME    NOT NULL DEFAULT NOW(),
+    fecha_actualizacion DATETIME,
+    PRIMARY KEY (usuario_id),
+    UNIQUE KEY uk_usuarios_username (username)
 );
 
 CREATE TABLE IF NOT EXISTS permisos_catalogo (
@@ -211,6 +216,21 @@ CREATE TABLE IF NOT EXISTS permisos_catalogo (
     tipo            VARCHAR(20)     NOT NULL,
     valor           VARCHAR(100)    NOT NULL,
     PRIMARY KEY (catalog_id, tipo, valor)
+);
+
+CREATE TABLE IF NOT EXISTS log_usuarios (
+    log_id           BIGINT       NOT NULL AUTO_INCREMENT,
+    timestamp_evento DATETIME     NOT NULL DEFAULT NOW(),
+    username         VARCHAR(100) NOT NULL,
+    actor_username   VARCHAR(100),
+    accion           VARCHAR(50)  NOT NULL,
+    estado           VARCHAR(20)  NOT NULL DEFAULT 'OK',
+    rol              VARCHAR(50),
+    detalle_json     JSON,
+    PRIMARY KEY (log_id),
+    KEY idx_log_usuarios_username (username),
+    KEY idx_log_usuarios_actor (actor_username),
+    KEY idx_log_usuarios_timestamp (timestamp_evento)
 );
 
 CREATE TABLE IF NOT EXISTS log_auditoria (
@@ -237,8 +257,8 @@ CREATE TABLE IF NOT EXISTS log_auditoria (
 En el servidor:
 
 ```bash
-sudo mkdir -p /data
-sudo chmod 750 /data
+sudo mkdir -p /data/gatekeeper
+sudo chmod 750 /data/gatekeeper
 ```
 
 Si Docker corre con un usuario/grupo especifico, ajustar propietario segun la
@@ -247,14 +267,14 @@ politica del servidor.
 La aplicacion guarda evidencia en:
 
 ```text
-/data
+/data/gatekeeper
 ```
 
 El compose monta:
 
 ```yaml
 volumes:
-  - /data:/data
+  - /data/gatekeeper:/data/gatekeeper
 ```
 
 ## 6. Preparar imagen en maquina con internet
@@ -303,7 +323,7 @@ Enviar junto con:
 
 Motivo de enviar `docker/docker-compose.yml`: la imagen ya contiene la
 aplicacion, pero el compose define como ejecutarla en el servidor: archivo
-`.env`, puerto, volumen `/data`, healthcheck, nombre del contenedor y politica
+`.env`, puerto, volumen `/data/gatekeeper`, healthcheck, nombre del contenedor y politica
 de reinicio.
 
 ## 8. Cargar imagen en servidor sin internet
@@ -384,7 +404,7 @@ Validar:
 7. La validacion exitosa habilita confirmar carga.
 8. Una validacion con errores permite descargar reporte.
 9. Una carga exitosa registra auditoria.
-10. Se crea evidencia en `/data`.
+10. Se crea evidencia en `/data/gatekeeper`.
 11. El historial muestra la carga.
 
 ## 11. Comandos utiles de soporte
@@ -475,7 +495,7 @@ Si se quiere conservar la imagen actual como archivo de rollback:
 docker save docker-app:latest -o gatekeeper_app_version_anterior.tar
 ```
 
-La carpeta `/data` no se debe borrar.
+La carpeta `/data/gatekeeper` no se debe borrar.
 
 ### 12.3 Cargar nueva imagen
 
@@ -521,7 +541,7 @@ Validar:
 5. Se puede previsualizar un archivo.
 6. La validacion funciona.
 7. La carga registra auditoria.
-8. La evidencia sigue guardandose en `/data`.
+8. La evidencia sigue guardandose en `/data/gatekeeper`.
 
 Comando de estado:
 
@@ -563,7 +583,7 @@ docker load -i gatekeeper_app_version_anterior.tar
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-La carpeta `/data` no se elimina al hacer rollback.
+La carpeta `/data/gatekeeper` no se elimina al hacer rollback.
 
 ## 14. Pendientes antes de ejecutar
 
@@ -573,7 +593,7 @@ Completar y confirmar:
 - password SingleStore;
 - si se mantiene `SYSTEM_ADMIN_USERNAME` vacio o se define admin local;
 - si LDAP requiere usuario tecnico de busqueda;
-- permisos de escritura sobre `/data`;
+- permisos de escritura sobre `/data/gatekeeper`;
 - que el usuario LDAP pertenece a `Usuarios_Hadoop`;
 - que el balanceador `singlestore.austro.grpfin` resuelve desde el servidor.
 

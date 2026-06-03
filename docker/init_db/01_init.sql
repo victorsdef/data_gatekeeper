@@ -1,4 +1,4 @@
-CREATE DATABASE IF NOT EXISTS gatekeeper_meta;
+CREATE DATABASE gatekeeper_meta;
 
 USE gatekeeper_meta;
 
@@ -25,13 +25,16 @@ CREATE TABLE IF NOT EXISTS catalogos_config (
 );
 
 CREATE TABLE IF NOT EXISTS usuarios (
-    username      VARCHAR(100) NOT NULL,
-    nombre        VARCHAR(200),
-    email         VARCHAR(200),
-    rol           VARCHAR(50)  NOT NULL DEFAULT 'Publicador',
-    activo        TINYINT(1)   NOT NULL DEFAULT 1,
-    ultimo_acceso DATETIME,
-    PRIMARY KEY (username)
+    username             VARCHAR(100) NOT NULL,
+    usuario_id           BIGINT       NOT NULL AUTO_INCREMENT,
+    nombre               VARCHAR(200),
+    email                VARCHAR(200),
+    rol                  VARCHAR(50)  NOT NULL DEFAULT 'Publicador',
+    activo               TINYINT(1)   NOT NULL DEFAULT 1,
+    fecha_creacion       DATETIME     NOT NULL DEFAULT NOW(),
+    fecha_actualizacion  DATETIME,
+    PRIMARY KEY (username),
+    KEY idx_usuarios_usuario_id (usuario_id)
 );
 
 CREATE TABLE IF NOT EXISTS permisos_catalogo (
@@ -39,6 +42,21 @@ CREATE TABLE IF NOT EXISTS permisos_catalogo (
     tipo            VARCHAR(20)     NOT NULL,
     valor           VARCHAR(100)    NOT NULL,
     PRIMARY KEY (catalog_id, tipo, valor)
+);
+
+CREATE TABLE IF NOT EXISTS log_usuarios (
+    log_id           BIGINT       NOT NULL AUTO_INCREMENT,
+    timestamp_evento DATETIME     NOT NULL DEFAULT NOW(),
+    username         VARCHAR(100) NOT NULL,
+    actor_username   VARCHAR(100),
+    accion           VARCHAR(50)  NOT NULL,
+    estado           VARCHAR(20)  NOT NULL DEFAULT 'OK',
+    rol              VARCHAR(50),
+    detalle_json     JSON,
+    PRIMARY KEY (log_id),
+    KEY idx_log_usuarios_username (username),
+    KEY idx_log_usuarios_actor (actor_username),
+    KEY idx_log_usuarios_timestamp (timestamp_evento)
 );
 
 CREATE TABLE IF NOT EXISTS log_auditoria (
@@ -57,6 +75,3 @@ CREATE TABLE IF NOT EXISTS log_auditoria (
     ruta_zip_auditoria      VARCHAR(1000),
     PRIMARY KEY (id)
 );
-
-INSERT IGNORE INTO usuarios (username, nombre, email, rol)
-VALUES ('admin', 'Administrador', 'admin@baustro.fin.ec', 'Admin');

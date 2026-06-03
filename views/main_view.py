@@ -16,7 +16,7 @@ from pathlib import Path
 from dg_validators.engine import validate_dataframe, ValidationResult
 from storage.file_handler import read_uploaded_file, get_file_stats, detect_file_delimiter, get_excel_sheets
 from reports.report_builder import build_error_report
-from services.db_writer import execute_load
+from services.db_writer import execute_load, save_validation_failure_file
 from utils.error_messages import user_facing_error
 from config.catalogs import get_proyectos_list, get_catalogs_by_project
 from config import settings
@@ -615,6 +615,20 @@ def _render_validate_step(catalog: dict) -> None:
             with st.spinner("Validando datos en memoria..."):
                 result = validate_dataframe(df, schema_config)
                 st.session_state.validation_result = result
+                st.session_state.validation_failure_zip_path = None
+                if not result.success:
+                    user = st.session_state.get("user_info") or {}
+                    st.session_state.validation_failure_zip_path = save_validation_failure_file(
+                        file_bytes=st.session_state.get("uploaded_audit_bytes") or b"",
+                        filename=(
+                            st.session_state.get("uploaded_audit_name")
+                            or st.session_state.get("uploaded_name", "archivo")
+                        ),
+                        catalog=catalog,
+                        username=user.get("username", "usuario"),
+                        project_id=st.session_state.get("selected_project_id", ""),
+                        error_count=result.error_count,
+                    )
             st.rerun()
 
         if st.button("← Volver al archivo", use_container_width=True, key="btn_back_v"):
@@ -706,6 +720,9 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+        validation_zip_path = st.session_state.get("validation_failure_zip_path")
+        if validation_zip_path:
+            st.info(f"Archivo fallido guardado en auditoría: `{validation_zip_path}`")
 
 
 # ------------------------------------------------------------------

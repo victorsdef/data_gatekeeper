@@ -86,7 +86,7 @@ def render_login() -> None:
                     st.session_state.current_view = "upload"
                     st.rerun()
                 else:
-                    st.error("Usuario o contraseña incorrectos.")
+                    st.error("Usuario o contraseña incorrectos, o no perteneces al grupo Usuarios Hadoop.")
 
         st.markdown("""
         <p style="text-align:center; font-size:11px; color:#D1D5DB; margin-top:24px;">

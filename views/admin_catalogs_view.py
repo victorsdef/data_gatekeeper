@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 import base64
 import json
+from html import escape as html_escape
 from pathlib import Path
 from typing import Dict, List, Set
 import pandas as pd
@@ -25,7 +26,7 @@ from services.db_admin import (
     get_hive_databases, get_hive_tables, describe_hive_table,
     get_all_projects, get_active_catalogs,
     save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
-    get_catalog_permissions, save_permissions, get_all_usuarios_activos, get_catalog_id_by_table,
+    get_catalog_permissions, save_permissions, get_catalog_id_by_table,
     update_catalog_config,
     get_catalog_schema,
     export_catalogs_bundle, import_catalogs_bundle,
@@ -34,7 +35,7 @@ from services.db_writer import get_audit_log
 from utils.error_messages import user_facing_error
 from services.user_service import (
     get_all_usuarios, update_user_rol, toggle_user_activo,
-    export_users_bundle, import_users_bundle,
+    export_users_bundle, import_users_bundle, create_or_promote_user,
 )
 
 _TIPOS       = ["str", "int", "float", "bool"]
@@ -45,7 +46,7 @@ _ESTRATEGIAS = [
 ]
 HIVE_ENABLED = bool(getattr(settings, "HIVE_ENABLED", True))
 _DESTINOS    = ["singlestore"] + (["hive"] if HIVE_ENABLED else [])
-_ROLES       = ["Publicador", "Admin"]
+_ROLES       = ["Publicador"]
 _REGLA_TIPOS = ["isin", "gte", "lte", "min_length", "str_length", "regex"]
 _REGLAS_POR_TIPO = {
     "str": ["isin", "min_length", "str_length", "regex"],
@@ -73,6 +74,60 @@ _GENERIC_ORIGIN_TOKENS = {
     "decrypt", "encrypt", "columna", "columnas", "campo", "campos",
     "fuente", "fuentes", "general", "maestro", "maestros",
 }
+
+
+def _load_usuarios_lookup() -> Dict[str, Dict]:
+    try:
+        usuarios = get_all_usuarios()
+    except Exception:
+        return {}
+    return {
+        str(u.get("username", "")).strip().lower(): u
+        for u in usuarios
+        if str(u.get("username", "")).strip()
+    }
+
+
+def _is_publicador_activo(username: str, usuarios_lookup: Dict[str, Dict]) -> bool:
+    user = usuarios_lookup.get(str(username or "").strip().lower())
+    if not user:
+        return False
+    rol = str(user.get("rol") or "Publicador").strip().lower()
+    return bool(user.get("activo")) and rol == "publicador"
+
+
+def _usuario_label(username: str, usuarios_lookup: Dict[str, Dict]) -> str:
+    username = str(username or "").strip()
+    user = usuarios_lookup.get(username.lower(), {})
+    nombre = str(user.get("nombre") or "").strip()
+    email = str(user.get("email") or "").strip()
+
+    parts = []
+    if nombre and nombre.lower() != username.lower():
+        parts.append(nombre)
+    parts.append(username)
+    if email:
+        parts.append(email)
+    return " · ".join(parts)
+
+
+def _format_permiso_label(permiso: Dict, usuarios_lookup: Dict[str, Dict], icon_user: str, icon_role: str) -> str:
+    valor = str(permiso.get("valor", "")).strip()
+    if permiso.get("tipo") == "usuario":
+        return f"{icon_user}{html_escape(_usuario_label(valor, usuarios_lookup))}"
+    return f"{icon_role}{html_escape(valor)}"
+
+
+def _format_permiso_chip(permiso: Dict, usuarios_lookup: Dict[str, Dict], icon_user: str, icon_role: str) -> str:
+    label = _format_permiso_label(permiso, usuarios_lookup, icon_user, icon_role)
+    bg = "#EEF2FF" if permiso.get("tipo") == "usuario" else "#F3F4F6"
+    color = "#1C2F6E" if permiso.get("tipo") == "usuario" else "#4B5563"
+    return (
+        f'<span style="display:inline-flex;align-items:center;gap:3px;'
+        f'background:{bg};color:{color};border:1px solid #D1D9F0;'
+        f'padding:2px 7px;border-radius:999px;font-size:11px;line-height:1.4;">'
+        f'{label}</span>'
+    )
 
 
 def _skeleton_html(n_lines: int = 4, card: bool = False) -> str:
@@ -1528,30 +1583,57 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
 
 def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None) -> None:
     current    = current or []
-    init_roles = [p["valor"] for p in current if p["tipo"] == "rol"]
-    init_users = [p["valor"] for p in current if p["tipo"] == "usuario"]
+    usuarios_lookup = _load_usuarios_lookup()
+    init_users = [
+        p["valor"] for p in current
+        if p["tipo"] == "usuario" and _is_publicador_activo(p["valor"], usuarios_lookup)
+    ]
+    publicador_default = bool(init_users)
 
     st.markdown("**Permisos de acceso**")
-    st.caption("Sin selección = accesible para todos los publicadores")
+    st.caption(
+        "Los Admin siempre tienen acceso. "
+        "Activa Publicador para seleccionar los publicadores puntuales que veran el catalogo."
+    )
 
     c1, c2 = st.columns(2)
     with c1:
-        st.multiselect("Roles", _ROLES, default=init_roles, key=f"{key_prefix}_roles")
+        publicador_enabled = st.toggle(
+            "Permitir publicadores",
+            value=publicador_default,
+            key=f"{key_prefix}_role_display",
+            help="Si esta activo, debes seleccionar que publicadores tendran acceso.",
+        )
     with c2:
-        try:
-            users = get_all_usuarios_activos()
-        except Exception:
-            users = []
-        st.multiselect("Usuarios específicos", users, default=init_users, key=f"{key_prefix}_users")
+        users = [
+            username
+            for username in usuarios_lookup
+            if _is_publicador_activo(username, usuarios_lookup)
+        ]
+        users = list(dict.fromkeys(users + init_users))
+        if publicador_enabled:
+            st.multiselect(
+                "Publicadores autorizados",
+                users,
+                default=init_users,
+                key=f"{key_prefix}_users",
+                format_func=lambda username: _usuario_label(username, usuarios_lookup),
+            )
+        else:
+            st.caption("Sin publicadores autorizados. Solo Admins veran el catalogo.")
+            st.session_state[f"{key_prefix}_users"] = []
 
 
 def _collect_permisos(key_prefix: str) -> List[Dict]:
-    roles = st.session_state.get(f"{key_prefix}_roles", [])
-    users = st.session_state.get(f"{key_prefix}_users", [])
-    return (
-        [{"tipo": "rol",     "valor": r} for r in roles] +
-        [{"tipo": "usuario", "valor": u} for u in users]
-    )
+    publicador_enabled = bool(st.session_state.get(f"{key_prefix}_role_display", False))
+    if not publicador_enabled:
+        return []
+    usuarios_lookup = _load_usuarios_lookup()
+    users = [
+        u for u in st.session_state.get(f"{key_prefix}_users", [])
+        if _is_publicador_activo(u, usuarios_lookup)
+    ]
+    return [{"tipo": "usuario", "valor": u} for u in users]
 
 
 def _render_registro_form(
@@ -1762,6 +1844,7 @@ def _tab_activos() -> None:
     by_project: Dict[str, List] = defaultdict(list)
     for cat in catalogs:
         by_project[cat["proyecto"]].append(cat)
+    usuarios_lookup = _load_usuarios_lookup()
 
     for project_name, group in by_project.items():
         with st.expander(f"📁 {project_name}  —  {len(group)} catálogo(s)", expanded=False):
@@ -1774,10 +1857,25 @@ def _tab_activos() -> None:
 
                 _icon_user = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
                 _icon_role = '<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="#6B7280" style="vertical-align:middle;margin-right:2px;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>'
-                perm_text = ", ".join(
-                    f"{_icon_user if p['tipo'] == 'usuario' else _icon_role}{p['valor']}"
-                    for p in permisos
-                ) or "Todos los publicadores"
+                user_permisos = [
+                    p for p in permisos
+                    if p["tipo"] == "usuario"
+                    and _is_publicador_activo(p["valor"], usuarios_lookup)
+                ]
+                user_chips = "".join(
+                    _format_permiso_chip(p, usuarios_lookup, _icon_user, _icon_role)
+                    for p in user_permisos
+                )
+                if user_permisos:
+                    perm_text = (
+                        '<span style="font-size:11px;color:#6B7280;font-weight:600;">Publicadores autorizados:</span>'
+                        f'{user_chips}'
+                    )
+                else:
+                    perm_text = (
+                        '<span style="font-size:11px;color:#6B7280;font-weight:600;">Acceso:</span>'
+                        '<span style="font-size:11px;color:#6B7280;">Solo Admins</span>'
+                    )
 
                 manage_key  = f"adm_ac_perm_{cid}"
                 confirm_key = f"adm_ac_conf_{cid}"
@@ -1797,7 +1895,9 @@ def _tab_activos() -> None:
                         '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
                         f'<span style="background:#E0E7FF;color:#3730A3;padding:1px 8px;border-radius:20px;font-size:11px;">{cat["estrategia"].upper()}</span>'
                         f'<span style="background:#D1FAE5;color:#065F46;padding:1px 8px;border-radius:20px;font-size:11px;">{cat["destino"].upper()}</span>'
-                        f'<span style="font-size:11px;color:#6B7280;">Acceso: {perm_text}</span>'
+                        '</div>'
+                        '<div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+                        f'{perm_text}'
                         '</div></div>',
                         unsafe_allow_html=True,
                     )
@@ -2030,18 +2130,74 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
                 )
                 if nuevo_rol != rol_actual:
                     try:
-                        update_user_rol(uname, nuevo_rol)
+                        actor = st.session_state.get("user_info", {}).get("username", "")
+                        update_user_rol(uname, nuevo_rol, actor_username=actor)
                         st.rerun()
                     except Exception as e:
                         st.error(user_facing_error(e, context="database"))
             with c2:
-                if st.button("✓" if activo else "✗", key=f"usr_act_{uname}",
-                             use_container_width=True, help="Activar/Desactivar"):
+                nuevo_activo = st.toggle(
+                    "Activo",
+                    value=activo,
+                    key=f"usr_act_{uname}",
+                    help="Activar o desactivar usuario",
+                )
+                if nuevo_activo != activo:
                     try:
-                        toggle_user_activo(uname, not activo)
+                        actor = st.session_state.get("user_info", {}).get("username", "")
+                        toggle_user_activo(uname, nuevo_activo, actor_username=actor)
                         st.rerun()
                     except Exception as e:
                         st.error(user_facing_error(e, context="database"))
+
+
+def _render_add_admin_form() -> None:
+    st.markdown("##### Agregar admin BA")
+    st.caption(
+        "Preautoriza un usuario BA como Admin. "
+        "Cuando inicie sesion con LDAP, tomara este rol automaticamente."
+    )
+
+    with st.form("usr_add_admin_ba", clear_on_submit=True):
+        username = st.text_input(
+            "Usuario BA",
+            placeholder="ba01006646",
+            key="usr_add_admin_username",
+        )
+
+        submitted = st.form_submit_button(
+            "Guardar como Admin",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if not submitted:
+        return
+
+    username_norm = str(username or "").strip().lower()
+    if not username_norm:
+        st.error("Ingresa el usuario BA.")
+        return
+    if not username_norm.startswith("ba"):
+        st.error("El usuario debe iniciar con `ba`, por ejemplo `ba01006646`.")
+        return
+    if not re.fullmatch(r"ba[\w.-]+", username_norm):
+        st.error("El usuario BA contiene caracteres no validos.")
+        return
+
+    try:
+        result = create_or_promote_user(
+            username=username_norm,
+            rol="Admin",
+            actor_username=st.session_state.get("user_info", {}).get("username", ""),
+        )
+        if result["created"]:
+            st.success(f"Usuario `{username_norm}` creado como Admin.")
+        else:
+            st.success(f"Usuario `{username_norm}` actualizado a Admin.")
+        st.rerun()
+    except Exception as e:
+        st.error(user_facing_error(e, context="database"))
 
 
 def _tab_usuarios() -> None:
@@ -2055,6 +2211,9 @@ def _tab_usuarios() -> None:
         </p>
     </div>
     """, unsafe_allow_html=True)
+
+    _render_add_admin_form()
+    st.divider()
 
     st.markdown("##### Respaldo y restauración")
     ux1, ux2 = st.columns([1, 2])

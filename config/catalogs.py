@@ -82,14 +82,14 @@ def get_catalogs_by_project(
     """
     Retorna catálogos del proyecto filtrados por permisos del usuario.
     - Admins ven todos los catálogos del proyecto.
-    - Sin permisos configurados: accesible para todos.
-    - Con permisos: solo si el rol o username del usuario coincide.
+    - Publicadores ven un catalogo solo si su username esta incluido
+      explicitamente.
     """
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT DISTINCT
+                SELECT
                   c.catalog_id,
                   c.nombre,
                   c.base_datos,
@@ -98,17 +98,19 @@ def get_catalogs_by_project(
                   c.destino,
                   c.schema_json
                 FROM {TBL_CATALOGOS} c
-                LEFT JOIN {TBL_PERMISOS} p ON p.catalog_id = c.catalog_id
                 WHERE c.project_id = %s AND c.activo = 1
                   AND (
                     %s = 'Admin'
-                    OR p.catalog_id IS NULL
-                    OR (p.tipo = 'rol'     AND p.valor = %s)
-                    OR (p.tipo = 'usuario' AND p.valor = %s)
+                    OR EXISTS (
+                        SELECT 1 FROM {TBL_PERMISOS} pm
+                        WHERE pm.catalog_id = c.catalog_id
+                          AND pm.tipo = 'usuario'
+                          AND LOWER(pm.valor) = LOWER(%s)
+                    )
                   )
                 ORDER BY c.nombre
                 """,
-                (project_id, rol, rol, username),
+                (project_id, rol, username),
             )
             rows = _fetchall_dict(cur)
             if not HIVE_ENABLED:

@@ -9,7 +9,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - /data:/data
+      - /data/gatekeeper:/data/gatekeeper
     healthcheck:
       test: ["CMD", "python", "scripts/healthcheck.py", "--mode", "readiness"]
       interval: 30s

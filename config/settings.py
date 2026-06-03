@@ -90,6 +90,7 @@ SYSTEM_ADMIN_PASSWORD = os.getenv("SYSTEM_ADMIN_PASSWORD")
 TBL_PROYECTOS = os.getenv("TBL_PROYECTOS", "proyectos")
 TBL_CATALOGOS = os.getenv("TBL_CATALOGOS", "catalogos_config")
 TBL_USUARIOS = os.getenv("TBL_USUARIOS", "usuarios")
+TBL_LOG_USUARIOS = os.getenv("TBL_LOG_USUARIOS", "log_usuarios")
 TBL_PERMISOS = os.getenv("TBL_PERMISOS", "permisos_catalogo")
 TBL_LOG_AUDITORIA = os.getenv("TBL_LOG_AUDITORIA", "log_auditoria")
 
@@ -103,6 +104,9 @@ AUDIT_STORAGE_PATH = os.getenv(
 )
 AUDIT_STORAGE_READONLY_AFTER_WRITE = (
     os.getenv("AUDIT_STORAGE_READONLY_AFTER_WRITE", "true").lower() == "true"
+)
+AUDIT_STORE_FAILED_FILES = (
+    os.getenv("AUDIT_STORE_FAILED_FILES", "false").lower() == "true"
 )
 AUDIT_STORAGE_DIR_MODE = os.getenv("AUDIT_STORAGE_DIR_MODE", "750")
 AUDIT_STORAGE_FILE_MODE = os.getenv("AUDIT_STORAGE_FILE_MODE", "440")

@@ -378,9 +378,38 @@ Campos:
 - `email`
 - `rol`
 - `activo`
-- `ultimo_acceso`
+- `fecha_creacion`
+- `fecha_actualizacion`
 
-### 8.4 permisos_catalogo
+El ultimo acceso no se guarda como columna fisica en `usuarios`; se calcula desde
+la tabla `log_usuarios`.
+
+### 8.4 log_usuarios
+
+Mantiene la bitacora de eventos sobre usuarios.
+
+Campos:
+
+- `log_id`
+- `timestamp_evento`
+- `username`
+- `actor_username`
+- `accion`
+- `estado`
+- `rol`
+- `detalle_json`
+
+Eventos esperados:
+
+- `USER_PREAUTHORIZED`
+- `USER_CREATED_LOGIN`
+- `LOGIN_OK`
+- `LOGIN_DENIED_INACTIVE`
+- `ROLE_UPDATED`
+- `USER_ACTIVATED`
+- `USER_DEACTIVATED`
+
+### 8.5 permisos_catalogo
 
 Permite limitar catalogos por usuario o rol.
 
@@ -397,7 +426,7 @@ tipo=rol, valor=Publicador
 tipo=usuario, valor=jberrezueta
 ```
 
-### 8.5 log_auditoria
+### 8.6 log_auditoria
 
 Registra cada intento de carga.
 
@@ -566,9 +595,9 @@ Funcion principal:
 Responsabilidades:
 
 - preparar `operation_id`;
-- guardar ZIP auditado inicial;
 - escribir en SingleStore o Hive;
-- renombrar evidencia a `exito` o `fallo`;
+- guardar ZIP auditado con estado `exito`;
+- opcionalmente guardar ZIP auditado con estado `fallo`;
 - registrar `log_auditoria`;
 - enviar alerta si corresponde.
 
@@ -626,14 +655,19 @@ El ZIP incluye:
 Patron de ruta:
 
 ```text
-{AUDIT_STORAGE_PATH}/{catalog_id}/{YYYYMMDD}/{timestamp}_{estado}_{usuario}_{operation_id}_{archivo}.zip
+{AUDIT_STORAGE_PATH}/{proyecto}/{nombre_catalogo}/{nombre_tabla}/{YYYYMMDD_HHMM}_{estado}_{usuario}_{archivo}_{hash}.zip
 ```
 
 Estados:
 
-- `pendiente`;
 - `exito`;
 - `fallo`.
+
+Los ZIP exitosos se guardan siempre. Los ZIP fallidos se guardan solo si:
+
+```env
+AUDIT_STORE_FAILED_FILES=true
+```
 
 El archivo se intenta dejar en modo solo lectura si:
 
