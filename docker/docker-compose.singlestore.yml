@@ -1,0 +1,34 @@
+# Levanta únicamente un SingleStore local para desarrollo.
+#
+# Uso:
+#   docker compose -f docker/docker-compose.singlestore.yml up -d
+#
+# Credenciales locales (ajusta tu .env):
+#   SS_HOST=localhost
+#   SS_USER=root
+#   SS_PASSWORD=<ROOT_PASSWORD definido abajo>
+#
+# Studio (interfaz web): http://localhost:8080
+
+services:
+  singlestore:
+    image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+    container_name: gatekeeper_singlestore
+    environment:
+      ROOT_PASSWORD: "${SS_PASSWORD:-gatekeeper}"
+    ports:
+      - "3306:3306"   # protocolo MySQL (app)
+      - "8080:8080"   # Studio web UI
+    volumes:
+      - singlestore_data:/data/memsql
+      - ./init_db:/init.d:ro   # ejecuta 00_create_db.sql y 01_init.sql al primer arranque
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p${SS_PASSWORD:-gatekeeper} --silent"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  singlestore_data:

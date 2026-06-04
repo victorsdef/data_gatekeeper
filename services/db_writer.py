@@ -56,6 +56,7 @@ def execute_load(
     catalog: Dict[str, Any],
     username: str,
     project_id: str = "",
+    project_name: str = "",
 ) -> Dict[str, Any]:
     """
     Pipeline completo de carga:
@@ -122,6 +123,7 @@ def execute_load(
             operation_id=operation_id,
             estado="exito",
             project_id=project_id,
+            project_name=project_name,
         )
         _save_audit_log(
             operation_id=operation_id,
@@ -181,6 +183,7 @@ def execute_load(
                 operation_id=operation_id,
                 estado="fallo",
                 project_id=project_id,
+                project_name=project_name,
             )
         try:
             _save_audit_log(
@@ -522,6 +525,7 @@ def save_validation_failure_file(
     catalog: Dict[str, Any],
     username: str,
     project_id: str = "",
+    project_name: str = "",
     error_count: int = 0,
 ) -> Optional[str]:
     """Guarda el archivo original cuando falla la validacion, si esta habilitado."""
@@ -538,6 +542,7 @@ def save_validation_failure_file(
         operation_id=operation_id,
         estado="fallo",
         project_id=project_id,
+        project_name=project_name,
     )
     logger.info(
         "Archivo con validacion fallida guardado operation_id=%s catalog_id=%s errores=%s zip_path=%s",
@@ -559,10 +564,11 @@ def _save_cold_storage(
     operation_id: str,
     estado: str = "exito",
     project_id: str = "",
+    project_name: str = "",
 ) -> Optional[str]:
     """
     Guarda ZIP del archivo original.
-    Ruta: {AUDIT_STORAGE_PATH}/{proyecto}/{catalogo}/{tabla}/{fecha_hora}_{estado}_{usuario}_{archivo}_{hash}.zip
+    Ruta: {AUDIT_STORAGE_PATH}/{nombre_proyecto}/{catalogo}/{tabla}/{fecha_hora}_{estado}_{usuario}_{archivo}_{hash}.zip
 
     Estructura en disco:
       /data/gatekeeper/
@@ -575,7 +581,7 @@ def _save_cold_storage(
         return None
     try:
         timestamp  = datetime.now().strftime("%Y%m%d_%H%M")
-        safe_project = _safe_path_part(project_id, default="sin_proyecto")
+        safe_project = _safe_path_part(project_name or project_id, default="sin_proyecto")
         safe_catalog = _safe_path_part(catalog_name or catalog_id, default="catalogo")
         safe_table = _safe_path_part(table_name, default="tabla")
         safe_user  = _safe_path_part(username, default="usuario")
@@ -591,6 +597,7 @@ def _save_cold_storage(
         manifest = {
             "operation_id": operation_id,
             "project_id": project_id,
+            "project_name": project_name,
             "catalog_id": catalog_id,
             "catalog_name": catalog_name,
             "table_name": table_name,

@@ -1268,6 +1268,45 @@ def _render_schema_readonly(schema: dict) -> None:
     )
 
 
+_RULE_CHIP = {
+    "isin":       ("#92400E", "#FEF3C7", "#F59E0B", "DOMINIO"),
+    "gte":        ("#1E3A8A", "#DBEAFE", "#3B82F6", "MÍN ≥"),
+    "lte":        ("#1E3A8A", "#DBEAFE", "#3B82F6", "MÁX ≤"),
+    "min_length": ("#065F46", "#D1FAE5", "#10B981", "LONG. MÍN"),
+    "str_length": ("#065F46", "#D1FAE5", "#10B981", "LONGITUD"),
+    "regex":      ("#4C1D95", "#F5F3FF", "#7C3AED", "REGEX"),
+}
+
+
+def _rule_chip_html(regla: dict) -> str:
+    t = regla.get("tipo", "")
+    fg, bg, border, label = _RULE_CHIP.get(t, ("#374151", "#F3F4F6", "#9CA3AF", t.upper()))
+    if t == "isin":
+        vals = ", ".join(str(v) for v in regla.get("valor", []))
+        body = f"<b>{vals}</b>"
+    elif t == "gte":
+        body = f"<b>{regla.get('valor', '')}</b>"
+    elif t == "lte":
+        body = f"<b>{regla.get('valor', '')}</b>"
+    elif t == "min_length":
+        body = f"<b>{regla.get('valor', '')}</b> caracteres"
+    elif t == "str_length":
+        body = f"<b>{regla.get('min', '')}</b> – <b>{regla.get('max', '')}</b> caracteres"
+    elif t == "regex":
+        body = f"<code style='font-size:11px;background:transparent;'>{regla.get('valor', '')}</code>"
+    else:
+        body = str(regla)
+    return (
+        f'<div style="display:flex;align-items:center;gap:8px;'
+        f'background:{bg};border:1px solid {border}40;'
+        f'border-radius:8px;padding:7px 12px;margin-bottom:6px;">'
+        f'<span style="background:{border};color:white;font-size:10px;font-weight:700;'
+        f'padding:1px 7px;border-radius:20px;white-space:nowrap;">{label}</span>'
+        f'<span style="color:{fg};font-size:12px;">{body}</span>'
+        f'</div>'
+    )
+
+
 def _render_rules_editor(columns: list, state_key: str) -> None:
     """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
     if not columns:
@@ -1288,17 +1327,25 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         st.session_state[state_key] = {}
     rules: dict = st.session_state[state_key]
 
+    # ── Encabezado ──────────────────────────────────────────────
+    total_rules = sum(len(v) for v in rules.values())
+    badge = (
+        f'<span style="background:#534AB7;color:white;font-size:10px;font-weight:700;'
+        f'padding:1px 8px;border-radius:20px;margin-left:6px;">{total_rules}</span>'
+        if total_rules else ""
+    )
     st.markdown(
-        '<div style="font-size:12px;font-weight:600;color:#6B7280;'
-        'padding:8px 0 4px;border-top:1px solid #E5E9F5;margin-top:8px;">'
-        'Reglas de calidad</div>',
+        f'<div style="font-size:13px;font-weight:700;color:#1C2F6E;'
+        f'padding:10px 0 6px;border-top:2px solid #E5E9F5;margin-top:4px;">'
+        f'Reglas de calidad{badge}</div>',
         unsafe_allow_html=True,
     )
+
     sel_col = st.selectbox(
         "Columna",
         [col["nombre"] for col in col_defs],
         key=f"{state_key}_sel",
-        label_visibility="collapsed",
+        label_visibility="visible",
     )
     sel_type = next((col["tipo"] for col in col_defs if col["nombre"] == sel_col), "str")
     regla_options = _REGLAS_POR_TIPO.get(sel_type, _REGLA_TIPOS)
@@ -1307,48 +1354,53 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         st.session_state.pop(tipo_key, None)
     col_rules = list(rules.get(sel_col, []))
 
+    # ── Reglas activas ───────────────────────────────────────────
+    n_col = len(col_rules)
+    st.markdown(
+        f'<div style="font-size:11px;font-weight:600;color:#6B7280;'
+        f'text-transform:uppercase;letter-spacing:0.5px;margin:8px 0 6px;">'
+        f'Reglas activas ({n_col})</div>',
+        unsafe_allow_html=True,
+    )
     if col_rules:
-        for i, regla in enumerate(col_rules):
-            t = regla.get("tipo", "")
-            if t == "isin":
-                desc = "Dominio: " + ", ".join(str(v) for v in regla.get("valor", []))
-            elif t == "gte":
-                desc = f"Valor minimo: {regla.get('valor', '')}"
-            elif t == "lte":
-                desc = f"Valor maximo: {regla.get('valor', '')}"
-            elif t == "min_length":
-                desc = f"Longitud minima: {regla.get('valor', '')}"
-            elif t == "str_length":
-                desc = f"Longitud entre {regla.get('min','')} y {regla.get('max','')}"
-            elif t == "regex":
-                desc = f"Regex: {regla.get('valor', '')}"
-            else:
-                desc = str(regla)
-            rc1, rc2 = st.columns([8, 1])
-            with rc1:
-                st.markdown(
-                    f'<div style="background:#EEF2FF;color:#3730A3;font-size:12px;'
-                    f'padding:4px 12px;border-radius:6px;margin-bottom:4px;">{desc}</div>',
-                    unsafe_allow_html=True,
-                )
-            with rc2:
-                if st.button("✕", key=f"{state_key}_del_{sel_col}_{i}", help="Eliminar"):
-                    new_rules = dict(rules)
-                    new_rules[sel_col] = [r for j, r in enumerate(col_rules) if j != i]
-                    st.session_state[state_key] = new_rules
-                    st.rerun()
+        scroll_h = min(220, 60 + len(col_rules) * 52)
+        with st.container(height=scroll_h, border=False):
+            for i, regla in enumerate(col_rules):
+                c1, c2 = st.columns([8, 1])
+                with c1:
+                    st.markdown(_rule_chip_html(regla), unsafe_allow_html=True)
+                with c2:
+                    if st.button("×", key=f"{state_key}_del_{sel_col}_{i}",
+                                 help="Eliminar", use_container_width=True):
+                        new_rules = dict(rules)
+                        new_rules[sel_col] = [r for j, r in enumerate(col_rules) if j != i]
+                        st.session_state[state_key] = new_rules
+                        st.rerun()
     else:
-        st.caption("Sin reglas para esta columna.")
+        st.markdown(
+            '<div style="color:#9CA3AF;font-size:12px;font-style:italic;'
+            'padding:6px 0 8px;">Sin reglas para esta columna.</div>',
+            unsafe_allow_html=True,
+        )
 
     if not regla_options:
-        st.info(f"El tipo `{sel_type}` no tiene reglas adicionales configurables.")
+        st.info(f"El tipo `{sel_type}` no admite reglas adicionales.")
         return
 
+    # ── Agregar regla ────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:11px;font-weight:600;color:#6B7280;'
+        'text-transform:uppercase;letter-spacing:0.5px;'
+        'border-top:1px solid #E5E9F5;margin-top:10px;padding-top:10px;margin-bottom:6px;">'
+        'Agregar regla</div>',
+        unsafe_allow_html=True,
+    )
     tipo_sel = st.selectbox(
         "Tipo de regla",
         regla_options,
         key=tipo_key,
         format_func=lambda x: _REGLA_LABELS.get(x, x),
+        label_visibility="collapsed",
     )
 
     nueva_regla = None
@@ -1356,47 +1408,41 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         val_str = st.text_input(
             "Valores permitidos (separados por coma)",
             key=f"{state_key}_new_isin",
-            placeholder="C, D, N",
+            placeholder="Ej: C, D, N",
         )
-        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
             valores = [v.strip() for v in val_str.split(",") if v.strip()]
             if valores:
                 nueva_regla = {"tipo": "isin", "valor": valores}
 
     elif tipo_sel in ("gte", "lte"):
-        num_val = st.number_input(
-            "Valor limite",
-            key=f"{state_key}_new_num",
-            value=0.0,
-        )
-        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+        label = "Valor mínimo (≥)" if tipo_sel == "gte" else "Valor máximo (≤)"
+        num_val = st.number_input(label, key=f"{state_key}_new_num", value=0.0)
+        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
             nueva_regla = {"tipo": tipo_sel, "valor": float(num_val)}
 
     elif tipo_sel == "min_length":
         min_val = st.number_input(
-            "Caracteres minimos",
+            "Caracteres mínimos",
             key=f"{state_key}_new_minlen",
             value=1, min_value=1, step=1,
         )
-        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
             nueva_regla = {"tipo": "min_length", "valor": int(min_val)}
 
     elif tipo_sel == "str_length":
-        nc1, nc2 = st.columns(2)
-        with nc1:
-            sl_min = st.number_input("Min", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
-        with nc2:
-            sl_max = st.number_input("Max", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
-        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+        sl_min = st.number_input("Longitud mínima", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
+        sl_max = st.number_input("Longitud máxima", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
+        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
             nueva_regla = {"tipo": "str_length", "min": int(sl_min), "max": int(sl_max)}
 
     elif tipo_sel == "regex":
         pattern = st.text_input(
-            "Patron regex",
+            "Patrón regex",
             key=f"{state_key}_new_regex",
             placeholder=r"^[A-Z0-9_-]+$",
         )
-        if st.button("Agregar regla", key=f"{state_key}_add_btn", type="primary"):
+        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
             pattern = pattern.strip()
             if pattern:
                 nueva_regla = {"tipo": "regex", "valor": pattern}
@@ -1440,7 +1486,12 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
         }
 
     df = st.session_state[state_key]
-    height = 38 + len(df) * 35 + 2
+    rules = st.session_state.get(rules_key, {})
+    display_df = df.copy()
+    display_df["reglas"] = display_df["nombre"].apply(
+        lambda name: len(rules.get(str(name).strip(), []))
+    )
+    height = 38 + len(display_df) * 35 + 2
 
     # Stats bar
     if not df.empty:
@@ -1468,14 +1519,15 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
 
     # result_key ≠ state_key → no alimenta de vuelta al editor, evita el loop
     edited = st.data_editor(
-        df,
+        display_df,
         column_config={
             "nombre":   st.column_config.TextColumn("Columna",  width="medium"),
             "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True, width="small"),
             "nullable": st.column_config.CheckboxColumn("Nullable", width="small"),
+            "reglas":   st.column_config.NumberColumn("Reglas", width="small"),
         },
-        disabled=["nombre"],
-        use_container_width=False,
+        disabled=["nombre", "reglas"],
+        use_container_width=True,
         num_rows="fixed",
         hide_index=True,
         height=height,
@@ -1725,6 +1777,7 @@ def _render_registro_form(
         if catalog_exists(cid):
             st.error(f"Ya existe un catálogo con ID `{cid}`.")
             return
+        _registro_ok = False
         try:
             if create_project:
                 ensure_project_exists(proj_sel, proj_name)
@@ -1743,9 +1796,11 @@ def _render_registro_form(
             st.success(f"Catálogo **{nombre.strip()}** registrado correctamente.")
             st.session_state.pop("adm_schema_key", None)
             st.session_state[f"adm_chk_{tbl_sel}"] = False
-            st.rerun()
+            _registro_ok = True
         except Exception as e:
             st.error(user_facing_error(e, context="database"))
+        if _registro_ok:
+            st.rerun()
 
 
 def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
@@ -1761,6 +1816,205 @@ def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
             st.success("Permisos actualizados.")
         except Exception as e:
             st.error(user_facing_error(e, context="database"))
+
+
+@st.experimental_dialog("Editar catálogo", width="large")
+def _render_edit_catalog_dialog(cat: dict) -> None:
+    cid = cat["catalog_id"]
+    ek = f"ed_{cid}"
+
+    st.markdown(
+        '<div style="padding:10px 14px;background:#FFF7ED;'
+        'border:1px solid #FED7AA;border-radius:8px;margin-bottom:12px;">'
+        f'<span style="font-size:13px;font-weight:600;color:#92400E;">Editar — {cat["nombre"]}</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    ed_nombre = st.text_input("Nombre", value=cat["nombre"], key=f"{ek}_nombre")
+    ed_desc = st.text_area("Descripción", value=cat.get("descripcion") or "", key=f"{ek}_desc", height=60)
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        ed_est = st.selectbox(
+            "Estrategia",
+            _ESTRATEGIAS,
+            index=_ESTRATEGIAS.index(cat["estrategia"]) if cat["estrategia"] in _ESTRATEGIAS else 0,
+            key=f"{ek}_est",
+        )
+    with ec2:
+        ed_dest = st.selectbox(
+            "Destino",
+            _DESTINOS,
+            index=_DESTINOS.index(cat["destino"]) if cat["destino"] in _DESTINOS else 0,
+            key=f"{ek}_dest",
+        )
+
+    st.markdown("**Columnas del esquema**")
+    st.caption("Puedes editar nombre, tipo y nulabilidad. Usa la última fila vacía para agregar columnas.")
+
+    schema_init_key = f"{ek}_schema_init"
+    rules_edit_key = f"{ek}_rules_state"
+    if schema_init_key not in st.session_state:
+        try:
+            raw = get_catalog_schema(cid)
+            col_defs = raw.get("columnas", [])
+            st.session_state[schema_init_key] = [
+                {"nombre": c["nombre"], "tipo": c["tipo"], "nullable": bool(c.get("nullable", True))}
+                for c in col_defs
+            ]
+            st.session_state[rules_edit_key] = {
+                c["nombre"]: list(c.get("reglas", []))
+                for c in col_defs
+                if c.get("reglas")
+            }
+        except Exception as e:
+            st.error(user_facing_error(e, context="database"))
+            st.session_state[schema_init_key] = []
+
+    init_rows = st.session_state[schema_init_key]
+    init_df = pd.DataFrame(init_rows) if init_rows else pd.DataFrame(columns=["nombre", "tipo", "nullable"])
+    edit_rules = st.session_state.get(rules_edit_key, {})
+    display_init_df = init_df.copy()
+    display_init_df["reglas"] = display_init_df["nombre"].apply(
+        lambda name: len(edit_rules.get(str(name).strip(), []))
+    )
+
+    edited_df = st.data_editor(
+        display_init_df,
+        column_config={
+            "nombre": st.column_config.TextColumn("Columna", required=True),
+            "tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
+            "nullable": st.column_config.CheckboxColumn("Nullable"),
+            "reglas": st.column_config.NumberColumn("Reglas"),
+        },
+        disabled=["reglas"],
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        key=f"{ek}_schema_editor",
+    )
+
+    edit_rule_columns = [
+        {
+            "nombre": str(r.get("nombre", "")).strip(),
+            "tipo": str(r.get("tipo", "str") or "str").strip().lower(),
+        }
+        for _, r in edited_df.iterrows()
+        if str(r.get("nombre", "")).strip()
+    ]
+    _render_rules_editor(edit_rule_columns, rules_edit_key)
+
+    edit_schema_errors = _validate_catalog_form(
+        catalog_id=cid,
+        nombre=ed_nombre.strip(),
+        schema={
+            "columnas": [
+                {
+                    "nombre": str(r.get("nombre", "")).strip(),
+                    "tipo": str(r.get("tipo", "str")),
+                    "nullable": bool(r.get("nullable", True)),
+                    "reglas": st.session_state.get(rules_edit_key, {}).get(str(r.get("nombre", "")).strip(), []),
+                }
+                for _, r in edited_df.iterrows()
+                if str(r.get("nombre", "")).strip()
+            ]
+        },
+    )
+    for err in edit_schema_errors:
+        st.warning(err)
+
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True, disabled=bool(edit_schema_errors)):
+            edit_rules = st.session_state.get(rules_edit_key, {})
+            new_schema = {
+                "columnas": [
+                    {
+                        "nombre": str(r.get("nombre", "")).strip(),
+                        "tipo": str(r.get("tipo", "str")),
+                        "nullable": bool(r.get("nullable", True)),
+                        "reglas": edit_rules.get(str(r.get("nombre", "")).strip(), []),
+                    }
+                    for _, r in edited_df.iterrows()
+                    if str(r.get("nombre", "")).strip()
+                ]
+            }
+            try:
+                update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
+
+            st.session_state.pop(schema_init_key, None)
+            st.session_state.pop(rules_edit_key, None)
+            st.session_state.pop("adm_catalog_dialog", None)
+            selected_catalog = st.session_state.get("selected_catalog")
+            if isinstance(selected_catalog, dict) and selected_catalog.get("catalog_id") == cid:
+                st.session_state.pop("selected_catalog", None)
+                st.session_state.pop("selected_project_id", None)
+                st.session_state.pop("selected_project_name", None)
+                st.session_state.current_step = "upload"
+            st.rerun()
+    with bc2:
+        if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
+            st.session_state.pop(schema_init_key, None)
+            st.session_state.pop(rules_edit_key, None)
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+
+
+@st.experimental_dialog("Permisos del catálogo", width="large")
+def _render_catalog_permissions_dialog(cat: dict) -> None:
+    cid = cat["catalog_id"]
+    st.markdown(
+        '<div style="padding:10px 14px;background:#F0F4FF;'
+        'border:1px solid #C7D2FE;border-radius:8px;margin-bottom:8px;">'
+        f'<span style="font-size:13px;font-weight:600;color:#1C2F6E;">Permisos — {cat["nombre"]}</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    try:
+        permisos = get_catalog_permissions(cid)
+    except Exception as e:
+        st.error(user_facing_error(e, context="database"))
+        permisos = []
+
+    pk = f"ac_{cid}"
+    _render_permisos_selector(pk, current=permisos)
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if st.button("Guardar", type="primary", key=f"save_perm_{cid}", use_container_width=True):
+            try:
+                save_permissions(cid, _collect_permisos(pk))
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+    with bc2:
+        if st.button("Cancelar", key=f"cancel_perm_{cid}", use_container_width=True):
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+
+
+@st.experimental_dialog("Desactivar catálogo", width="small")
+def _render_deactivate_catalog_dialog(cat: dict) -> None:
+    cid = cat["catalog_id"]
+    st.warning(f"¿Desactivar **{cat['nombre']}**? Los publicadores perderán acceso inmediatamente.")
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        if st.button("Confirmar", type="primary", key=f"yes_deact_{cid}", use_container_width=True):
+            try:
+                deactivate_catalog(cid)
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+    with dc2:
+        if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -1799,6 +2053,7 @@ def _tab_activos() -> None:
             help="Si está activo, actualiza configuración y permisos de catálogos ya registrados.",
         )
         if uploaded_bundle is not None and st.button("Importar backup", use_container_width=True, key="adm_import_bundle_btn"):
+            _import_ok = False
             try:
                 bundle = json.loads(uploaded_bundle.getvalue().decode("utf-8"))
                 result = import_catalogs_bundle(bundle, overwrite_existing=overwrite_existing)
@@ -1806,9 +2061,11 @@ def _tab_activos() -> None:
                     "Importación completada. "
                     f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
                 )
-                st.rerun()
+                _import_ok = True
             except Exception as e:
                 st.error("No se pudo importar el backup. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
+            if _import_ok:
+                st.rerun()
 
     st.divider()
     search = st.text_input(
@@ -1877,10 +2134,6 @@ def _tab_activos() -> None:
                         '<span style="font-size:11px;color:#6B7280;">Solo Admins</span>'
                     )
 
-                manage_key  = f"adm_ac_perm_{cid}"
-                confirm_key = f"adm_ac_conf_{cid}"
-                edit_key    = f"adm_ac_edit_{cid}"
-
                 col_card, col_btns = st.columns([5, 2])
 
                 with col_card:
@@ -1905,186 +2158,21 @@ def _tab_activos() -> None:
                 with col_btns:
                     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
                     if st.button("Editar", key=f"btn_edit_{cid}", use_container_width=True):
-                        st.session_state[edit_key] = not st.session_state.get(edit_key, False)
-                        st.session_state[manage_key] = False
-                        st.rerun()
+                        st.session_state["adm_catalog_dialog"] = {"action": "edit", "catalog_id": cid}
                     if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
-                        st.session_state[manage_key] = not st.session_state.get(manage_key, False)
-                        st.session_state[edit_key] = False
-                        st.rerun()
+                        st.session_state["adm_catalog_dialog"] = {"action": "permissions", "catalog_id": cid}
                     if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
-                        st.session_state[confirm_key] = True
+                        st.session_state["adm_catalog_dialog"] = {"action": "deactivate", "catalog_id": cid}
 
-                if st.session_state.get(edit_key):
-                    with st.container():
-                        st.markdown(
-                            '<div style="padding:10px 14px;background:#FFF7ED;'
-                            'border:1px solid #FED7AA;border-radius:8px;margin-bottom:12px;">'
-                            f'<span style="font-size:13px;font-weight:600;color:#92400E;">Editar — {cat["nombre"]}</span>'
-                            '</div>',
-                            unsafe_allow_html=True,
-                        )
-                        ek = f"ed_{cid}"
-                        ed_nombre = st.text_input(
-                            "Nombre", value=cat["nombre"], key=f"{ek}_nombre"
-                        )
-                        ed_desc = st.text_area(
-                            "Descripción", value=cat.get("descripcion") or "", key=f"{ek}_desc", height=60
-                        )
-                        ec1, ec2 = st.columns(2)
-                        with ec1:
-                            ed_est = st.selectbox(
-                                "Estrategia", _ESTRATEGIAS,
-                                index=_ESTRATEGIAS.index(cat["estrategia"]) if cat["estrategia"] in _ESTRATEGIAS else 0,
-                                key=f"{ek}_est",
-                            )
-                        with ec2:
-                            ed_dest = st.selectbox(
-                                "Destino", _DESTINOS,
-                                index=_DESTINOS.index(cat["destino"]) if cat["destino"] in _DESTINOS else 0,
-                                key=f"{ek}_dest",
-                            )
-
-                        st.markdown("**Columnas del esquema**")
-                        st.caption("Puedes editar nombre, tipo y nulabilidad. Usa la última fila vacía para agregar columnas.")
-
-                        schema_init_key = f"{ek}_schema_init"
-                        rules_edit_key  = f"{ek}_rules_state"
-                        if schema_init_key not in st.session_state:
-                            try:
-                                raw = get_catalog_schema(cid)
-                                col_defs = raw.get("columnas", [])
-                                st.session_state[schema_init_key] = [
-                                    {"nombre": c["nombre"], "tipo": c["tipo"], "nullable": bool(c.get("nullable", True))}
-                                    for c in col_defs
-                                ]
-                                st.session_state[rules_edit_key] = {
-                                    c["nombre"]: list(c.get("reglas", []))
-                                    for c in col_defs if c.get("reglas")
-                                }
-                            except Exception as e:
-                                st.error(user_facing_error(e, context="database"))
-                                st.session_state[schema_init_key] = []
-
-                        init_rows = st.session_state[schema_init_key]
-                        init_df = pd.DataFrame(init_rows) if init_rows else pd.DataFrame(columns=["nombre", "tipo", "nullable"])
-
-                        edited_df = st.data_editor(
-                            init_df,
-                            column_config={
-                                "nombre":   st.column_config.TextColumn("Columna", required=True),
-                                "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
-                                "nullable": st.column_config.CheckboxColumn("Nullable"),
-                            },
-                            use_container_width=True,
-                            num_rows="dynamic",
-                            hide_index=True,
-                            key=f"{ek}_schema_editor",
-                        )
-
-                        edit_rule_columns = [
-                            {
-                                "nombre": str(r.get("nombre", "")).strip(),
-                                "tipo": str(r.get("tipo", "str") or "str").strip().lower(),
-                            }
-                            for _, r in edited_df.iterrows()
-                            if str(r.get("nombre", "")).strip()
-                        ]
-                        _render_rules_editor(edit_rule_columns, rules_edit_key)
-
-                        edit_schema_errors = _validate_catalog_form(
-                            catalog_id=cid,
-                            nombre=ed_nombre.strip(),
-                            schema={
-                                "columnas": [
-                                    {
-                                        "nombre": str(r.get("nombre", "")).strip(),
-                                        "tipo": str(r.get("tipo", "str")),
-                                        "nullable": bool(r.get("nullable", True)),
-                                        "reglas": st.session_state.get(rules_edit_key, {}).get(str(r.get("nombre", "")).strip(), []),
-                                    }
-                                    for _, r in edited_df.iterrows()
-                                    if str(r.get("nombre", "")).strip()
-                                ]
-                            },
-                        )
-                        for err in edit_schema_errors:
-                            st.warning(err)
-
-                        bc1, bc2 = st.columns(2)
-                        with bc1:
-                            if st.button("Guardar cambios", type="primary", key=f"{ek}_save", use_container_width=True, disabled=bool(edit_schema_errors)):
-                                try:
-                                    edit_rules = st.session_state.get(rules_edit_key, {})
-                                    new_schema = {
-                                        "columnas": [
-                                            {
-                                                "nombre": str(r.get("nombre", "")).strip(),
-                                                "tipo": str(r.get("tipo", "str")),
-                                                "nullable": bool(r.get("nullable", True)),
-                                                "reglas": edit_rules.get(str(r.get("nombre", "")).strip(), []),
-                                            }
-                                            for _, r in edited_df.iterrows()
-                                            if str(r.get("nombre", "")).strip()
-                                        ]
-                                    }
-                                    update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
-                                    st.success("Catálogo actualizado.")
-                                    st.session_state.pop(schema_init_key, None)
-                                    st.session_state.pop(rules_edit_key, None)
-                                    st.session_state[edit_key] = False
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(user_facing_error(e, context="database"))
-                        with bc2:
-                            if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
-                                st.session_state.pop(schema_init_key, None)
-                                st.session_state.pop(rules_edit_key, None)
-                                st.session_state[edit_key] = False
-                                st.rerun()
-
-                if st.session_state.get(manage_key):
-                    with st.container():
-                        st.markdown(
-                            '<div style="padding:10px 14px;background:#F0F4FF;'
-                            'border:1px solid #C7D2FE;border-radius:8px;margin-bottom:8px;">'
-                            f'<span style="font-size:13px;font-weight:600;color:#1C2F6E;">Permisos — {cat["nombre"]}</span>'
-                            '</div>',
-                            unsafe_allow_html=True,
-                        )
-                        pk = f"ac_{cid}"
-                        _render_permisos_selector(pk, current=permisos)
-                        bc1, bc2 = st.columns(2)
-                        with bc1:
-                            if st.button("Guardar", type="primary", key=f"save_perm_{cid}", use_container_width=True):
-                                try:
-                                    save_permissions(cid, _collect_permisos(pk))
-                                    st.success("Permisos actualizados.")
-                                    st.session_state[manage_key] = False
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(user_facing_error(e, context="database"))
-                        with bc2:
-                            if st.button("Cancelar", key=f"cancel_perm_{cid}", use_container_width=True):
-                                st.session_state[manage_key] = False
-                                st.rerun()
-
-                if st.session_state.get(confirm_key):
-                    st.warning(f"¿Desactivar **{cat['nombre']}**? Los publicadores perderán acceso inmediatamente.")
-                    dc1, dc2 = st.columns(2)
-                    with dc1:
-                        if st.button("Confirmar", type="primary", key=f"yes_deact_{cid}", use_container_width=True):
-                            try:
-                                deactivate_catalog(cid)
-                                st.session_state.pop(confirm_key, None)
-                                st.success("Catálogo desactivado.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(user_facing_error(e, context="database"))
-                    with dc2:
-                        if st.button("Cancelar", key=f"no_deact_{cid}", use_container_width=True):
-                            st.session_state.pop(confirm_key, None)
-                            st.rerun()
+                active_dialog = st.session_state.get("adm_catalog_dialog") or {}
+                if active_dialog.get("catalog_id") == cid:
+                    action = active_dialog.get("action")
+                    if action == "edit":
+                        _render_edit_catalog_dialog(cat)
+                    elif action == "permissions":
+                        _render_catalog_permissions_dialog(cat)
+                    elif action == "deactivate":
+                        _render_deactivate_catalog_dialog(cat)
 
 
 # ------------------------------------------------------------------
@@ -2129,12 +2217,15 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
                     label_visibility="collapsed",
                 )
                 if nuevo_rol != rol_actual:
+                    _rol_ok = False
                     try:
                         actor = st.session_state.get("user_info", {}).get("username", "")
                         update_user_rol(uname, nuevo_rol, actor_username=actor)
-                        st.rerun()
+                        _rol_ok = True
                     except Exception as e:
                         st.error(user_facing_error(e, context="database"))
+                    if _rol_ok:
+                        st.rerun()
             with c2:
                 nuevo_activo = st.toggle(
                     "Activo",
@@ -2143,12 +2234,15 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
                     help="Activar o desactivar usuario",
                 )
                 if nuevo_activo != activo:
+                    _activo_ok = False
                     try:
                         actor = st.session_state.get("user_info", {}).get("username", "")
                         toggle_user_activo(uname, nuevo_activo, actor_username=actor)
-                        st.rerun()
+                        _activo_ok = True
                     except Exception as e:
                         st.error(user_facing_error(e, context="database"))
+                    if _activo_ok:
+                        st.rerun()
 
 
 def _render_add_admin_form() -> None:
@@ -2185,6 +2279,7 @@ def _render_add_admin_form() -> None:
         st.error("El usuario BA contiene caracteres no validos.")
         return
 
+    _admin_ok = False
     try:
         result = create_or_promote_user(
             username=username_norm,
@@ -2195,9 +2290,11 @@ def _render_add_admin_form() -> None:
             st.success(f"Usuario `{username_norm}` creado como Admin.")
         else:
             st.success(f"Usuario `{username_norm}` actualizado a Admin.")
-        st.rerun()
+        _admin_ok = True
     except Exception as e:
         st.error(user_facing_error(e, context="database"))
+    if _admin_ok:
+        st.rerun()
 
 
 def _tab_usuarios() -> None:
@@ -2247,6 +2344,7 @@ def _tab_usuarios() -> None:
             help="Si está activo, actualiza rol, nombre, correo y estado de usuarios ya existentes.",
         )
         if uploaded_users is not None and st.button("Importar usuarios", use_container_width=True, key="usr_import_bundle_btn"):
+            _users_import_ok = False
             try:
                 bundle = json.loads(uploaded_users.getvalue().decode("utf-8"))
                 result = import_users_bundle(bundle, overwrite_existing=overwrite_users)
@@ -2254,9 +2352,11 @@ def _tab_usuarios() -> None:
                     "Importación de usuarios completada. "
                     f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
                 )
-                st.rerun()
+                _users_import_ok = True
             except Exception as e:
                 st.error("No se pudo importar el backup de usuarios. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
+            if _users_import_ok:
+                st.rerun()
 
     st.divider()
 

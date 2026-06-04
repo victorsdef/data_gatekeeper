@@ -81,6 +81,117 @@ def _build_audit_payload(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
 
 
 # ------------------------------------------------------------------
+# Modal: selector de catálogo
+# ------------------------------------------------------------------
+@st.experimental_dialog("Seleccionar catálogo", width="large")
+def _render_catalog_selector_dialog() -> None:
+    user = st.session_state.get("user_info") or {}
+
+    try:
+        proyectos = get_proyectos_list()
+    except Exception as e:
+        st.error(user_facing_error(e, context="catalogs"))
+        return
+
+    if not proyectos:
+        st.info("No hay catálogos configurados. Contacta al administrador.")
+        return
+
+    proy_options = {p["id"]: p["nombre"] for p in proyectos}
+    proy_sel_id = st.selectbox(
+        "Proyecto",
+        options=list(proy_options.keys()),
+        format_func=lambda x: proy_options[x],
+        key="dialog_proy",
+    )
+
+    try:
+        catalogs = get_catalogs_by_project(
+            proy_sel_id,
+            username=user.get("username", ""),
+            rol=user.get("rol", "Publicador"),
+        )
+    except Exception as e:
+        st.error(user_facing_error(e, context="catalogs"))
+        return
+
+    if not catalogs:
+        st.warning(f"No hay catálogos en '{proy_options[proy_sel_id]}'.")
+        return
+
+    cat_options = {c["catalog_id"]: c["nombre"] for c in catalogs}
+    cat_sel_id = st.selectbox(
+        "Catálogo",
+        options=list(cat_options.keys()),
+        format_func=lambda x: cat_options[x],
+        key="dialog_cat",
+    )
+    selected_cat = next((c for c in catalogs if c["catalog_id"] == cat_sel_id), None)
+    if not selected_cat:
+        return
+
+    schema     = selected_cat.get("schema", {})
+    cols_schema = schema.get("columnas", [])
+    estrategia = selected_cat["estrategia"]
+    destino    = selected_cat["destino"]
+
+    st.markdown(
+        f"<div style='margin:10px 0 8px;'>"
+        f"<code style='background:rgba(245,168,0,0.12);color:#B45309;"
+        f"padding:3px 8px;border-radius:4px;font-size:13px;'>"
+        f"{selected_cat['base_datos']}.{selected_cat['tabla_destino']}</code>"
+        f"<span style='margin-left:8px;font-size:12px;color:#6B7280;'>{len(cols_schema)} columna(s)</span>"
+        f"<span style='background:rgba(245,168,0,0.18);color:#F5A800;padding:1px 8px;"
+        f"border-radius:20px;font-size:11px;border:1px solid rgba(245,168,0,0.3);"
+        f"margin-left:10px;'>{estrategia.upper()}</span>"
+        f"<span style='background:rgba(110,231,183,0.15);color:#6EE7B7;padding:1px 8px;"
+        f"border-radius:20px;font-size:11px;border:1px solid rgba(110,231,183,0.3);"
+        f"margin-left:4px;'>{destino.upper()}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    if cols_schema:
+        st.dataframe(
+            pd.DataFrame([
+                {"Columna": c["nombre"], "Tipo": c["tipo"], "Nullable": "Sí" if c["nullable"] else "No"}
+                for c in cols_schema
+            ]),
+            use_container_width=True,
+            hide_index=True,
+            height=min(40 + len(cols_schema) * 35, 320),
+            column_config={
+                "Columna":  st.column_config.TextColumn("Columna",  width="large"),
+                "Tipo":     st.column_config.TextColumn("Tipo",     width="medium"),
+                "Nullable": st.column_config.TextColumn("Nullable", width="small"),
+            },
+        )
+    else:
+        st.caption("Este catálogo no tiene esquema configurado.")
+
+    st.divider()
+    if st.button("Confirmar selección", type="primary", use_container_width=True, key="btn_dialog_confirmar"):
+        prev_id = (st.session_state.get("selected_catalog") or {}).get("catalog_id")
+        if prev_id != cat_sel_id:
+            for k in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name",
+                      "uploaded_name", "validation_result", "carga_ejecutada", "load_result"]:
+                st.session_state.pop(k, None)
+            st.session_state.current_step = "upload"
+        st.session_state.selected_catalog = {
+            "catalog_id":    cat_sel_id,
+            "nombre":        selected_cat["nombre"],
+            "base_datos":    selected_cat["base_datos"],
+            "tabla_destino": selected_cat["tabla_destino"],
+            "estrategia":    estrategia,
+            "destino":       destino,
+            "schema":        schema,
+        }
+        st.session_state.selected_project_id = proy_sel_id
+        st.session_state.selected_project_name = proy_options.get(proy_sel_id, proy_sel_id)
+        st.rerun()
+
+
+# ------------------------------------------------------------------
 # Entry point
 # ------------------------------------------------------------------
 def render_main_app() -> None:
@@ -138,132 +249,74 @@ def _render_sidebar() -> None:
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("**Seleccionar catálogo**")
+        # Sección catálogo
+        selected_cat = st.session_state.get("selected_catalog")
 
-        # Proyectos desde catalogos_config
-        ph1 = st.empty()
-        ph1.markdown(_skeleton_html(3, dark=True), unsafe_allow_html=True)
-        try:
-            proyectos = get_proyectos_list()
-            ph1.empty()
-        except Exception as e:
-            ph1.empty()
-            st.error(user_facing_error(e, context="catalogs"))
-            _render_sidebar_footer(user)
-            return
+        if selected_cat:
+            estrategia = selected_cat["estrategia"]
+            destino    = selected_cat["destino"]
+            schema     = selected_cat.get("schema", {})
 
-        if not proyectos:
-            st.info("No hay catálogos configurados. Contacta al administrador.")
-            _render_sidebar_footer(user)
-            return
+            st.markdown(f"""
+            <div style="margin-top:4px; padding:10px 12px;
+                        background:rgba(255,255,255,0.07);
+                        border:1px solid rgba(255,255,255,0.10);
+                        border-radius:8px; font-size:12px; color:#A8B4D8;">
+                <div style="color:#A8B4D8; font-size:10px; text-transform:uppercase;
+                            letter-spacing:0.5px; margin-bottom:6px;">Catálogo activo</div>
+                <div style="color:white; font-weight:600; font-size:13px; margin-bottom:4px;">
+                    {selected_cat['nombre']}
+                </div>
+                <div style="margin-bottom:6px;">
+                    <code style="color:#F5A800; background:rgba(245,168,0,0.12);
+                        padding:2px 6px; border-radius:4px; font-size:11px;">
+                        {selected_cat['base_datos']}.{selected_cat['tabla_destino']}
+                    </code>
+                </div>
+                <div>
+                    <span style="background:rgba(245,168,0,0.18); color:#F5A800;
+                        padding:1px 8px; border-radius:20px; font-size:11px;
+                        border:1px solid rgba(245,168,0,0.3);
+                        margin-right:6px;">{estrategia.upper()}</span>
+                    <span style="background:rgba(110,231,183,0.15); color:#6EE7B7;
+                        padding:1px 8px; border-radius:20px; font-size:11px;
+                        border:1px solid rgba(110,231,183,0.3);">{destino.upper()}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        proy_options = {p["id"]: p["nombre"] for p in proyectos}
-        proy_sel_id = st.selectbox(
-            "Proyecto",
-            options=list(proy_options.keys()),
-            format_func=lambda x: proy_options[x],
-            key="sidebar_proyecto_sel",
-        )
+            with st.expander("Ver columnas esperadas", expanded=False):
+                cols = schema.get("columnas", [])
+                if cols:
+                    for col in cols:
+                        nullable_tag = (
+                            "<span style='color:#6EE7B7; font-size:10px;'>nullable</span>"
+                            if col.get("nullable") else ""
+                        )
+                        st.markdown(
+                            f"<div style='font-size:12px; padding:4px 6px; display:flex;"
+                            f"justify-content:space-between; align-items:center;"
+                            f"border-bottom:1px solid rgba(255,255,255,0.06);'>"
+                            f"<span style='color:#F5A800; font-family:monospace; font-size:11px;'>{col['nombre']}</span>"
+                            f"<span style='color:#A8B4D8; font-size:10px;'>{col['tipo']} {nullable_tag}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.caption("Sin esquema configurado.")
 
-        # Catálogos del proyecto filtrados por permisos del usuario
-        ph2 = st.empty()
-        ph2.markdown(_skeleton_html(3, dark=True), unsafe_allow_html=True)
-        try:
-            catalogs = get_catalogs_by_project(
-                proy_sel_id,
-                username=user.get("username", ""),
-                rol=user.get("rol", "Publicador"),
+            if st.button("Cambiar catálogo", use_container_width=True, key="btn_cambiar_catalogo"):
+                _render_catalog_selector_dialog()
+        else:
+            st.markdown(
+                "<div style='padding:12px; background:rgba(255,255,255,0.04);"
+                "border:1px dashed rgba(255,255,255,0.15); border-radius:8px;"
+                "font-size:12px; color:#7A8EC0; text-align:center; margin-bottom:12px;'>"
+                "Selecciona un catálogo para comenzar la carga."
+                "</div>",
+                unsafe_allow_html=True,
             )
-            ph2.empty()
-        except Exception as e:
-            ph2.empty()
-            st.error(user_facing_error(e, context="catalogs"))
-            _render_sidebar_footer(user)
-            return
-
-        if not catalogs:
-            st.warning(f"No hay catálogos en '{proy_options[proy_sel_id]}'.")
-            _render_sidebar_footer(user)
-            return
-
-        cat_options = {c["catalog_id"]: c["nombre"] for c in catalogs}
-        cat_sel_id = st.selectbox(
-            "Catálogo",
-            options=list(cat_options.keys()),
-            format_func=lambda x: cat_options[x],
-            key="sidebar_catalog_sel",
-        )
-
-        selected_cat = next((c for c in catalogs if c["catalog_id"] == cat_sel_id), None)
-        if not selected_cat:
-            return
-
-        # Resetear flujo si el catálogo cambió
-        if st.session_state.get("sidebar_catalog_key") != cat_sel_id:
-            for k in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name", "uploaded_name",
-                      "validation_result", "carga_ejecutada", "load_result"]:
-                st.session_state.pop(k, None)
-            st.session_state.current_step      = "upload"
-            st.session_state.sidebar_catalog_key = cat_sel_id
-
-        estrategia = selected_cat["estrategia"]
-        destino    = selected_cat["destino"]
-        schema     = selected_cat.get("schema", {})
-
-        # Info del catálogo seleccionado (solo lectura)
-        st.markdown(f"""
-        <div style="margin-top:12px; padding:10px 12px;
-                    background:rgba(255,255,255,0.07);
-                    border:1px solid rgba(255,255,255,0.10);
-                    border-radius:8px; font-size:12px; color:#A8B4D8;">
-            <div style="color:white; font-weight:500; margin-bottom:6px;">
-                <code style="color:#F5A800; background:rgba(245,168,0,0.12);
-                    padding:2px 6px; border-radius:4px; font-size:11px;">
-                    {selected_cat['base_datos']}.{selected_cat['tabla_destino']}
-                </code>
-            </div>
-            <div>
-                <span style="background:rgba(245,168,0,0.18); color:#F5A800;
-                    padding:1px 8px; border-radius:20px; font-size:11px;
-                    border:1px solid rgba(245,168,0,0.3);
-                    margin-right:6px;">{estrategia.upper()}</span>
-                <span style="background:rgba(110,231,183,0.15); color:#6EE7B7;
-                    padding:1px 8px; border-radius:20px; font-size:11px;
-                    border:1px solid rgba(110,231,183,0.3);">{destino.upper()}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Columnas esperadas
-        with st.expander("Ver columnas esperadas", expanded=False):
-            cols = schema.get("columnas", [])
-            if cols:
-                for col in cols:
-                    nullable_tag = (
-                        "<span style='color:#6EE7B7; font-size:10px;'>nullable</span>"
-                        if col.get("nullable") else ""
-                    )
-                    st.markdown(
-                        f"<div style='font-size:12px; padding:4px 6px; display:flex;"
-                        f"justify-content:space-between; align-items:center;"
-                        f"border-bottom:1px solid rgba(255,255,255,0.06);'>"
-                        f"<span style='color:#F5A800; font-family:monospace; font-size:11px;'>{col['nombre']}</span>"
-                        f"<span style='color:#A8B4D8; font-size:10px;'>{col['tipo']} {nullable_tag}</span></div>",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.caption("Sin esquema configurado.")
-
-        st.session_state.selected_catalog = {
-            "catalog_id":    cat_sel_id,
-            "nombre":        selected_cat["nombre"],
-            "base_datos":    selected_cat["base_datos"],
-            "tabla_destino": selected_cat["tabla_destino"],
-            "estrategia":    estrategia,
-            "destino":       destino,
-            "schema":        schema,
-        }
-        st.session_state.selected_project_id = proy_sel_id
+            if st.button("Seleccionar catálogo", use_container_width=True, key="btn_sel_catalogo"):
+                _render_catalog_selector_dialog()
 
         _render_sidebar_footer(user)
 
@@ -277,7 +330,7 @@ def _render_sidebar_footer(user: dict) -> None:
     if st.button("Historial de cargas", use_container_width=True, key="btn_history"):
         st.session_state.current_view = "history"
         st.rerun()
-    if st.button("Cerrar sesión", use_container_width=True):
+    if st.button("Cerrar sesión", use_container_width=True, key="btn_logout", type="primary"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -613,6 +666,15 @@ def _render_validate_step(catalog: dict) -> None:
 
         if st.button("Ejecutar validación", type="primary", use_container_width=True, key="btn_validate"):
             with st.spinner("Validando datos en memoria..."):
+                try:
+                    from config.catalogs import get_catalog_by_id
+                    project_id = st.session_state.get("selected_project_id") or ""
+                    fresh = get_catalog_by_id(project_id, catalog.get("catalog_id", ""))
+                    if fresh and fresh.get("schema"):
+                        schema_config = fresh["schema"]
+                        st.session_state.selected_catalog = {**catalog, "schema": schema_config}
+                except Exception:
+                    pass  # usa el schema que ya está en memoria como fallback
                 result = validate_dataframe(df, schema_config)
                 st.session_state.validation_result = result
                 st.session_state.validation_failure_zip_path = None
@@ -627,6 +689,7 @@ def _render_validate_step(catalog: dict) -> None:
                         catalog=catalog,
                         username=user.get("username", "usuario"),
                         project_id=st.session_state.get("selected_project_id", ""),
+                        project_name=st.session_state.get("selected_project_name", ""),
                         error_count=result.error_count,
                     )
             st.rerun()
@@ -746,6 +809,7 @@ def _render_result_step(catalog: dict) -> None:
                 catalog=catalog,
                 username=user.get("username", "—"),
                 project_id=project_id,
+                project_name=st.session_state.get("selected_project_name", ""),
             )
         st.session_state.carga_ejecutada = True
         st.session_state.load_result     = load_result
@@ -957,10 +1021,16 @@ def _inject_main_css() -> None:
             background: rgba(255,255,255,0.18) !important;
         }
 
-        /* Botón Administrar catálogos — acento amarillo */
+        /* Botón Seleccionar catálogo — mismo estilo que los demás */
         section[data-testid="stSidebar"] button[kind="primary"] {
-            border-color: rgba(245,168,0,0.5) !important;
-            color: #F5A800 !important;
+            background: rgba(255,255,255,0.10) !important;
+            border: 1px solid rgba(255,255,255,0.20) !important;
+            color: white !important;
+            font-weight: 500 !important;
+            border-radius: 8px !important;
+        }
+        section[data-testid="stSidebar"] button[kind="primary"]:hover {
+            background: rgba(255,255,255,0.18) !important;
         }
 
         /* Línea amarilla top del sidebar */
@@ -1016,6 +1086,17 @@ def _inject_main_css() -> None:
         }
         div[data-testid="stButton"] button[kind="primary"]:hover {
             background: #15245A !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="primary"] {
+            background: #8F3A3A !important;
+            border: 1px solid rgba(255,255,255,0.24) !important;
+            color: white !important;
+            font-weight: 600 !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stButton"] button[kind="primary"]:hover {
+            background: #7A3030 !important;
+            border-color: rgba(255,255,255,0.34) !important;
         }
     </style>
     """, unsafe_allow_html=True)

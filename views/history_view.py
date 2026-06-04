@@ -91,7 +91,7 @@ def render_history_view() -> None:
         if st.button("← Volver al portal", use_container_width=True, key="hist_back_sidebar"):
             st.session_state.current_view = "upload"
             st.rerun()
-        if st.button("Cerrar sesión", use_container_width=True, key="hist_logout"):
+        if st.button("Cerrar sesión", use_container_width=True, key="hist_logout", type="primary"):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
@@ -315,13 +315,23 @@ def _inject_css() -> None:
         section[data-testid="stSidebar"] .block-container { padding-top: 12px !important; }
         section[data-testid="stSidebar"] * { color: #E8ECF8 !important; }
         section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
-        section[data-testid="stSidebar"] button[kind="primary"],
         section[data-testid="stSidebar"] button[kind="secondary"] {
             background: rgba(255,255,255,0.10) !important;
             border: 1px solid rgba(255,255,255,0.20) !important;
             color: white !important;
             border-radius: 8px !important;
             font-weight: 500 !important;
+        }
+        section[data-testid="stSidebar"] button[kind="primary"] {
+            background: #8F3A3A !important;
+            border: 1px solid rgba(255,255,255,0.24) !important;
+            color: white !important;
+            font-weight: 600 !important;
+            border-radius: 8px !important;
+        }
+        section[data-testid="stSidebar"] button[kind="primary"]:hover {
+            background: #7A3030 !important;
+            border-color: rgba(255,255,255,0.34) !important;
         }
         section[data-testid="stSidebar"]::before {
             content: '';

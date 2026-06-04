@@ -250,26 +250,39 @@ def _apply_rules(
     reglas: List[Dict[str, Any]],
 ) -> List[ValidationError]:
     errors: List[ValidationError] = []
+    reglas = reglas or []
 
-    for regla in reglas or []:
+    domain_values = []
+    for regla in reglas:
+        tipo = (regla.get("tipo") or "").lower().strip()
+        if tipo != "isin":
+            continue
+        allowed = regla.get("valor", [])
+        if isinstance(allowed, list):
+            domain_values.extend(allowed)
+        else:
+            domain_values.append(allowed)
+
+    if domain_values:
+        allowed_set = set(domain_values)
+        mask = series_original.notna() & (~series_original.isin(allowed_set))
+        for idx, raw_value in series_original[mask].items():
+            errors.append(
+                ValidationError(
+                    fila=int(idx) + 2,
+                    columna=col_name,
+                    valor=raw_value,
+                    regla="dominio",
+                    detalle=f"El valor '{raw_value}' no está dentro de los valores permitidos para '{col_name}'.",
+                )
+            )
+
+    for regla in reglas:
         tipo = (regla.get("tipo") or "").lower().strip()
         if not tipo:
             continue
 
         if tipo == "isin":
-            allowed = regla.get("valor", [])
-            allowed_set = set(allowed) if isinstance(allowed, list) else {allowed}
-            mask = series_original.notna() & (~series_original.isin(allowed_set))
-            for idx, raw_value in series_original[mask].items():
-                errors.append(
-                    ValidationError(
-                        fila=int(idx) + 2,
-                        columna=col_name,
-                        valor=raw_value,
-                        regla="dominio",
-                        detalle=f"El valor '{raw_value}' no está dentro de los valores permitidos para '{col_name}'.",
-                    )
-                )
             continue
 
         if tipo in ("gte", "lte"):

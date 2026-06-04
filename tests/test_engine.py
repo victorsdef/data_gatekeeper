@@ -90,3 +90,25 @@ def test_validate_dataframe_reports_invalid_regex_definition():
     assert result.success is False
     assert result.error_count == 1
     assert result.errors[0].regla == "regex_invalido"
+
+
+def test_validate_dataframe_merges_multiple_domain_rules():
+    df = pd.DataFrame({"regional": ["HOLA", "AUSTRO"]})
+    schema = {
+        "columnas": [
+            {
+                "nombre": "regional",
+                "tipo": "str",
+                "nullable": False,
+                "reglas": [
+                    {"tipo": "isin", "valor": ["AUSTRO", "COSTA 1"]},
+                    {"tipo": "isin", "valor": ["HOLA"]},
+                ],
+            }
+        ]
+    }
+
+    result = validate_dataframe(df, schema)
+
+    assert result.success is True
+    assert result.error_count == 0
