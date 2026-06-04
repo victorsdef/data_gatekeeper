@@ -61,19 +61,29 @@ curl
 Dependencias Python principales:
 
 ```text
-streamlit==1.28.2
+streamlit==1.36.0
 ldap3==2.9.1
+numpy==1.24.3
 pandas==2.0.3
 openpyxl==3.1.2
 xlrd==2.0.1
 python-dotenv==1.0.0
 singlestoredb==1.3.0
-pyhive[hive]==0.7.0
+pyhive[hive_pure_sasl]==0.7.0
 thrift==0.16.0
 thrift-sasl==0.4.3
 pure-sasl>=0.6.2
 pytest==8.3.5
 ```
+
+Notas:
+
+- `numpy==1.24.3` se fija de forma explicita para mantener compatibilidad con
+  `pandas==2.0.3` en Python 3.9.
+- `pyhive[hive_pure_sasl]==0.7.0` evita depender del paquete nativo `sasl`,
+  que suele fallar al compilar en Windows o en imagenes Docker minimalistas.
+- El paquete instalado es `pure-sasl`, pero el modulo importable es
+  `puresasl`.
 
 ## 3. Variables de entorno
 
@@ -499,6 +509,16 @@ La carpeta `/data/gatekeeper` no se debe borrar.
 
 ### 12.3 Cargar nueva imagen
 
+Ubicar los archivos recibidos en el servidor. Por ejemplo:
+
+```text
+/opt/data_gatekeeper/
+  gatekeeper_app_nueva.tar
+  docker/
+    docker-compose.yml
+    .env
+```
+
 Si se recibe `.tar`:
 
 ```bash
@@ -513,7 +533,30 @@ Verificar que la imagen exista:
 docker images
 ```
 
-### 12.4 Recrear contenedor con Compose
+Si el `.tar` fue cargado correctamente, debe existir una imagen con el nombre
+esperado por el compose, por ejemplo:
+
+```text
+docker-app:latest
+```
+
+### 12.4 Actualizar contenedor en el servidor
+
+Este es el flujo cuando la nueva imagen ya esta en el servidor.
+
+Entrar a la carpeta donde estan `docker/docker-compose.yml` y `docker/.env`:
+
+```bash
+cd /opt/data_gatekeeper
+```
+
+Detener el contenedor actual:
+
+```bash
+docker compose -f docker/docker-compose.yml down
+```
+
+Levantar con la imagen nueva ya cargada:
 
 Usar Compose sin `--build`:
 
@@ -521,13 +564,28 @@ Usar Compose sin `--build`:
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-Si el contenedor ya existia, Compose lo recrea usando la imagen cargada y la
-configuracion del compose.
+No usar `--build` en produccion sin internet. Si se usa `--build`, Docker
+intentara reconstruir la imagen y podria fallar al no poder descargar paquetes
+o imagenes base.
+
+Si el contenedor ya existia, Compose lo crea nuevamente usando:
+
+- la imagen local cargada con `docker load`;
+- las variables de `docker/.env`;
+- el volumen `/data/gatekeeper:/data/gatekeeper`;
+- el healthcheck definido en `docker/docker-compose.yml`.
 
 Ver logs:
 
 ```bash
 docker compose -f docker/docker-compose.yml logs -f app
+```
+
+Ver estado del contenedor:
+
+```bash
+docker ps
+docker inspect gatekeeper_app --format "{{json .State.Health}}"
 ```
 
 ### 12.5 Validar actualizacion
