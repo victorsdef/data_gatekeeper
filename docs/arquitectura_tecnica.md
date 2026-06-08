@@ -411,7 +411,9 @@ Eventos esperados:
 
 ### 8.5 permisos_catalogo
 
-Permite limitar catalogos por usuario o rol.
+Permite limitar catalogos por usuario publicador especifico. Los administradores
+no necesitan permisos en esta tabla porque siempre ven todos los catalogos
+activos.
 
 Campos:
 
@@ -419,10 +421,9 @@ Campos:
 - `tipo`
 - `valor`
 
-Ejemplos:
+Ejemplo:
 
 ```text
-tipo=rol, valor=Publicador
 tipo=usuario, valor=jberrezueta
 ```
 
@@ -453,15 +454,16 @@ La lectura de proyectos y catalogos para el usuario ocurre en:
 
 Funciones principales:
 
-- `get_proyectos_list()`
+- `get_proyectos_list(username, rol)`
 - `get_catalogs_by_project(project_id, username, rol)`
 - `get_catalog_by_id(project_id, catalog_id)`
 
 Reglas de visibilidad:
 
-- un `Admin` ve todos los catalogos activos del proyecto;
-- un catalogo sin permisos configurados queda visible para todos;
-- si hay permisos, se valida por `rol` o por `usuario`;
+- un `Admin` ve todos los proyectos y catalogos activos;
+- un `Publicador` solo ve proyectos donde tiene al menos un catalogo asignado;
+- un `Publicador` solo ve catalogos donde existe permiso `tipo=usuario` con su username;
+- un catalogo sin usuarios publicadores asignados queda visible solo para Admin;
 - los catalogos inactivos no aparecen.
 
 La administracion funcional vive en:

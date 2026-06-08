@@ -80,6 +80,178 @@ def _build_audit_payload(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
     return buffer.getvalue(), "archivos_originales.zip"
 
 
+def _safe_download_name(value: str, fallback: str = "catalogo") -> str:
+    safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(value or ""))
+    safe = safe.strip("._-")
+    return safe or fallback
+
+
+def _rule_label(regla: dict) -> str:
+    labels = {
+        "isin": "Dominio",
+        "gte": "Minimo",
+        "lte": "Maximo",
+        "min_length": "Longitud minima",
+        "str_length": "Longitud",
+        "regex": "Patron",
+    }
+    tipo = str(regla.get("tipo", "") or "").lower().strip()
+    return labels.get(tipo, tipo or "Regla")
+
+
+def _rule_detail(regla: dict) -> str:
+    tipo = str(regla.get("tipo", "") or "").lower().strip()
+    valor = regla.get("valor")
+
+    if tipo == "isin":
+        values = valor if isinstance(valor, list) else [valor]
+        values_txt = ", ".join(str(v) for v in values if v not in (None, ""))
+        return f"Valores permitidos: {values_txt or 'sin valores definidos'}"
+    if tipo == "gte":
+        return f"Valor minimo permitido: {valor}"
+    if tipo == "lte":
+        return f"Valor maximo permitido: {valor}"
+    if tipo == "min_length":
+        return f"Longitud minima requerida: {valor}"
+    if tipo == "str_length":
+        return f"Longitud permitida entre {regla.get('min')} y {regla.get('max')}"
+    if tipo == "regex":
+        return f"Debe cumplir el patron: {valor}"
+    return str(regla or "Sin detalle")
+
+
+def _rules_text(reglas: list) -> str:
+    reglas = reglas or []
+    if not reglas:
+        return "Sin reglas adicionales"
+    return "; ".join(_rule_detail(r) for r in reglas)
+
+
+def _rules_chips_html(reglas: list) -> str:
+    reglas = reglas or []
+    if not reglas:
+        return (
+            '<span class="schema-rule-chip muted" '
+            'title="No tiene reglas adicionales">Sin reglas</span>'
+        )
+
+    chips = []
+    for regla in reglas:
+        label = html.escape(_rule_label(regla))
+        detail = html.escape(_rule_detail(regla), quote=True)
+        chips.append(f'<span class="schema-rule-chip" title="{detail}">{label}</span>')
+    return "".join(chips)
+
+
+def _schema_rows(cols_schema: list) -> list[dict]:
+    rows = []
+    for col in cols_schema:
+        rows.append(
+            {
+                "Columna": str(col.get("nombre", "")),
+                "Tipo": str(col.get("tipo", "")),
+                "Acepta vacios": "Si" if bool(col.get("nullable")) else "No",
+                "Reglas": _rules_text(col.get("reglas") or []),
+            }
+        )
+    return rows
+
+
+def _schema_csv_bytes(cols_schema: list) -> bytes:
+    return pd.DataFrame(_schema_rows(cols_schema)).to_csv(index=False).encode("utf-8-sig")
+
+
+def _header_csv_bytes(cols_schema: list) -> bytes:
+    header = [str(col.get("nombre", "")) for col in cols_schema]
+    return pd.DataFrame(columns=header).to_csv(index=False).encode("utf-8-sig")
+
+
+def _schema_table_html(cols_schema: list) -> str:
+    rows_html = []
+    for col in cols_schema:
+        nombre = html.escape(str(col.get("nombre", "")))
+        tipo = html.escape(str(col.get("tipo", "")))
+        acepta_vacios = "Si" if bool(col.get("nullable")) else "No"
+        reglas_html = _rules_chips_html(col.get("reglas") or [])
+        rows_html.append(
+            "<tr>"
+            f"<td><code>{nombre}</code></td>"
+            f"<td>{tipo}</td>"
+            f"<td>{acepta_vacios}</td>"
+            f"<td>{reglas_html}</td>"
+            "</tr>"
+        )
+
+    return f"""
+    <style>
+      .schema-table-wrap {{
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid #D1D9F0;
+        border-radius: 10px;
+        background: #F8FAFF;
+      }}
+      .schema-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }}
+      .schema-table th {{
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #EEF2FF;
+        color: #1C2F6E;
+        font-weight: 700;
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid #D1D9F0;
+      }}
+      .schema-table td {{
+        padding: 8px 10px;
+        border-bottom: 1px solid #E5E9F5;
+        color: #1C2F6E;
+        vertical-align: top;
+      }}
+      .schema-table tr:last-child td {{
+        border-bottom: 0;
+      }}
+      .schema-rule-chip {{
+        display: inline-flex;
+        margin: 0 4px 4px 0;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #FFF7ED;
+        border: 1px solid #FDBA74;
+        color: #9A3412;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: help;
+      }}
+      .schema-rule-chip.muted {{
+        background: #F3F4F6;
+        border-color: #E5E7EB;
+        color: #6B7280;
+      }}
+    </style>
+    <div class="schema-table-wrap">
+      <table class="schema-table">
+        <thead>
+          <tr>
+            <th>Columna</th>
+            <th>Tipo</th>
+            <th>Acepta vacios</th>
+            <th>Reglas</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rows_html)}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
 # ------------------------------------------------------------------
 # Modal: selector de catálogo
 # ------------------------------------------------------------------
@@ -88,9 +260,16 @@ def _render_catalog_selector_dialog() -> None:
     user = st.session_state.get("user_info") or {}
 
     try:
-        proyectos = get_proyectos_list()
+        proyectos = get_proyectos_list(
+            username=user.get("username", ""),
+            rol=user.get("rol", "Publicador"),
+        )
     except Exception as e:
         st.error(user_facing_error(e, context="catalogs"))
+        return
+
+    if not proyectos and user.get("rol") != "Admin":
+        st.info("No tienes proyectos o catalogos habilitados. Contacta al administrador.")
         return
 
     if not proyectos:
@@ -152,20 +331,28 @@ def _render_catalog_selector_dialog() -> None:
     )
 
     if cols_schema:
-        st.dataframe(
-            pd.DataFrame([
-                {"Columna": c["nombre"], "Tipo": c["tipo"], "Nullable": "Sí" if c["nullable"] else "No"}
-                for c in cols_schema
-            ]),
-            use_container_width=True,
-            hide_index=True,
-            height=min(40 + len(cols_schema) * 35, 320),
-            column_config={
-                "Columna":  st.column_config.TextColumn("Columna",  width="large"),
-                "Tipo":     st.column_config.TextColumn("Tipo",     width="medium"),
-                "Nullable": st.column_config.TextColumn("Nullable", width="small"),
-            },
-        )
+        download_base = _safe_download_name(selected_cat.get("catalog_id") or selected_cat.get("nombre"))
+        d1, d2 = st.columns(2)
+        with d1:
+            st.download_button(
+                "Descargar cabecera (.csv)",
+                data=_header_csv_bytes(cols_schema),
+                file_name=f"{download_base}_cabecera.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"download_header_{cat_sel_id}",
+            )
+        with d2:
+            st.download_button(
+                "Descargar esquema (.csv)",
+                data=_schema_csv_bytes(cols_schema),
+                file_name=f"{download_base}_esquema.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"download_schema_{cat_sel_id}",
+            )
+
+        st.markdown(_schema_table_html(cols_schema), unsafe_allow_html=True)
     else:
         st.caption("Este catálogo no tiene esquema configurado.")
 

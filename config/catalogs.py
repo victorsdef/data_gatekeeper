@@ -68,10 +68,36 @@ def _parse_schema(schema_value: Any) -> Dict[str, Any]:
     return {}
 
 
-def get_proyectos_list() -> List[Dict[str, str]]:
+def get_proyectos_list(username: str = "", rol: str = "") -> List[Dict[str, str]]:
+    """
+    Retorna proyectos visibles para el usuario.
+    - Admins ven proyectos activos que tengan catalogos activos.
+    - Publicadores ven solo proyectos donde tienen al menos un catalogo asignado.
+    """
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT project_id AS id, nombre FROM {TBL_PROYECTOS} WHERE activo = 1 ORDER BY nombre")
+            cur.execute(
+                f"""
+                SELECT DISTINCT p.project_id AS id, p.nombre
+                FROM {TBL_PROYECTOS} p
+                INNER JOIN {TBL_CATALOGOS} c
+                    ON c.project_id = p.project_id
+                   AND c.activo = 1
+                WHERE p.activo = 1
+                  AND (%s = 1 OR LOWER(c.destino) <> 'hive')
+                  AND (
+                    %s = 'Admin'
+                    OR EXISTS (
+                        SELECT 1 FROM {TBL_PERMISOS} pm
+                        WHERE pm.catalog_id = c.catalog_id
+                          AND pm.tipo = 'usuario'
+                          AND LOWER(pm.valor) = LOWER(%s)
+                    )
+                  )
+                ORDER BY p.nombre
+                """,
+                (1 if HIVE_ENABLED else 0, rol, username),
+            )
             rows = _fetchall_dict(cur)
             return [{"id": str(r["id"]), "nombre": str(r["nombre"])} for r in rows]
 

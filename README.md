@@ -194,7 +194,7 @@ En la practica, el admin puede:
 - definir tipos de dato por columna;
 - marcar si una columna permite o no valores vacios;
 - configurar reglas de validacion;
-- asignar permisos por rol o por usuario;
+- asignar publicadores autorizados por usuario;
 - activar o desactivar catalogos;
 - editar configuraciones existentes;
 - revisar el historial de cargas;
@@ -285,11 +285,10 @@ En esta pantalla se definen datos como:
 - `Estrategia`: forma de carga, por ejemplo `overwrite` o `append`;
 - `Destino`: sistema al que se escribira la carga, por ejemplo
   `singlestore`;
-- `Roles`: perfiles autorizados para usar ese catalogo;
-- `Usuarios especificos`: usuarios concretos con permiso adicional.
+- `Publicadores autorizados`: usuarios concretos que podran usar ese catalogo.
 
-Si no se selecciona ningun rol ni ningun usuario especifico, el catalogo queda
-accesible para todos los publicadores habilitados.
+Si no se selecciona ningun publicador autorizado, el catalogo queda visible
+solo para administradores.
 
 El campo `Nombre legible` sirve para mostrar un nombre claro en pantalla,
 mientras que el `ID del catalogo` y el `ID del proyecto` sirven como
@@ -400,12 +399,12 @@ mas precision quien puede usar ese catalogo.
 
 En esta pantalla se pueden definir:
 
-- roles autorizados, por ejemplo `Admin` o `Publicador`;
+- publicadores autorizados para usar ese catalogo;
 - usuarios especificos con acceso directo;
-- combinaciones de roles y usuarios segun la necesidad del catalogo.
+- acceso cerrado solo para administradores si no se asigna ningun publicador.
 
-Si no se selecciona ningun rol ni ningun usuario especifico, el catalogo queda
-disponible para todos los publicadores habilitados.
+Si no se selecciona ningun publicador, el catalogo queda disponible solo para
+administradores.
 
 Esto sirve para restringir catalogos sensibles o habilitar accesos especiales
 sin cambiar el comportamiento general del portal.
