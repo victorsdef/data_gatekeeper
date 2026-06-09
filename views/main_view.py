@@ -751,6 +751,11 @@ def _sheet_key(filename: str, index: int) -> str:
     return f"sheet_names_{index}_{safe}"
 
 
+def _file_option_key(prefix: str, filename: str, index: int) -> str:
+    safe = "".join(c if c.isalnum() else "_" for c in filename)
+    return f"{prefix}_{index}_{safe}"
+
+
 @st.cache_data(show_spinner=False, max_entries=30)
 def _cached_get_excel_sheets(file_bytes: bytes) -> list:
     return get_excel_sheets(file_bytes)
@@ -1006,45 +1011,69 @@ def _render_upload_step(catalog: dict) -> None:
             excel_payloads = [p for p in uploaded_payloads if p["is_excel"]]
 
             if text_payloads:
-                enc = st.session_state.get("encoding", "utf-8")
                 load_progress.progress(10, text="Detectando separador del archivo...")
-                detected = detect_file_delimiter(text_payloads[0]["bytes"], enc)
+                detected_by_file = {}
+                for payload in text_payloads:
+                    enc_key = _file_option_key("encoding", payload["name"], payload["index"])
+                    enc = st.session_state.get(enc_key, st.session_state.get("encoding", "utf-8"))
+                    detected_by_file[payload["name"]] = detect_file_delimiter(payload["bytes"], enc)
 
-                st.success(
-                    f"Separador detectado: **{_DELIM_LABEL.get(detected, detected)}**  "
-                    f"— se aplicará a los archivos CSV/TXT."
-                )
+                if len(text_payloads) == 1:
+                    only = text_payloads[0]
+                    detected = detected_by_file[only["name"]]
+                    st.success(
+                        f"Separador detectado en **{only['name']}**: "
+                        f"**{_DELIM_LABEL.get(detected, detected)}**."
+                    )
+                else:
+                    st.success("Se detectó el separador de cada archivo CSV/TXT.")
 
                 with st.expander("¿Las columnas no se ven bien? Ajustar lectura"):
                     st.caption(
                         "Cambia estas opciones solo si la previsualización muestra "
-                        "las columnas mezcladas o los caracteres con símbolos raros."
+                        "las columnas mezcladas o los caracteres con símbolos raros. "
+                        "La configuración se aplica por archivo."
                     )
-                    col_d, col_e = st.columns(2)
-                    with col_d:
-                        st.selectbox(
-                            "Separador",
-                            options=list(_DELIM_LABEL.keys()),
-                            format_func=lambda x: _DELIM_LABEL[x],
-                            key="delimiter",
-                        )
-                        cur_delim = st.session_state.get("delimiter", ",")
-                        st.caption(_DELIM_TIP[cur_delim])
-                        if cur_delim != "," and cur_delim != detected:
-                            st.warning(
-                                f"Detectamos **{_DELIM_LABEL[detected]}** en tu archivo. "
-                                f"Cambiaste a **{_DELIM_LABEL[cur_delim]}** — úsalo solo si "
-                                f"la previsualización sigue mostrando las columnas mezcladas."
+                    for payload in text_payloads:
+                        detected = detected_by_file[payload["name"]]
+                        st.markdown(f"**{payload['name']}**")
+                        col_d, col_e = st.columns(2)
+                        delim_key = _file_option_key("delimiter", payload["name"], payload["index"])
+                        enc_key = _file_option_key("encoding", payload["name"], payload["index"])
+                        with col_d:
+                            st.selectbox(
+                                "Separador",
+                                options=list(_DELIM_LABEL.keys()),
+                                index=list(_DELIM_LABEL.keys()).index(
+                                    st.session_state.get(delim_key, detected)
+                                    if st.session_state.get(delim_key, detected) in _DELIM_LABEL
+                                    else ","
+                                ),
+                                format_func=lambda x: _DELIM_LABEL[x],
+                                key=delim_key,
                             )
-                    with col_e:
-                        st.selectbox(
-                            "Codificación",
-                            options=list(_ENC_LABEL.keys()),
-                            format_func=lambda x: _ENC_LABEL[x],
-                            key="encoding",
-                        )
-                        cur_enc = st.session_state.get("encoding", "utf-8")
-                        st.caption(_ENC_TIP[cur_enc])
+                            cur_delim = st.session_state.get(delim_key, detected)
+                            st.caption(_DELIM_TIP.get(cur_delim, "Separador personalizado."))
+                            if cur_delim != detected:
+                                st.warning(
+                                    f"Detectamos **{_DELIM_LABEL.get(detected, detected)}**. "
+                                    f"Seleccionaste **{_DELIM_LABEL.get(cur_delim, cur_delim)}**."
+                                )
+                        with col_e:
+                            st.selectbox(
+                                "Codificación",
+                                options=list(_ENC_LABEL.keys()),
+                                index=list(_ENC_LABEL.keys()).index(
+                                    st.session_state.get(enc_key, st.session_state.get("encoding", "utf-8"))
+                                    if st.session_state.get(enc_key, st.session_state.get("encoding", "utf-8")) in _ENC_LABEL
+                                    else "utf-8"
+                                ),
+                                format_func=lambda x: _ENC_LABEL[x],
+                                key=enc_key,
+                            )
+                            cur_enc = st.session_state.get(enc_key, "utf-8")
+                            st.caption(_ENC_TIP[cur_enc])
+                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
             excel_sheet_selection = {}
             if excel_payloads:
@@ -1142,6 +1171,8 @@ def _render_upload_step(catalog: dict) -> None:
                                 }
                             )
                 else:
+                    delim_key = _file_option_key("delimiter", payload["name"], payload["index"])
+                    enc_key = _file_option_key("encoding", payload["name"], payload["index"])
                     load_progress.progress(
                         min(85, 35 + int(read_done / total_reads * 45)),
                         text=f"Leyendo datos: {payload['name']}...",
@@ -1149,8 +1180,8 @@ def _render_upload_step(catalog: dict) -> None:
                     df_i, err_i = _cached_read_uploaded_file(
                         file_bytes=payload["bytes"],
                         filename=payload["name"],
-                        delimiter=st.session_state.get("delimiter", ","),
-                        encoding=st.session_state.get("encoding", "utf-8"),
+                        delimiter=st.session_state.get(delim_key, st.session_state.get("delimiter", ",")),
+                        encoding=st.session_state.get(enc_key, st.session_state.get("encoding", "utf-8")),
                     )
                     read_done += 1
                     if err_i:

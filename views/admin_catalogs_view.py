@@ -1714,7 +1714,7 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         st.rerun()
 
 
-def _render_schema_editor(schema: dict, key_prefix: str) -> None:
+def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool = True) -> None:
     columnas = schema.get("columnas", [])
     schema_cache_key = st.session_state.get("adm_schema_key", "default")
     state_key  = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
@@ -1808,14 +1808,15 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
         for _, row in edited.iterrows()
         if str(row.get("nombre", "")).strip()
     ]
-    current_strategy = st.session_state.get(f"{key_prefix}_est", "overwrite")
-    _render_schema_rule_actions(
-        columns=rule_columns,
-        rules_key=rules_key,
-        ingestion_key=ingestion_key,
-        estrategia=current_strategy,
-        key_prefix=f"{key_prefix}_{abs(hash(schema_cache_key))}",
-    )
+    if show_rule_actions:
+        current_strategy = st.session_state.get(f"{key_prefix}_est", "overwrite")
+        _render_schema_rule_actions(
+            columns=rule_columns,
+            rules_key=rules_key,
+            ingestion_key=ingestion_key,
+            estrategia=current_strategy,
+            key_prefix=f"{key_prefix}_{abs(hash(schema_cache_key))}",
+        )
 
 
 def _bulk_table_prefix(table: str) -> str:
@@ -2148,27 +2149,6 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         unsafe_allow_html=True,
     )
 
-    ed_nombre = st.text_input("Nombre", value=cat["nombre"], key=f"{ek}_nombre")
-    ed_desc = st.text_area("Descripción", value=cat.get("descripcion") or "", key=f"{ek}_desc", height=60)
-    ec1, ec2 = st.columns(2)
-    with ec1:
-        ed_est = st.selectbox(
-            "Estrategia",
-            _ESTRATEGIAS,
-            index=_ESTRATEGIAS.index(cat["estrategia"]) if cat["estrategia"] in _ESTRATEGIAS else 0,
-            key=f"{ek}_est",
-        )
-    with ec2:
-        ed_dest = st.selectbox(
-            "Destino",
-            _DESTINOS,
-            index=_DESTINOS.index(cat["destino"]) if cat["destino"] in _DESTINOS else 0,
-            key=f"{ek}_dest",
-        )
-
-    st.markdown("**Columnas del esquema**")
-    st.caption("Puedes editar nombre, tipo y nulabilidad. Usa la última fila vacía para agregar columnas.")
-
     schema_init_key = f"{ek}_schema_init"
     rules_edit_key = f"{ek}_rules_state"
     ingestion_edit_key = f"{ek}_ingestion_state"
@@ -2198,24 +2178,55 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         lambda name: len(edit_rules.get(str(name).strip(), []))
     )
 
-    edited_df = st.data_editor(
-        display_init_df,
-        column_config={
-            "nombre": st.column_config.TextColumn("Columna", required=True),
-            "tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
-            "nullable": st.column_config.CheckboxColumn("Acepta vacíos"),
-            "reglas": st.column_config.NumberColumn(
-                "Reglas",
-                help="Cantidad de reglas de calidad configuradas. Debajo de la tabla puedes pasar el cursor sobre cada columna para ver el detalle.",
-            ),
-        },
-        disabled=["reglas"],
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        key=f"{ek}_schema_editor",
+    tab_general, tab_columnas, tab_reglas, tab_ingesta = st.tabs(
+        ["General", "Columnas", "Reglas", "Ingesta"]
     )
-    st.markdown(_rules_count_hover_html(edited_df, edit_rules), unsafe_allow_html=True)
+
+    with tab_general:
+        ed_nombre = st.text_input("Nombre", value=cat["nombre"], key=f"{ek}_nombre")
+        ed_desc = st.text_area("Descripción", value=cat.get("descripcion") or "", key=f"{ek}_desc", height=86)
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            ed_est = st.selectbox(
+                "Estrategia",
+                _ESTRATEGIAS,
+                index=_ESTRATEGIAS.index(cat["estrategia"]) if cat["estrategia"] in _ESTRATEGIAS else 0,
+                key=f"{ek}_est",
+            )
+        with ec2:
+            ed_dest = st.selectbox(
+                "Destino",
+                _DESTINOS,
+                index=_DESTINOS.index(cat["destino"]) if cat["destino"] in _DESTINOS else 0,
+                key=f"{ek}_dest",
+            )
+        st.info(
+            "Usa las pestañas superiores para revisar columnas, reglas de calidad y acción de ingesta. "
+            "Los cambios se aplican cuando guardas."
+        )
+
+    with tab_columnas:
+        st.markdown("**Columnas del esquema**")
+        st.caption("Puedes editar nombre, tipo y si la columna acepta vacíos. Usa la última fila vacía para agregar columnas.")
+        edited_df = st.data_editor(
+            display_init_df,
+            column_config={
+                "nombre": st.column_config.TextColumn("Columna", required=True),
+                "tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
+                "nullable": st.column_config.CheckboxColumn("Acepta vacíos"),
+                "reglas": st.column_config.NumberColumn(
+                    "Reglas",
+                    help="Cantidad de reglas de calidad configuradas. Revisa el detalle en la pestaña Reglas.",
+                ),
+            },
+            disabled=["reglas"],
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            key=f"{ek}_schema_editor",
+            height=min(300, 88 + max(4, len(display_init_df) + 1) * 36),
+        )
+        st.markdown(_rules_count_hover_html(edited_df, edit_rules), unsafe_allow_html=True)
 
     edit_rule_columns = [
         {
@@ -2225,8 +2236,11 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         for _, r in edited_df.iterrows()
         if str(r.get("nombre", "")).strip()
     ]
-    _render_rules_editor(edit_rule_columns, rules_edit_key)
-    with st.expander("Accion de ingesta", expanded=False):
+
+    with tab_reglas:
+        _render_rules_editor(edit_rule_columns, rules_edit_key)
+
+    with tab_ingesta:
         _render_ingestion_rule_form(edit_rule_columns, ingestion_edit_key, ed_est)
 
     edit_schema_candidate = {
