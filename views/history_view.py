@@ -50,19 +50,32 @@ def render_history_view() -> None:
     # ── Sidebar ──────────────────────────────────────────────────────
     with st.sidebar:
         b64 = _logo_b64()
-        logo_img = f'<img src="data:image/png;base64,{b64}" width="38" style="flex-shrink:0;">' if b64 else ""
+        logo_img = f'<img src="data:image/png;base64,{b64}" width="56" style="flex-shrink:0;">' if b64 else ""
         st.markdown(f"""
-        <div style="padding:4px 0 20px;">
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+        <div class="sidebar-brand" style="display:block;padding:8px 8px 12px;border-radius:12px;text-decoration:none;">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
                 {logo_img}
-                <div>
-                    <div style="font-size:9px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
-                    <div style="font-size:16px;font-weight:800;color:white;letter-spacing:-0.3px;line-height:1;">Austro</div>
+                <div style="min-width:0;">
+                    <div style="font-size:11px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
+                    <div style="font-size:22px;font-weight:800;color:white;letter-spacing:0;line-height:1.05;">Austro</div>
                 </div>
             </div>
-            <div style="font-size:10px;color:#7A8EC0;margin-left:48px;">Historial de Cargas</div>
+            <div style="font-size:12px;color:#DCE4FF;margin-left:68px;">Historial de Cargas</div>
         </div>
         """, unsafe_allow_html=True)
+        if st.button("Volver al inicio", use_container_width=True, key="hist_brand_home", help="Volver al inicio"):
+            st.session_state.current_view = "upload"
+            st.session_state.current_step = "upload"
+            for key in [
+                "selected_project_id", "selected_project_name", "selected_catalog",
+                "uploaded_df", "uploaded_bytes", "uploaded_audit_bytes",
+                "uploaded_audit_name", "uploaded_name", "uploaded_preview_items",
+                "uploaded_row_origins", "uploaded_validation_sources",
+                "validation_result", "validation_failure_zip_path",
+                "carga_ejecutada", "load_result",
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
         st.divider()
 
         rol_color = "#F5A800" if is_admin else "#6EE7B7"
@@ -313,6 +326,30 @@ def _inject_css() -> None:
             padding-top: 20px;
         }
         section[data-testid="stSidebar"] .block-container { padding-top: 12px !important; }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container {
+            margin-top: -112px !important;
+            height: 112px !important;
+            margin-bottom: 18px !important;
+            position: relative !important;
+            z-index: 5 !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container .stButton {
+            height: 112px !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button {
+            height: 112px !important;
+            background: transparent !important;
+            border: 0 !important;
+            color: transparent !important;
+            box-shadow: none !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button:hover {
+            background: rgba(255,255,255,0.08) !important;
+            border-radius: 12px !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button * {
+            color: transparent !important;
+        }
         section[data-testid="stSidebar"] * { color: #E8ECF8 !important; }
         section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
         section[data-testid="stSidebar"] button[kind="secondary"] {

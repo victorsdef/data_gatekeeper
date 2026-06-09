@@ -23,6 +23,13 @@ def user_facing_error(exc: Any, context: str = "general") -> str:
         return "Ocurrió un error inesperado. Intenta nuevamente o contacta al administrador."
 
     if any(token in text for token in (
+        "only one dialog is allowed",
+        "dialog-decorated function",
+        "streamlitapiexception",
+    )):
+        return "La ventana de resultado ya está abierta o se acaba de cerrar. Vuelve a intentarlo desde el botón de resultado."
+
+    if any(token in text for token in (
         "connection refused",
         "connect timed out",
         "timed out",

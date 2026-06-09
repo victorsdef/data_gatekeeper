@@ -33,6 +33,9 @@ class ValidationError:
     valor: Any
     regla: str
     detalle: str
+    archivo: str = ""
+    hoja: str = ""
+    fila_origen: int = 0
 
 
 @dataclass
@@ -48,11 +51,14 @@ class ValidationResult:
 
     def to_dataframe(self) -> pd.DataFrame:
         if not self.errors:
-            return pd.DataFrame(columns=["Fila", "Columna", "Valor", "Regla", "Detalle"])
+            return pd.DataFrame(columns=["Archivo", "Hoja", "Fila", "Columna", "Valor", "Regla", "Detalle"])
         return pd.DataFrame(
             [
                 {
+                    "Archivo": e.archivo,
+                    "Hoja": e.hoja,
                     "Fila": e.fila,
+                    "Fila origen": e.fila_origen if e.fila_origen else "",
                     "Columna": e.columna,
                     "Valor": str(e.valor),
                     "Regla": e.regla,

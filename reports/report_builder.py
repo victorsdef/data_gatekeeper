@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 from collections import Counter
 from datetime import datetime
+import re
 from typing import Any, Dict
 
 import openpyxl
@@ -62,6 +63,18 @@ _ERROR   = "C00000"
 _GRAY    = "F4F5F9"
 _DARK    = "374151"
 
+_DETAIL_HEADERS = [
+    "Archivo",
+    "Hoja",
+    "Fila en archivo",
+    "Fila combinada",
+    "Columna",
+    "Valor encontrado",
+    "Tipo de error",
+    "Descripción del problema",
+]
+_DETAIL_WIDTHS = [32, 18, 16, 16, 22, 30, 26, 60]
+
 
 # ------------------------------------------------------------------
 # Helpers de estilo
@@ -92,6 +105,7 @@ def build_error_report(
     wb = openpyxl.Workbook()
     _build_summary_sheet(wb, result, catalog, filename, username)
     _build_detail_sheet(wb, result)
+    _build_source_detail_sheets(wb, result)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -172,6 +186,32 @@ def _build_summary_sheet(
 
     row += 1  # espacio
 
+    # Encabezado de resumen por archivo / hoja
+    ws.merge_cells(f"A{row}:B{row}")
+    h = ws[f"A{row}"]
+    h.value = "Errores por archivo / hoja"
+    h.font = _font(bold=True, color="FFFFFF", size=11)
+    h.fill = _fill(_DARK)
+    h.alignment = _center()
+    ws.row_dimensions[row].height = 22
+    row += 1
+
+    for label, errors in _group_errors_by_source(result).items():
+        lc = ws.cell(row=row, column=1, value=label)
+        lc.fill = _fill(_GRAY)
+        lc.font = _font(size=10)
+        lc.alignment = _left()
+
+        vc = ws.cell(row=row, column=2, value=len(errors))
+        vc.fill = _fill(_GRAY)
+        vc.font = _font(bold=True, size=10)
+        vc.alignment = _center()
+
+        ws.row_dimensions[row].height = 16
+        row += 1
+
+    row += 1  # espacio
+
     # Encabezado de resumen por tipo
     ws.merge_cells(f"A{row}:B{row}")
     h = ws[f"A{row}"]
@@ -227,15 +267,22 @@ def _build_summary_sheet(
 def _build_detail_sheet(wb: openpyxl.Workbook, result: ValidationResult) -> None:
     ws = wb.create_sheet("Detalle de errores")
     ws.sheet_view.showGridLines = False
+    _write_error_table(ws, result.errors)
 
-    headers    = ["Fila en archivo", "Columna", "Valor encontrado", "Tipo de error", "Descripción del problema"]
-    col_widths = [16,                22,         30,                 26,              60]
 
-    for i, w in enumerate(col_widths, start=1):
+def _build_source_detail_sheets(wb: openpyxl.Workbook, result: ValidationResult) -> None:
+    for label, errors in _group_errors_by_source(result).items():
+        ws = wb.create_sheet(_unique_sheet_title(wb, label))
+        ws.sheet_view.showGridLines = False
+        _write_error_table(ws, errors)
+
+
+def _write_error_table(ws, errors) -> None:
+    for i, w in enumerate(_DETAIL_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     # Fila de encabezados
-    for col, h in enumerate(headers, start=1):
+    for col, h in enumerate(_DETAIL_HEADERS, start=1):
         c = ws.cell(row=1, column=col, value=h)
         c.font = _font(bold=True, color="FFFFFF", size=10)
         c.fill = _fill(_BRAND)
@@ -243,13 +290,16 @@ def _build_detail_sheet(wb: openpyxl.Workbook, result: ValidationResult) -> None
     ws.row_dimensions[1].height = 22
     ws.freeze_panes = "A2"  # congela encabezados al hacer scroll
 
-    if not result.errors:
+    if not errors:
         ws.cell(row=2, column=1, value="Sin errores").font = _font(bold=True, color=_SUCCESS)
         return
 
-    for row_i, err in enumerate(result.errors, start=2):
+    for row_i, err in enumerate(errors, start=2):
         color = _RULE_COLOR.get(err.regla, "FFFFFF")
         values = [
+            err.archivo or "—",
+            err.hoja or "—",
+            err.fila_origen if err.fila_origen > 0 else "—",
             err.fila if err.fila > 0 else "—",
             err.columna,
             str(err.valor),
@@ -262,3 +312,31 @@ def _build_detail_sheet(wb: openpyxl.Workbook, result: ValidationResult) -> None
             c.font = _font(size=10)
             c.alignment = _left()
         ws.row_dimensions[row_i].height = 15
+
+
+def _group_errors_by_source(result: ValidationResult) -> Dict[str, list]:
+    grouped: Dict[str, list] = {}
+    for err in result.errors:
+        label = _source_label(err.archivo, err.hoja)
+        grouped.setdefault(label, []).append(err)
+    return grouped
+
+
+def _source_label(archivo: str, hoja: str) -> str:
+    archivo_label = archivo or "Sin archivo"
+    hoja_label = (hoja or "").strip()
+    if hoja_label:
+        return f"{archivo_label} - hoja {hoja_label}"
+    return archivo_label
+
+
+def _unique_sheet_title(wb: openpyxl.Workbook, label: str) -> str:
+    base = re.sub(r"[\[\]\:\*\?\/\\]", "_", label).strip() or "Errores"
+    base = base[:31]
+    title = base
+    counter = 2
+    while title in wb.sheetnames:
+        suffix = f" {counter}"
+        title = f"{base[:31 - len(suffix)]}{suffix}"
+        counter += 1
+    return title

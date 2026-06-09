@@ -387,6 +387,33 @@ def render_main_app() -> None:
     _render_main_content()
 
 
+def _go_to_post_login_home() -> None:
+    st.session_state.current_view = "upload"
+    st.session_state.current_step = "upload"
+    for key in [
+        "selected_project_id",
+        "selected_project_name",
+        "selected_catalog",
+        "uploaded_df",
+        "uploaded_bytes",
+        "uploaded_audit_bytes",
+        "uploaded_audit_name",
+        "uploaded_name",
+        "uploaded_preview_items",
+        "uploaded_row_origins",
+        "uploaded_validation_sources",
+        "validation_result",
+        "validation_failure_zip_path",
+        "carga_ejecutada",
+        "load_result",
+    ]:
+        st.session_state.pop(key, None)
+    st.session_state.validation_result = None
+    st.session_state.validation_dialog_open = False
+    st.session_state.confirm_load_requested = False
+    st.rerun()
+
+
 # ------------------------------------------------------------------
 # Sidebar
 # ------------------------------------------------------------------
@@ -396,19 +423,21 @@ def _render_sidebar() -> None:
     with st.sidebar:
         # Logo + título
         b64 = _logo_b64()
-        logo_img = f'<img src="data:image/png;base64,{b64}" width="38" style="flex-shrink:0;">' if b64 else ""
+        logo_img = f'<img src="data:image/png;base64,{b64}" width="56" style="flex-shrink:0;">' if b64 else ""
         st.markdown(f"""
-        <div style="padding:4px 0 20px;">
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+        <div class="sidebar-brand">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
                 {logo_img}
-                <div>
-                    <div style="font-size:9px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
-                    <div style="font-size:16px;font-weight:800;color:white;letter-spacing:-0.3px;line-height:1;">Austro</div>
+                <div style="min-width:0;">
+                    <div style="font-size:11px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
+                    <div style="font-size:22px;font-weight:800;color:white;letter-spacing:0;line-height:1.05;">Austro</div>
                 </div>
             </div>
-            <div style="font-size:10px;color:#7A8EC0;margin-left:48px;">Portal de Ingesta · v1.0</div>
+            <div style="font-size:12px;color:#DCE4FF;margin-left:68px;">Portal de Ingesta · v1.0</div>
         </div>
         """, unsafe_allow_html=True)
+        if st.button("Volver al inicio", use_container_width=True, key="btn_brand_home", help="Volver al inicio"):
+            _go_to_post_login_home()
 
         st.divider()
 
@@ -476,16 +505,16 @@ def _render_sidebar() -> None:
                 cols = schema.get("columnas", [])
                 if cols:
                     for col in cols:
-                        nullable_tag = (
-                            "<span style='color:#6EE7B7; font-size:10px;'>nullable</span>"
-                            if col.get("nullable") else ""
-                        )
+                        acepta_vacios = "Sí" if col.get("nullable") else "No"
+                        acepta_color = "#6EE7B7" if col.get("nullable") else "#FCA5A5"
                         st.markdown(
                             f"<div style='font-size:12px; padding:4px 6px; display:flex;"
                             f"justify-content:space-between; align-items:center;"
                             f"border-bottom:1px solid rgba(255,255,255,0.06);'>"
                             f"<span style='color:#F5A800; font-family:monospace; font-size:11px;'>{col['nombre']}</span>"
-                            f"<span style='color:#A8B4D8; font-size:10px;'>{col['tipo']} {nullable_tag}</span></div>",
+                            f"<span style='color:#A8B4D8; font-size:10px; text-align:right;'>"
+                            f"{col['tipo']} · Acepta vacíos: "
+                            f"<b style='color:{acepta_color};'>{acepta_vacios}</b></span></div>",
                             unsafe_allow_html=True,
                         )
                 else:
@@ -636,6 +665,176 @@ _ENC_TIP = {
 }
 
 
+def _upload_ext(filename: str) -> str:
+    return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
+def _sheet_key(filename: str, index: int) -> str:
+    safe = "".join(c if c.isalnum() else "_" for c in filename)
+    return f"sheet_names_{index}_{safe}"
+
+
+def _row_origin_records(label: str, df: pd.DataFrame, file_name: str, sheet_name: str = "") -> list[dict]:
+    return [
+        {
+            "origen": label,
+            "archivo": file_name,
+            "hoja": sheet_name,
+            "fila_origen": idx + 2,
+        }
+        for idx in range(len(df))
+    ]
+
+
+def _apply_row_origins_to_errors(result: ValidationResult, row_origins: list[dict]) -> ValidationResult:
+    for error in result.errors:
+        source_index = error.fila - 2
+        if 0 <= source_index < len(row_origins):
+            origin = row_origins[source_index]
+            error.archivo = origin.get("archivo", "")
+            error.hoja = origin.get("hoja", "")
+            error.fila_origen = int(origin.get("fila_origen") or 0)
+    return result
+
+
+def _source_from_label(label: str) -> tuple[str, str]:
+    if label.endswith("]") and " [" in label:
+        file_name, sheet_name = label.rsplit(" [", 1)
+        return file_name, sheet_name[:-1]
+    return label, ""
+
+
+def _validation_sources_from_session(df: pd.DataFrame) -> list[dict]:
+    sources = st.session_state.get("uploaded_validation_sources") or []
+    if sources:
+        return sources
+
+    preview_items = st.session_state.get("uploaded_preview_items") or []
+    derived = []
+    start_index = 0
+    for item in preview_items:
+        if item.get("label") == "Conjunto combinado":
+            continue
+        item_df = item.get("df")
+        if item_df is None:
+            continue
+        archivo, hoja = _source_from_label(str(item.get("label", "")))
+        derived.append(
+            {
+                "label": item.get("label", archivo),
+                "archivo": archivo,
+                "hoja": hoja,
+                "df": item_df,
+                "start_index": start_index,
+            }
+        )
+        start_index += len(item_df)
+
+    return derived or [
+        {
+            "label": st.session_state.get("uploaded_name", "archivo"),
+            "archivo": st.session_state.get("uploaded_name", "archivo"),
+            "hoja": "",
+            "df": df,
+            "start_index": 0,
+        }
+    ]
+
+
+def _validation_sources_summary_html(df: pd.DataFrame) -> str:
+    sources = _validation_sources_from_session(df)
+    if not sources:
+        return html.escape(st.session_state.get("uploaded_name", "—"))
+
+    items = []
+    for idx, source in enumerate(sources, start=1):
+        archivo = html.escape(str(source.get("archivo") or source.get("label") or "Archivo"))
+        hoja = str(source.get("hoja") or "").strip()
+        hoja_html = (
+            f"<span style='color:#6B7280;'> · hoja </span>"
+            f"<span style='color:#374151;font-weight:600;'>{html.escape(hoja)}</span>"
+            if hoja else ""
+        )
+        rows = len(source.get("df")) if source.get("df") is not None else 0
+        items.append(
+            "<li style='margin:3px 0; display:flex; gap:8px; align-items:flex-start;'>"
+            f"<span style='color:#6B7280; min-width:22px;'>{idx}.</span>"
+            "<span style='min-width:0; word-break:break-word;'>"
+            f"<code>{archivo}</code>{hoja_html}"
+            f"<span style='color:#6B7280;'> · {rows:,} fila(s)</span>"
+            "</span>"
+            "</li>"
+        )
+
+    return (
+        "<ol style='margin:6px 0 0; padding:0; list-style:none;'>"
+        + "".join(items)
+        + "</ol>"
+    )
+
+
+def _validate_sources(df: pd.DataFrame, schema_config: dict) -> ValidationResult:
+    sources = _validation_sources_from_session(df)
+    combined = ValidationResult(
+        success=True,
+        rows_checked=sum(len(source["df"]) for source in sources),
+        cols_checked=len(df.columns),
+    )
+
+    for source in sources:
+        source_result = validate_dataframe(source["df"], schema_config)
+        start_index = int(source.get("start_index") or 0)
+        for error in source_result.errors:
+            source_row = error.fila
+            error.archivo = str(source.get("archivo") or source.get("label") or "")
+            error.hoja = str(source.get("hoja") or "")
+            if source_row > 0:
+                error.fila_origen = source_row
+                error.fila = start_index + source_row
+            combined.errors.append(error)
+
+    combined.success = len(combined.errors) == 0
+    return combined
+
+
+def _execute_validation(df: pd.DataFrame, catalog: dict, schema_config: dict) -> ValidationResult:
+    st.session_state.confirm_load_requested = False
+    try:
+        from config.catalogs import get_catalog_by_id
+        project_id = st.session_state.get("selected_project_id") or ""
+        fresh = get_catalog_by_id(project_id, catalog.get("catalog_id", ""))
+        if fresh and fresh.get("schema"):
+            schema_config = fresh["schema"]
+            st.session_state.selected_catalog = {**catalog, "schema": schema_config}
+    except Exception:
+        pass  # usa el schema que ya está en memoria como fallback
+
+    result = _validate_sources(df, schema_config)
+    st.session_state.validation_result = result
+    st.session_state.validation_failure_zip_path = None
+    if not result.success:
+        user = st.session_state.get("user_info") or {}
+        st.session_state.validation_failure_zip_path = save_validation_failure_file(
+            file_bytes=st.session_state.get("uploaded_audit_bytes") or b"",
+            filename=(
+                st.session_state.get("uploaded_audit_name")
+                or st.session_state.get("uploaded_name", "archivo")
+            ),
+            catalog=catalog,
+            username=user.get("username", "usuario"),
+            project_id=st.session_state.get("selected_project_id", ""),
+            project_name=st.session_state.get("selected_project_name", ""),
+            error_count=result.error_count,
+        )
+    st.session_state.validation_dialog_open = True
+    return result
+
+
+@st.experimental_dialog("Resultado de validación", width="large")
+def _render_validation_result_dialog(result: ValidationResult, df: pd.DataFrame, catalog: dict) -> None:
+    _render_validation_results(result, df, catalog, in_dialog=True)
+
+
 def _render_upload_step(catalog: dict) -> None:
     col1, col2 = st.columns([3, 2])
 
@@ -650,18 +849,29 @@ def _render_upload_step(catalog: dict) -> None:
             accept_multiple_files=True,
         )
 
-        if uploaded_files:
-            first_bytes = uploaded_files[0].read()
-            uploaded_files[0].seek(0)
-            ext = uploaded_files[0].name.rsplit(".", 1)[-1].lower()
-            is_excel = ext in ("xlsx", "xls")
-
+        if not uploaded_files:
+            st.session_state.uploaded_df = None
+            st.session_state.uploaded_preview_items = []
+            st.session_state.uploaded_row_origins = []
+            st.session_state.uploaded_validation_sources = []
+        else:
+            uploaded_payloads = []
             oversized = []
             max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-            for uf in uploaded_files:
-                uf.seek(0, 2)
-                file_size = uf.tell()
-                uf.seek(0)
+            for idx, uf in enumerate(uploaded_files):
+                fb = uf.getvalue()
+                file_size = len(fb)
+                ext = _upload_ext(uf.name)
+                uploaded_payloads.append(
+                    {
+                        "index": idx,
+                        "name": uf.name,
+                        "bytes": fb,
+                        "size": file_size,
+                        "ext": ext,
+                        "is_excel": ext in ("xlsx", "xls"),
+                    }
+                )
                 if file_size > max_bytes:
                     oversized.append(f"{uf.name} ({file_size / 1024 / 1024:.1f} MB)")
 
@@ -673,13 +883,16 @@ def _render_upload_step(catalog: dict) -> None:
                 st.session_state.uploaded_df = None
                 return
 
-            if not is_excel:
+            text_payloads = [p for p in uploaded_payloads if not p["is_excel"]]
+            excel_payloads = [p for p in uploaded_payloads if p["is_excel"]]
+
+            if text_payloads:
                 enc = st.session_state.get("encoding", "utf-8")
-                detected = detect_file_delimiter(first_bytes, enc)
+                detected = detect_file_delimiter(text_payloads[0]["bytes"], enc)
 
                 st.success(
                     f"Separador detectado: **{_DELIM_LABEL.get(detected, detected)}**  "
-                    f"— se aplicará a todos los archivos."
+                    f"— se aplicará a los archivos CSV/TXT."
                 )
 
                 with st.expander("¿Las columnas no se ven bien? Ajustar lectura"):
@@ -712,49 +925,115 @@ def _render_upload_step(catalog: dict) -> None:
                         )
                         cur_enc = st.session_state.get("encoding", "utf-8")
                         st.caption(_ENC_TIP[cur_enc])
-            else:
-                sheets = get_excel_sheets(first_bytes)
-                if len(sheets) <= 1:
-                    st.success(
-                        f"Excel detectado — hoja **{sheets[0] if sheets else 'Sheet1'}** "
-                        f"se leerá en todos los archivos."
+
+            excel_sheet_selection = {}
+            if excel_payloads:
+                with st.expander("Hojas de Excel a leer", expanded=True):
+                    st.caption(
+                        "Selecciona una o varias hojas por cada archivo Excel. "
+                        "Si no cambias nada, se leerá la primera hoja de cada Excel."
                     )
-                else:
-                    with st.expander("¿Quieres leer otra hoja? Seleccionar"):
-                        st.caption("Se aplicará la misma hoja a todos los archivos Excel.")
-                        st.selectbox(
-                            "Hoja a leer",
+                    for payload in excel_payloads:
+                        sheets = get_excel_sheets(payload["bytes"])
+                        if not sheets:
+                            st.error(f"**{payload['name']}**: no se pudieron leer las hojas del Excel.")
+                            excel_sheet_selection[payload["name"]] = []
+                            continue
+                        if len(sheets) == 1:
+                            excel_sheet_selection[payload["name"]] = [sheets[0]]
+                            st.caption(f"**{payload['name']}** — hoja única: `{sheets[0]}`")
+                            continue
+
+                        selected_sheets = st.multiselect(
+                            f"{payload['name']}",
                             options=sheets,
-                            key="sheet_name",
-                            help="Selecciona la hoja que contiene los datos del catálogo.",
+                            default=[sheets[0]],
+                            key=_sheet_key(payload["name"], payload["index"]),
+                            help="Puedes seleccionar varias hojas si todas tienen la estructura del catálogo.",
                         )
+                        excel_sheet_selection[payload["name"]] = selected_sheets
+
+                    empty_selection = [
+                        name for name, sheets in excel_sheet_selection.items()
+                        if not sheets
+                    ]
+                    if empty_selection:
+                        st.warning(
+                            "Selecciona al menos una hoja para: "
+                            + ", ".join(empty_selection)
+                        )
+                        st.session_state.uploaded_df = None
+                        st.session_state.uploaded_preview_items = []
+                        st.session_state.uploaded_row_origins = []
+                        st.session_state.uploaded_validation_sources = []
+                        return
 
             dfs = []
+            row_origins = []
+            validation_sources = []
             original_files = []
             errores_lectura = []
-            selected_sheet_name = st.session_state.get("sheet_name") if is_excel else None
 
-            for uf in uploaded_files:
-                fb = uf.read()
-                original_files.append((uf.name, fb))
-                df_i, err_i = read_uploaded_file(
-                    file_bytes=fb,
-                    filename=uf.name,
-                    delimiter=st.session_state.get("delimiter", ","),
-                    encoding=st.session_state.get("encoding", "utf-8"),
-                    sheet_name=selected_sheet_name,
-                )
-                if err_i:
-                    errores_lectura.append(f"**{uf.name}**: {err_i}")
-                elif df_i is None or df_i.empty:
-                    errores_lectura.append(f"**{uf.name}**: archivo vacío o separador incorrecto.")
+            for payload in uploaded_payloads:
+                original_files.append((payload["name"], payload["bytes"]))
+                if payload["is_excel"]:
+                    sheets_to_read = excel_sheet_selection.get(payload["name"], [None])
+                    for sheet_name in sheets_to_read:
+                        df_i, err_i = read_uploaded_file(
+                            file_bytes=payload["bytes"],
+                            filename=payload["name"],
+                            delimiter=st.session_state.get("delimiter", ","),
+                            encoding=st.session_state.get("encoding", "utf-8"),
+                            sheet_name=sheet_name,
+                        )
+                        display_name = f"{payload['name']} [{sheet_name}]" if sheet_name else payload["name"]
+                        if err_i:
+                            errores_lectura.append(f"**{display_name}**: {err_i}")
+                        elif df_i is None or df_i.empty:
+                            errores_lectura.append(f"**{display_name}**: hoja vacía o sin columnas.")
+                        else:
+                            dfs.append((display_name, df_i, payload["size"]))
+                            row_origins.extend(_row_origin_records(display_name, df_i, payload["name"], str(sheet_name or "")))
+                            validation_sources.append(
+                                {
+                                    "label": display_name,
+                                    "archivo": payload["name"],
+                                    "hoja": str(sheet_name or ""),
+                                    "df": df_i,
+                                    "start_index": 0,
+                                }
+                            )
                 else:
-                    dfs.append((uf.name, df_i, len(fb)))
+                    df_i, err_i = read_uploaded_file(
+                        file_bytes=payload["bytes"],
+                        filename=payload["name"],
+                        delimiter=st.session_state.get("delimiter", ","),
+                        encoding=st.session_state.get("encoding", "utf-8"),
+                    )
+                    if err_i:
+                        errores_lectura.append(f"**{payload['name']}**: {err_i}")
+                    elif df_i is None or df_i.empty:
+                        errores_lectura.append(f"**{payload['name']}**: archivo vacío o separador incorrecto.")
+                    else:
+                        dfs.append((payload["name"], df_i, payload["size"]))
+                        row_origins.extend(_row_origin_records(payload["name"], df_i, payload["name"]))
+                        validation_sources.append(
+                            {
+                                "label": payload["name"],
+                                "archivo": payload["name"],
+                                "hoja": "",
+                                "df": df_i,
+                                "start_index": 0,
+                            }
+                        )
 
             if errores_lectura:
                 for msg in errores_lectura:
                     st.error(msg)
                 st.session_state.uploaded_df = None
+                st.session_state.uploaded_preview_items = []
+                st.session_state.uploaded_row_origins = []
+                st.session_state.uploaded_validation_sources = []
                 return
 
             if len(dfs) > 1:
@@ -783,10 +1062,24 @@ def _render_upload_step(catalog: dict) -> None:
                 return
 
             stats = get_file_stats(combined_df, b"x" * total_bytes)
+            start_index = 0
+            for source in validation_sources:
+                source["start_index"] = start_index
+                start_index += len(source["df"])
+
             st.session_state.uploaded_df          = combined_df
             st.session_state.uploaded_audit_bytes = audit_bytes
             st.session_state.uploaded_audit_name  = audit_name
             st.session_state.uploaded_name        = combined_name
+            st.session_state.uploaded_row_origins = row_origins
+            st.session_state.uploaded_validation_sources = validation_sources
+            st.session_state.uploaded_preview_items = [
+                {"label": "Conjunto combinado", "df": combined_df},
+                *[
+                    {"label": source["label"], "df": source["df"], "archivo": source["archivo"], "hoja": source["hoja"]}
+                    for source in validation_sources
+                ],
+            ]
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Filas totales", f"{stats['filas']:,}")
@@ -799,12 +1092,26 @@ def _render_upload_step(catalog: dict) -> None:
     with col2:
         if st.session_state.get("uploaded_df") is not None:
             st.markdown("#### Previsualización")
+            preview_items = st.session_state.get("uploaded_preview_items") or [
+                {"label": "Conjunto combinado", "df": st.session_state.uploaded_df}
+            ]
+            selected_preview = st.selectbox(
+                "Vista",
+                options=list(range(len(preview_items))),
+                format_func=lambda idx: preview_items[idx]["label"],
+                key="preview_item_idx",
+                label_visibility="collapsed",
+            )
+            preview_df = preview_items[selected_preview]["df"]
             st.dataframe(
-                st.session_state.uploaded_df.head(20),
+                preview_df.head(20),
                 use_container_width=True,
                 height=320,
             )
-            st.caption(f"Primeras {min(20, len(st.session_state.uploaded_df))} filas del total combinado")
+            st.caption(
+                f"Primeras {min(20, len(preview_df))} filas "
+                f"de {len(preview_df):,} en esta vista."
+            )
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
     if st.session_state.get("uploaded_df") is not None:
@@ -828,70 +1135,66 @@ def _render_validate_step(catalog: dict) -> None:
 
     schema_config = catalog.get("schema", {})
     result: Optional[ValidationResult] = st.session_state.get("validation_result")
+    files_summary = _validation_sources_summary_html(df)
 
-    col1, col2 = st.columns([2, 3])
-
-    with col1:
-        st.markdown("#### Archivo a validar")
-        st.markdown(f"""
-        <div style="padding:14px; background:var(--secondary-background-color);
-                    border-radius:10px; font-size:13px;">
-            <div><b>Archivo:</b> {st.session_state.get('uploaded_name', '—')}</div>
-            <div style="margin-top:6px;"><b>Filas:</b> {len(df):,}</div>
-            <div style="margin-top:6px;"><b>Catálogo:</b> {catalog['nombre']}</div>
-            <div style="margin-top:6px;"><b>Tabla:</b> <code>{catalog['tabla_destino']}</code></div>
-            <div style="margin-top:6px;"><b>Estrategia:</b>
-                <span style="
-                    background:#E0E7FF; color:#3730A3;
-                    padding:1px 8px; border-radius:20px; font-size:11px;
-                ">{catalog['estrategia'].upper()}</span>
-            </div>
+    st.markdown("#### Archivo a validar")
+    st.markdown(f"""
+    <div style="padding:16px 18px; background:var(--secondary-background-color);
+                border-radius:10px; font-size:13px; max-width:860px; margin:0 auto;">
+        <div><b>Archivos / hojas:</b>{files_summary}</div>
+        <div style="margin-top:6px;"><b>Filas:</b> {len(df):,}</div>
+        <div style="margin-top:6px;"><b>Catálogo:</b> {catalog['nombre']}</div>
+        <div style="margin-top:6px;"><b>Tabla:</b> <code>{catalog['tabla_destino']}</code></div>
+        <div style="margin-top:6px;"><b>Estrategia:</b>
+            <span style="
+                background:#E0E7FF; color:#3730A3;
+                padding:1px 8px; border-radius:20px; font-size:11px;
+            ">{catalog['estrategia'].upper()}</span>
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
 
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    mid_l, mid_c, mid_r = st.columns([1, 1.3, 1])
+    with mid_c:
         if st.button("Ejecutar validación", type="primary", use_container_width=True, key="btn_validate"):
-            with st.spinner("Validando datos en memoria..."):
-                try:
-                    from config.catalogs import get_catalog_by_id
-                    project_id = st.session_state.get("selected_project_id") or ""
-                    fresh = get_catalog_by_id(project_id, catalog.get("catalog_id", ""))
-                    if fresh and fresh.get("schema"):
-                        schema_config = fresh["schema"]
-                        st.session_state.selected_catalog = {**catalog, "schema": schema_config}
-                except Exception:
-                    pass  # usa el schema que ya está en memoria como fallback
-                result = validate_dataframe(df, schema_config)
-                st.session_state.validation_result = result
-                st.session_state.validation_failure_zip_path = None
-                if not result.success:
-                    user = st.session_state.get("user_info") or {}
-                    st.session_state.validation_failure_zip_path = save_validation_failure_file(
-                        file_bytes=st.session_state.get("uploaded_audit_bytes") or b"",
-                        filename=(
-                            st.session_state.get("uploaded_audit_name")
-                            or st.session_state.get("uploaded_name", "archivo")
-                        ),
-                        catalog=catalog,
-                        username=user.get("username", "usuario"),
-                        project_id=st.session_state.get("selected_project_id", ""),
-                        project_name=st.session_state.get("selected_project_name", ""),
-                        error_count=result.error_count,
-                    )
+            progress = st.progress(0, text="Preparando validación...")
+            progress.progress(30, text="Revisando estructura y columnas...")
+            progress.progress(65, text="Aplicando reglas de calidad...")
+            result = _execute_validation(df, catalog, schema_config)
+            progress.progress(100, text="Validación completada.")
             st.rerun()
 
         if st.button("← Volver al archivo", use_container_width=True, key="btn_back_v"):
             st.session_state.current_step      = "upload"
             st.session_state.validation_result = None
+            st.session_state.validation_dialog_open = False
+            st.session_state.confirm_load_requested = False
             st.rerun()
 
-    with col2:
-        if result is not None:
-            _render_validation_results(result, df, catalog)
+    if result is not None:
+        if st.session_state.get("validation_dialog_open", False):
+            st.session_state.validation_dialog_open = False
+            try:
+                _render_validation_result_dialog(result, df, catalog)
+            except Exception as exc:
+                if "only one dialog is allowed" in str(exc).lower():
+                    st.info(
+                        "El resultado de la validación ya está abierto o se acaba de cerrar. "
+                        "Si deseas revisarlo nuevamente, usa el botón de abajo."
+                    )
+                else:
+                    raise
+        else:
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+            view_l, view_c, view_r = st.columns([1, 1.3, 1])
+            with view_c:
+                if st.button("Ver resultado de validación", use_container_width=True, key="btn_show_validation_result"):
+                    st.session_state.validation_dialog_open = True
+                    st.rerun()
 
 
-def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catalog: dict) -> None:
+def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catalog: dict, in_dialog: bool = False) -> None:
     if result.success:
         st.markdown("""
         <div style="
@@ -917,8 +1220,32 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
         c2.metric("Errores encontrados", "0")
 
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-        if st.button("Confirmar carga →", type="primary", use_container_width=True, key="btn_confirm"):
-            st.session_state.current_step = "result"
+        if st.session_state.get("confirm_load_requested"):
+            st.warning(
+                "Confirma la carga solo si revisaste la previsualización y la validación. "
+                f"Se insertarán {result.rows_checked:,} fila(s) en `{catalog['tabla_destino']}` "
+                f"con estrategia `{catalog['estrategia'].upper()}` y se guardará evidencia auditada."
+            )
+            c_yes, c_no = st.columns(2)
+            with c_yes:
+                if st.button("Sí, confirmar carga", type="primary", use_container_width=True, key="btn_confirm_yes"):
+                    st.session_state.confirm_load_requested = False
+                    st.session_state.validation_dialog_open = False
+                    st.session_state.current_step = "result"
+                    st.rerun()
+            with c_no:
+                if st.button("Cancelar", use_container_width=True, key="btn_confirm_no"):
+                    st.session_state.confirm_load_requested = False
+                    st.session_state.validation_dialog_open = True
+                    st.rerun()
+        else:
+            if st.button("Confirmar carga →", type="primary", use_container_width=True, key="btn_confirm"):
+                st.session_state.confirm_load_requested = True
+                st.session_state.validation_dialog_open = True
+                st.rerun()
+        if in_dialog and st.button("Cerrar", use_container_width=True, key="btn_close_validation_ok"):
+            st.session_state.confirm_load_requested = False
+            st.session_state.validation_dialog_open = False
             st.rerun()
     else:
         st.markdown(f"""
@@ -943,18 +1270,64 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
         st.markdown("**Consola de errores**")
 
         errors_df = result.to_dataframe()
-        st.dataframe(
-            errors_df,
-            use_container_width=True,
-            height=280,
-            column_config={
-                "Fila":    st.column_config.NumberColumn("Fila", width="small"),
-                "Columna": st.column_config.TextColumn("Columna", width="medium"),
-                "Valor":   st.column_config.TextColumn("Valor encontrado"),
-                "Regla":   st.column_config.TextColumn("Regla"),
-                "Detalle": st.column_config.TextColumn("Detalle"),
-            }
-        )
+        if "Archivo" in errors_df.columns and not errors_df.empty:
+            group_items = []
+            for (archivo, hoja), group_df in errors_df.groupby(["Archivo", "Hoja"], dropna=False, sort=False):
+                hoja_label = f" · hoja {hoja}" if str(hoja or "").strip() else ""
+                label = f"{archivo or 'Sin archivo'}{hoja_label} — {len(group_df)} error(es)"
+                group_items.append(
+                    {
+                        "label": label,
+                        "archivo": archivo,
+                        "hoja": hoja,
+                        "df": group_df,
+                    }
+                )
+
+            options = ["Todos los errores", *[item["label"] for item in group_items]]
+            selected_group = st.selectbox(
+                "Ver errores de",
+                options=options,
+                key="validation_error_group",
+            )
+
+            if selected_group == "Todos los errores":
+                visible_errors = errors_df.copy()
+                table_caption = f"{len(visible_errors)} error(es) en todos los archivos."
+            else:
+                selected_item = next(item for item in group_items if item["label"] == selected_group)
+                visible_errors = selected_item["df"].drop(columns=["Archivo", "Hoja"], errors="ignore")
+                table_caption = selected_item["label"]
+
+            st.caption(table_caption)
+            st.dataframe(
+                visible_errors,
+                use_container_width=True,
+                height=min(360, 72 + len(visible_errors) * 36),
+                column_config={
+                    "Archivo":     st.column_config.TextColumn("Archivo", width="medium"),
+                    "Hoja":        st.column_config.TextColumn("Hoja", width="small"),
+                    "Fila origen": st.column_config.NumberColumn("Fila archivo", width="small"),
+                    "Fila":        st.column_config.NumberColumn("Fila combinada", width="small"),
+                    "Columna":     st.column_config.TextColumn("Columna", width="medium"),
+                    "Valor":       st.column_config.TextColumn("Valor encontrado"),
+                    "Regla":       st.column_config.TextColumn("Regla"),
+                    "Detalle":     st.column_config.TextColumn("Detalle"),
+                },
+            )
+        else:
+            st.dataframe(
+                errors_df,
+                use_container_width=True,
+                height=280,
+                column_config={
+                    "Fila":    st.column_config.NumberColumn("Fila", width="small"),
+                    "Columna": st.column_config.TextColumn("Columna", width="medium"),
+                    "Valor":   st.column_config.TextColumn("Valor encontrado"),
+                    "Regla":   st.column_config.TextColumn("Regla"),
+                    "Detalle": st.column_config.TextColumn("Detalle"),
+                },
+            )
 
         user = st.session_state.get("user_info") or {}
         xlsx_bytes = build_error_report(
@@ -970,6 +1343,9 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+        if in_dialog and st.button("Cerrar", use_container_width=True, key="btn_close_validation_error"):
+            st.session_state.validation_dialog_open = False
+            st.rerun()
         validation_zip_path = st.session_state.get("validation_failure_zip_path")
         if validation_zip_path:
             st.info(f"Archivo fallido guardado en auditoría: `{validation_zip_path}`")
@@ -1135,6 +1511,42 @@ def _inject_main_css() -> None:
         }
         section[data-testid="stSidebar"] .block-container {
             padding-top: 12px !important;
+        }
+        section[data-testid="stSidebar"] .sidebar-brand {
+            display: block;
+            padding: 8px 8px 22px;
+            border-radius: 12px;
+            text-decoration: none !important;
+            transition: background .15s ease, transform .15s ease;
+        }
+        section[data-testid="stSidebar"] .sidebar-brand:hover {
+            background: rgba(255,255,255,0.08);
+            text-decoration: none !important;
+            transform: translateY(-1px);
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container {
+            margin-top: -116px !important;
+            height: 116px !important;
+            margin-bottom: 18px !important;
+            position: relative !important;
+            z-index: 5 !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container .stButton {
+            height: 116px !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button {
+            height: 116px !important;
+            background: transparent !important;
+            border: 0 !important;
+            color: transparent !important;
+            box-shadow: none !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button:hover {
+            background: rgba(255,255,255,0.08) !important;
+            border-radius: 12px !important;
+        }
+        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button * {
+            color: transparent !important;
         }
         section[data-testid="stSidebar"] * {
             color: #E8ECF8 !important;
