@@ -99,16 +99,17 @@ def execute_load(
     )
 
     try:
-        df = _normalize_df_for_load(df, catalog.get("schema", {}))
+        schema_config = catalog.get("schema", {})
+        df = _normalize_df_for_load(df, schema_config)
         rows = len(df)
 
         # 2. Escritura en BD
         if destino == "singlestore":
-            _write_singlestore(df, base_datos, tabla, estrategia)
+            _write_singlestore(df, base_datos, tabla, estrategia, schema_config)
         elif destino == "hive":
             if not HIVE_ENABLED:
                 raise ValueError("Hive está deshabilitado en la configuración.")
-            _write_hive(df, base_datos, tabla, estrategia)
+            _write_hive(df, base_datos, tabla, estrategia, schema_config)
         else:
             raise ValueError(f"Destino desconocido: '{destino}'")
 
@@ -243,17 +244,40 @@ def _connect_ss():
     )
 
 
-def _write_singlestore(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) -> None:
+def _write_singlestore(
+    df: pd.DataFrame,
+    base_datos: str,
+    tabla: str,
+    estrategia: str,
+    schema_config: Optional[Dict[str, Any]] = None,
+) -> None:
     tabla_fq     = f"`{base_datos}`.`{tabla}`"
     cols         = list(df.columns)
     col_names    = ", ".join(f"`{c}`" for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
     insert_sql   = f"INSERT INTO {tabla_fq} ({col_names}) VALUES ({placeholders})"
     rows_data    = _df_to_tuples(df)
+    ingestion_rule = _get_ingestion_rule(schema_config)
 
     with _connect_ss() as conn:
         with conn.cursor() as cur:
-            if estrategia == "append":
+            if _is_avoid_duplicates_rule(ingestion_rule):
+                reference_col, reference_values = _get_reference_values(df, ingestion_rule)
+                _ensure_no_existing_reference_values_ss(cur, tabla_fq, reference_col, reference_values)
+                _batch_insert(cur, insert_sql, rows_data)
+
+            elif _is_replace_by_field_rule(ingestion_rule):
+                reference_col, reference_values = _get_reference_values(df, ingestion_rule)
+                cur.execute("BEGIN")
+                try:
+                    _delete_reference_values_ss(cur, tabla_fq, reference_col, reference_values)
+                    _batch_insert(cur, insert_sql, rows_data)
+                    cur.execute("COMMIT")
+                except Exception:
+                    cur.execute("ROLLBACK")
+                    raise
+
+            elif estrategia == "append":
                 # Sin transacción — append es acumulativo y tolera reintentos
                 _batch_insert(cur, insert_sql, rows_data)
 
@@ -272,7 +296,7 @@ def _write_singlestore(df: pd.DataFrame, base_datos: str, tabla: str, estrategia
             elif estrategia == "reproceso":
                 # Atómico por fechas: borra solo las fechas del archivo y reinserta
                 # Si falla, ROLLBACK deja los datos históricos intactos
-                partition_col = _get_partition_col(df)
+                partition_col = _get_partition_col(df, schema_config)
                 fechas = df[partition_col].dropna().unique().tolist()
                 ph_fechas = ", ".join(["%s"] * len(fechas))
                 cur.execute("BEGIN")
@@ -297,6 +321,84 @@ def _df_to_tuples(df: pd.DataFrame) -> list:
               for v in row)
         for row in df.itertuples(index=False, name=None)
     ]
+
+
+def _get_ingestion_rule(schema_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(schema_config, dict):
+        return {"modo": "sin_regla"}
+    rule = schema_config.get("regla_ingesta") or {}
+    if not isinstance(rule, dict):
+        return {"modo": "sin_regla"}
+    mode = str(rule.get("modo") or "sin_regla").strip().lower()
+    if mode not in {"sin_regla", "evitar_duplicados", "reemplazar_por_campo"}:
+        mode = "sin_regla"
+    return {
+        "modo": mode,
+        "campo_referencia": str(rule.get("campo_referencia") or "").strip(),
+        "valor_unico_en_archivo": bool(rule.get("valor_unico_en_archivo", True)),
+    }
+
+
+def _is_avoid_duplicates_rule(rule: Dict[str, Any]) -> bool:
+    return str(rule.get("modo") or "") == "evitar_duplicados"
+
+
+def _is_replace_by_field_rule(rule: Dict[str, Any]) -> bool:
+    return str(rule.get("modo") or "") == "reemplazar_por_campo"
+
+
+def _get_reference_values(df: pd.DataFrame, rule: Dict[str, Any]) -> tuple[str, list]:
+    reference_col = str(rule.get("campo_referencia") or "").strip()
+    if not reference_col:
+        raise ValueError("La regla de ingesta requiere un campo referencial.")
+    if reference_col not in df.columns:
+        raise ValueError(
+            f"La columna referencial '{reference_col}' no existe en el archivo cargado."
+        )
+
+    series = df[reference_col]
+    non_blank = series[~_blank_mask(series)]
+    values = non_blank.drop_duplicates().tolist()
+    if not values:
+        raise ValueError(
+            f"La columna referencial '{reference_col}' no tiene valores para aplicar la regla de ingesta."
+        )
+    if bool(rule.get("valor_unico_en_archivo", True)) and len(values) != 1:
+        raise ValueError(
+            f"La columna referencial '{reference_col}' debe tener un solo valor en el archivo. "
+            f"Valores encontrados: {len(values)}."
+        )
+    return reference_col, values
+
+
+def _quote_identifier(identifier: str) -> str:
+    return f"`{str(identifier).replace('`', '``')}`"
+
+
+def _ensure_no_existing_reference_values_ss(cur, tabla_fq: str, reference_col: str, values: list) -> None:
+    placeholders = ", ".join(["%s"] * len(values))
+    col_sql = _quote_identifier(reference_col)
+    cur.execute(
+        f"SELECT {col_sql}, COUNT(*) FROM {tabla_fq} "
+        f"WHERE {col_sql} IN ({placeholders}) GROUP BY {col_sql} LIMIT 10",
+        values,
+    )
+    existing = cur.fetchall()
+    if existing:
+        existing_values = ", ".join(str(row[0]) for row in existing)
+        raise ValueError(
+            f"No se cargo el archivo para evitar duplicados. "
+            f"Ya existen registros con {reference_col}: {existing_values}."
+        )
+
+
+def _delete_reference_values_ss(cur, tabla_fq: str, reference_col: str, values: list) -> None:
+    placeholders = ", ".join(["%s"] * len(values))
+    col_sql = _quote_identifier(reference_col)
+    cur.execute(
+        f"DELETE FROM {tabla_fq} WHERE {col_sql} IN ({placeholders})",
+        values,
+    )
 
 
 def _normalize_df_for_load(df: pd.DataFrame, schema_config: Dict[str, Any]) -> pd.DataFrame:
@@ -403,7 +505,16 @@ def _batch_insert(cur, sql: str, rows: list) -> None:
         cur.executemany(sql, rows[i: i + _BATCH_SIZE])
 
 
-def _get_partition_col(df: pd.DataFrame) -> str:
+def _get_partition_col(df: pd.DataFrame, schema_config: Optional[Dict[str, Any]] = None) -> str:
+    ingestion_rule = _get_ingestion_rule(schema_config)
+    reference_col = str(ingestion_rule.get("campo_referencia") or "").strip()
+    if reference_col:
+        if reference_col not in df.columns:
+            raise ValueError(
+                f"La columna referencial '{reference_col}' no existe en el archivo cargado."
+            )
+        return reference_col
+
     candidates = ["fecha_proceso", "fecha", "fecha_carga", "date"]
     for c in candidates:
         if c in df.columns:
@@ -417,7 +528,13 @@ def _get_partition_col(df: pd.DataFrame) -> str:
 # ------------------------------------------------------------------
 # Hive
 # ------------------------------------------------------------------
-def _write_hive(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) -> None:
+def _write_hive(
+    df: pd.DataFrame,
+    base_datos: str,
+    tabla: str,
+    estrategia: str,
+    schema_config: Optional[Dict[str, Any]] = None,
+) -> None:
     try:
         from pyhive import hive as pyhive_conn
     except ImportError:
@@ -430,6 +547,7 @@ def _write_hive(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) 
     hive_port = int(os.getenv("HIVE_PORT", "10000"))
     hive_user = os.getenv("HIVE_USER", "hive")
     tabla_fq  = f"{base_datos}.{tabla}"
+    ingestion_rule = _get_ingestion_rule(schema_config)
 
     conn = pyhive_conn.Connection(
         host=hive_host, port=hive_port,
@@ -438,14 +556,31 @@ def _write_hive(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) 
     try:
         cur = conn.cursor()
 
-        if estrategia == "overwrite":
+        if _is_avoid_duplicates_rule(ingestion_rule):
+            reference_col, reference_values = _get_reference_values(df, ingestion_rule)
+            _ensure_no_existing_reference_values_hive(cur, tabla_fq, reference_col, reference_values)
+            _hive_insert(cur, df, tabla_fq, overwrite=False)
+
+        elif _is_replace_by_field_rule(ingestion_rule):
+            partition_col, values = _get_reference_values(df, ingestion_rule)
+            for value in values:
+                value_df = df[df[partition_col] == value]
+                _hive_insert(
+                    cur,
+                    value_df,
+                    tabla_fq,
+                    overwrite=True,
+                    partition={partition_col: str(value)},
+                )
+
+        elif estrategia == "overwrite":
             _hive_insert(cur, df, tabla_fq, overwrite=True)
 
         elif estrategia == "append":
             _hive_insert(cur, df, tabla_fq, overwrite=False)
 
         elif estrategia == "reproceso":
-            partition_col = _get_partition_col(df)
+            partition_col = _get_partition_col(df, schema_config)
             for fecha in df[partition_col].dropna().unique():
                 fecha_df = df[df[partition_col] == fecha]
                 _hive_insert(
@@ -460,6 +595,31 @@ def _write_hive(df: pd.DataFrame, base_datos: str, tabla: str, estrategia: str) 
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_no_existing_reference_values_hive(cur, tabla_fq: str, reference_col: str, values: list) -> None:
+    formatted_values = ", ".join(_hive_literal(v) for v in values)
+    col_sql = f"`{str(reference_col).replace('`', '``')}`"
+    cur.execute(
+        f"SELECT {col_sql}, COUNT(*) FROM {tabla_fq} "
+        f"WHERE {col_sql} IN ({formatted_values}) GROUP BY {col_sql} LIMIT 10"
+    )
+    existing = cur.fetchall()
+    if existing:
+        existing_values = ", ".join(str(row[0]) for row in existing)
+        raise ValueError(
+            f"No se cargo el archivo para evitar duplicados. "
+            f"Ya existen registros con {reference_col}: {existing_values}."
+        )
+
+
+def _hive_literal(value: Any) -> str:
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return "NULL"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
 
 
 def _hive_insert(

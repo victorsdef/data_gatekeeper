@@ -64,6 +64,17 @@ _REGLA_LABELS = {
 
 _REGLA_LABELS["regex"] = "Patron de texto (regex)"
 
+_INGESTION_MODES = {
+    "sin_regla": "No hacer control especial",
+    "evitar_duplicados": "Rechazar la carga si ya existe",
+    "reemplazar_por_campo": "Reemplazar registros existentes",
+}
+_INGESTION_MODE_HELP = {
+    "sin_regla": "No revisa duplicados ni reemplaza por campo. Usa la estrategia normal del catalogo.",
+    "evitar_duplicados": "Si la tabla ya tiene datos con el mismo campo de control, no carga nada para evitar duplicados.",
+    "reemplazar_por_campo": "Si la tabla ya tiene datos con el mismo campo de control, elimina solo esos registros y luego carga el archivo.",
+}
+
 _ID_PREFIX = "dg_au_agd"
 _GENERIC_ORIGIN_TOKENS = {
     "bd", "db", "dbo", "tbl", "tmp",
@@ -272,6 +283,19 @@ def _validate_schema_definition(schema: dict) -> List[str]:
         seen.add(nombre)
         if tipo not in _TIPOS:
             errors.append(f"La columna `{nombre}` tiene un tipo inválido.")
+
+    ingestion_rule = schema.get("regla_ingesta") or {}
+    if ingestion_rule:
+        mode = str(ingestion_rule.get("modo") or "sin_regla").strip()
+        reference_field = str(ingestion_rule.get("campo_referencia") or "").strip()
+        column_names = {str(c.get("nombre", "")).strip() for c in columnas}
+        if mode not in _INGESTION_MODES:
+            errors.append("La regla de ingesta tiene un modo invalido.")
+        elif mode != "sin_regla":
+            if not reference_field:
+                errors.append("La regla de ingesta requiere un campo referencial.")
+            elif reference_field not in column_names:
+                errors.append(f"El campo referencial `{reference_field}` no existe en el esquema.")
     return errors
 
 
@@ -1339,6 +1363,208 @@ def _rule_chip_html(regla: dict) -> str:
     )
 
 
+def _rule_detail_text(regla: dict) -> str:
+    t = str(regla.get("tipo", "") or "").strip().lower()
+    if t == "isin":
+        vals = ", ".join(str(v) for v in regla.get("valor", []))
+        return f"Dominio permitido: {vals or 'sin valores'}"
+    if t == "gte":
+        return f"Valor minimo: {regla.get('valor', '')}"
+    if t == "lte":
+        return f"Valor maximo: {regla.get('valor', '')}"
+    if t == "min_length":
+        return f"Longitud minima: {regla.get('valor', '')} caracteres"
+    if t == "str_length":
+        return f"Longitud entre {regla.get('min', '')} y {regla.get('max', '')} caracteres"
+    if t == "regex":
+        return f"Patron: {regla.get('valor', '')}"
+    return str(regla)
+
+
+def _rules_count_hover_html(display_df: pd.DataFrame, rules: dict) -> str:
+    if display_df.empty:
+        return ""
+
+    chips = []
+    for _, row in display_df.iterrows():
+        name = str(row.get("nombre", "")).strip()
+        col_rules = list(rules.get(name, []))
+        if not name or not col_rules:
+            continue
+        title = html_escape(" | ".join(_rule_detail_text(r) for r in col_rules), quote=True)
+        chips.append(
+            f'<span title="{title}" style="display:inline-flex;align-items:center;gap:5px;'
+            f'background:#EEF2FF;color:#1C2F6E;border:1px solid #C7D2FE;'
+            f'padding:3px 8px;border-radius:999px;font-size:11px;cursor:help;">'
+            f'<code style="font-size:11px;color:#1C2F6E;background:transparent;">{html_escape(name)}</code>'
+            f'<b>{len(col_rules)}</b> regla(s)</span>'
+        )
+
+    if not chips:
+        return (
+            '<div style="font-size:12px;color:#9CA3AF;margin:6px 0 10px;">'
+            'Sin reglas de calidad configuradas.</div>'
+        )
+    return (
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px;">'
+        '<span style="font-size:11px;color:#6B7280;font-weight:600;margin-right:2px;">'
+        'Pasa el cursor sobre una regla:</span>'
+        + "".join(chips)
+        + '</div>'
+    )
+
+
+def _normalize_ingestion_rule(rule: dict | None) -> dict:
+    rule = rule or {}
+    mode = str(rule.get("modo") or rule.get("mode") or "sin_regla").strip()
+    if mode not in _INGESTION_MODES:
+        mode = "sin_regla"
+    return {
+        "modo": mode,
+        "campo_referencia": str(rule.get("campo_referencia") or rule.get("reference_field") or "").strip(),
+        "valor_unico_en_archivo": bool(rule.get("valor_unico_en_archivo", True)),
+    }
+
+
+def _init_ingestion_state(state_key: str, rule: dict | None) -> None:
+    init_key = f"{state_key}_initialized"
+    if st.session_state.get(init_key):
+        return
+    normalized = _normalize_ingestion_rule(rule)
+    st.session_state[f"{state_key}_mode"] = normalized["modo"]
+    st.session_state[f"{state_key}_field"] = normalized["campo_referencia"]
+    st.session_state[f"{state_key}_single"] = normalized["valor_unico_en_archivo"]
+    st.session_state[init_key] = True
+
+
+def _collect_ingestion_rule(state_key: str) -> dict | None:
+    mode = str(st.session_state.get(f"{state_key}_mode") or "sin_regla")
+    if mode == "sin_regla":
+        return None
+    field = str(st.session_state.get(f"{state_key}_field") or "").strip()
+    return {
+        "modo": mode,
+        "campo_referencia": field,
+        "valor_unico_en_archivo": bool(st.session_state.get(f"{state_key}_single", True)),
+    }
+
+
+def _ingestion_allowed_modes(estrategia: str) -> list[str]:
+    return ["sin_regla", "evitar_duplicados", "reemplazar_por_campo"]
+
+
+def _render_ingestion_rule_form(columns: list, state_key: str, estrategia: str) -> None:
+    column_names = [str(c.get("nombre", "")).strip() for c in columns if str(c.get("nombre", "")).strip()]
+    allowed_modes = _ingestion_allowed_modes(estrategia)
+    current_mode = str(st.session_state.get(f"{state_key}_mode") or "sin_regla")
+    if current_mode not in allowed_modes:
+        st.session_state[f"{state_key}_mode"] = "sin_regla"
+        current_mode = "sin_regla"
+
+    mode = st.selectbox(
+        "Accion antes de cargar",
+        allowed_modes,
+        key=f"{state_key}_mode",
+        format_func=lambda x: _INGESTION_MODES.get(x, x),
+        help="Define que debe hacer el sistema antes de insertar los datos en la tabla destino.",
+    )
+    st.caption(_INGESTION_MODE_HELP.get(mode, ""))
+
+    if mode == "sin_regla":
+        st.info(
+            "Sin control especial, el sistema usara la estrategia normal del catalogo: "
+            "append agrega filas y overwrite reemplaza toda la tabla."
+        )
+        return
+
+    if not column_names:
+        st.warning("No hay columnas disponibles para usar como campo referencial.")
+        return
+
+    current_field = str(st.session_state.get(f"{state_key}_field") or "")
+    field_index = column_names.index(current_field) if current_field in column_names else 0
+    st.selectbox(
+        "Campo de control",
+        column_names,
+        index=field_index,
+        key=f"{state_key}_field",
+        help="Campo que identifica el bloque de datos. Ejemplos: fecha_proceso, periodo, fecha_corte, codigo_lote o version.",
+    )
+    st.checkbox(
+        "El archivo debe traer un solo valor para este campo",
+        value=bool(st.session_state.get(f"{state_key}_single", True)),
+        key=f"{state_key}_single",
+        help="Recomendado cuando el archivo corresponde a una sola fecha, periodo, lote o corte.",
+    )
+
+
+@st.experimental_dialog("Reglas de calidad", width="large")
+def _render_quality_rules_dialog(columns: list, state_key: str, open_key: str) -> None:
+    st.caption(
+        "Configura reglas por columna. Estas reglas se validan en memoria antes de cargar datos."
+    )
+    _render_rules_editor(columns, state_key)
+    if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
+        st.session_state[open_key] = False
+        st.rerun()
+
+
+@st.experimental_dialog("Accion de ingesta", width="large")
+def _render_ingestion_rule_dialog(columns: list, state_key: str, estrategia: str, open_key: str) -> None:
+    st.caption(
+        "Define que debe pasar si ya existen datos para el campo de control seleccionado."
+    )
+    _render_ingestion_rule_form(columns, state_key, estrategia)
+    if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
+        st.session_state[open_key] = False
+        st.rerun()
+
+
+def _render_schema_rule_actions(
+    columns: list,
+    rules_key: str,
+    ingestion_key: str,
+    estrategia: str,
+    key_prefix: str,
+) -> None:
+    rules = st.session_state.get(rules_key, {})
+    total_rules = sum(len(v) for v in rules.values())
+    ingestion_rule = _collect_ingestion_rule(ingestion_key)
+    ingestion_label = (
+        _INGESTION_MODES.get(ingestion_rule.get("modo"), "Regla activa")
+        if ingestion_rule else "Sin regla de ingesta"
+    )
+
+    a1, a2 = st.columns(2)
+    quality_open_key = f"{key_prefix}_quality_dialog_open"
+    ingestion_open_key = f"{key_prefix}_ingestion_dialog_open"
+    active_dialog_key = f"{key_prefix}_schema_rule_dialog"
+    with a1:
+        if st.button(
+            f"Reglas de calidad ({total_rules})",
+            key=f"{key_prefix}_open_quality_rules",
+            use_container_width=True,
+        ):
+            st.session_state[active_dialog_key] = "quality"
+            st.session_state[quality_open_key] = True
+            st.session_state[ingestion_open_key] = False
+    with a2:
+        if st.button(
+            f"Accion de ingesta: {ingestion_label}",
+            key=f"{key_prefix}_open_ingestion_rule",
+            use_container_width=True,
+        ):
+            st.session_state[active_dialog_key] = "ingestion"
+            st.session_state[quality_open_key] = False
+            st.session_state[ingestion_open_key] = True
+
+    active_dialog = st.session_state.get(active_dialog_key)
+    if active_dialog == "quality" and st.session_state.get(quality_open_key):
+        _render_quality_rules_dialog(columns, rules_key, quality_open_key)
+    elif active_dialog == "ingestion" and st.session_state.get(ingestion_open_key):
+        _render_ingestion_rule_dialog(columns, ingestion_key, estrategia, ingestion_open_key)
+
+
 def _render_rules_editor(columns: list, state_key: str) -> None:
     """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
     if not columns:
@@ -1494,6 +1720,7 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
     state_key  = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
     result_key = f"{key_prefix}_schema_edited_{hash(schema_cache_key)}"
     rules_key  = f"{key_prefix}_rules_{hash(schema_cache_key)}"
+    ingestion_key = f"{key_prefix}_ingestion_{hash(schema_cache_key)}"
 
     # state_key se escribe UNA sola vez (fuente inmutable del data_editor)
     if state_key not in st.session_state:
@@ -1516,6 +1743,7 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             for col in columnas
             if col.get("reglas")
         }
+    _init_ingestion_state(ingestion_key, schema.get("regla_ingesta"))
 
     df = st.session_state[state_key]
     rules = st.session_state.get(rules_key, {})
@@ -1556,7 +1784,11 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
             "nombre":   st.column_config.TextColumn("Columna",  width="medium"),
             "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True, width="small"),
             "nullable": st.column_config.CheckboxColumn("Acepta vacíos", width="small"),
-            "reglas":   st.column_config.NumberColumn("Reglas", width="small"),
+            "reglas":   st.column_config.NumberColumn(
+                "Reglas",
+                width="small",
+                help="Cantidad de reglas de calidad configuradas. Debajo de la tabla puedes pasar el cursor sobre cada columna para ver el detalle.",
+            ),
         },
         disabled=["nombre", "reglas"],
         use_container_width=True,
@@ -1566,6 +1798,7 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
         key=f"de_{state_key}",
     )
     st.session_state[result_key] = edited
+    st.markdown(_rules_count_hover_html(edited, rules), unsafe_allow_html=True)
 
     rule_columns = [
         {
@@ -1575,7 +1808,14 @@ def _render_schema_editor(schema: dict, key_prefix: str) -> None:
         for _, row in edited.iterrows()
         if str(row.get("nombre", "")).strip()
     ]
-    _render_rules_editor(rule_columns, rules_key)
+    current_strategy = st.session_state.get(f"{key_prefix}_est", "overwrite")
+    _render_schema_rule_actions(
+        columns=rule_columns,
+        rules_key=rules_key,
+        ingestion_key=ingestion_key,
+        estrategia=current_strategy,
+        key_prefix=f"{key_prefix}_{abs(hash(schema_cache_key))}",
+    )
 
 
 def _bulk_table_prefix(table: str) -> str:
@@ -1642,6 +1882,7 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
     state_key  = f"{key_prefix}_schema_rows_{hash(schema_cache_key)}"
     result_key = f"{key_prefix}_schema_edited_{hash(schema_cache_key)}"
     rules_key  = f"{key_prefix}_rules_{hash(schema_cache_key)}"
+    ingestion_key = f"{key_prefix}_ingestion_{hash(schema_cache_key)}"
 
     data = st.session_state.get(result_key)
     if data is None:
@@ -1651,7 +1892,7 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
 
     rules_por_columna = st.session_state.get(rules_key, {})
     rows = data.to_dict("records") if isinstance(data, pd.DataFrame) else data
-    return {
+    collected = {
         "columnas": [
             {
                 "nombre":   str(r.get("nombre", "")).strip(),
@@ -1663,6 +1904,10 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
             if str(r.get("nombre", "")).strip()
         ]
     }
+    ingestion_rule = _collect_ingestion_rule(ingestion_key)
+    if ingestion_rule:
+        collected["regla_ingesta"] = ingestion_rule
+    return collected
 
 
 def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None) -> None:
@@ -1926,6 +2171,7 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
 
     schema_init_key = f"{ek}_schema_init"
     rules_edit_key = f"{ek}_rules_state"
+    ingestion_edit_key = f"{ek}_ingestion_state"
     if schema_init_key not in st.session_state:
         try:
             raw = get_catalog_schema(cid)
@@ -1939,6 +2185,7 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
                 for c in col_defs
                 if c.get("reglas")
             }
+            _init_ingestion_state(ingestion_edit_key, raw.get("regla_ingesta"))
         except Exception as e:
             st.error(user_facing_error(e, context="database"))
             st.session_state[schema_init_key] = []
@@ -1957,7 +2204,10 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
             "nombre": st.column_config.TextColumn("Columna", required=True),
             "tipo": st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True),
             "nullable": st.column_config.CheckboxColumn("Acepta vacíos"),
-            "reglas": st.column_config.NumberColumn("Reglas"),
+            "reglas": st.column_config.NumberColumn(
+                "Reglas",
+                help="Cantidad de reglas de calidad configuradas. Debajo de la tabla puedes pasar el cursor sobre cada columna para ver el detalle.",
+            ),
         },
         disabled=["reglas"],
         use_container_width=True,
@@ -1965,6 +2215,7 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         hide_index=True,
         key=f"{ek}_schema_editor",
     )
+    st.markdown(_rules_count_hover_html(edited_df, edit_rules), unsafe_allow_html=True)
 
     edit_rule_columns = [
         {
@@ -1975,22 +2226,29 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         if str(r.get("nombre", "")).strip()
     ]
     _render_rules_editor(edit_rule_columns, rules_edit_key)
+    with st.expander("Accion de ingesta", expanded=False):
+        _render_ingestion_rule_form(edit_rule_columns, ingestion_edit_key, ed_est)
+
+    edit_schema_candidate = {
+        "columnas": [
+            {
+                "nombre": str(r.get("nombre", "")).strip(),
+                "tipo": str(r.get("tipo", "str")),
+                "nullable": bool(r.get("nullable", True)),
+                "reglas": st.session_state.get(rules_edit_key, {}).get(str(r.get("nombre", "")).strip(), []),
+            }
+            for _, r in edited_df.iterrows()
+            if str(r.get("nombre", "")).strip()
+        ]
+    }
+    edit_ingestion_rule = _collect_ingestion_rule(ingestion_edit_key)
+    if edit_ingestion_rule:
+        edit_schema_candidate["regla_ingesta"] = edit_ingestion_rule
 
     edit_schema_errors = _validate_catalog_form(
         catalog_id=cid,
         nombre=ed_nombre.strip(),
-        schema={
-            "columnas": [
-                {
-                    "nombre": str(r.get("nombre", "")).strip(),
-                    "tipo": str(r.get("tipo", "str")),
-                    "nullable": bool(r.get("nullable", True)),
-                    "reglas": st.session_state.get(rules_edit_key, {}).get(str(r.get("nombre", "")).strip(), []),
-                }
-                for _, r in edited_df.iterrows()
-                if str(r.get("nombre", "")).strip()
-            ]
-        },
+        schema=edit_schema_candidate,
     )
     for err in edit_schema_errors:
         st.warning(err)
@@ -2011,6 +2269,9 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
                     if str(r.get("nombre", "")).strip()
                 ]
             }
+            edit_ingestion_rule = _collect_ingestion_rule(ingestion_edit_key)
+            if edit_ingestion_rule:
+                new_schema["regla_ingesta"] = edit_ingestion_rule
             try:
                 update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
             except Exception as e:
@@ -2019,6 +2280,8 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
 
             st.session_state.pop(schema_init_key, None)
             st.session_state.pop(rules_edit_key, None)
+            st.session_state.pop(ingestion_edit_key, None)
+            st.session_state.pop(f"{ingestion_edit_key}_initialized", None)
             st.session_state.pop("adm_catalog_dialog", None)
             selected_catalog = st.session_state.get("selected_catalog")
             if isinstance(selected_catalog, dict) and selected_catalog.get("catalog_id") == cid:
@@ -2031,6 +2294,8 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
         if st.button("Cancelar", key=f"{ek}_cancel", use_container_width=True):
             st.session_state.pop(schema_init_key, None)
             st.session_state.pop(rules_edit_key, None)
+            st.session_state.pop(ingestion_edit_key, None)
+            st.session_state.pop(f"{ingestion_edit_key}_initialized", None)
             st.session_state.pop("adm_catalog_dialog", None)
             st.rerun()
 
