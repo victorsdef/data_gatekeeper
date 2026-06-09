@@ -62,6 +62,83 @@ def _skeleton_html(n: int = 4, dark: bool = False) -> str:
     return f'<div style="padding:6px 0">{lines}</div>'
 
 
+def _preview_table_loading_html(rows: int = 8, cols: int = 4) -> str:
+    header_cells = "".join("<th><div class='preview-skel-line short'></div></th>" for _ in range(cols))
+    body_rows = []
+    for row_idx in range(rows):
+        cells = "".join(
+            f"<td><div class='preview-skel-line {['long', 'medium', 'short'][col_idx % 3]}'></div></td>"
+            for col_idx in range(cols)
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    return f"""
+    <style>
+      @keyframes previewShimmer {{
+        0% {{ background-position: -500px 0; }}
+        100% {{ background-position: 500px 0; }}
+      }}
+      .preview-loading-card {{
+        border: 1px solid #D1D9F0;
+        border-radius: 10px;
+        background: #F8FAFF;
+        overflow: hidden;
+        min-height: 320px;
+      }}
+      .preview-loading-title {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        color: #1C2F6E;
+        font-size: 12px;
+        font-weight: 700;
+        border-bottom: 1px solid #E5E9F5;
+      }}
+      .preview-loading-dot {{
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #F5A800;
+        animation: previewPulse 0.9s ease-in-out infinite alternate;
+      }}
+      @keyframes previewPulse {{
+        from {{ opacity: .35; transform: scale(.85); }}
+        to {{ opacity: 1; transform: scale(1.15); }}
+      }}
+      .preview-skel-table {{
+        width: 100%;
+        border-collapse: collapse;
+      }}
+      .preview-skel-table th,
+      .preview-skel-table td {{
+        padding: 9px 10px;
+        border-bottom: 1px solid #E5E9F5;
+      }}
+      .preview-skel-line {{
+        height: 12px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #EAECF4 25%, #D8DCF0 50%, #EAECF4 75%);
+        background-size: 1000px 100%;
+        animation: previewShimmer 1.15s ease infinite;
+      }}
+      .preview-skel-line.long {{ width: 88%; }}
+      .preview-skel-line.medium {{ width: 62%; }}
+      .preview-skel-line.short {{ width: 38%; }}
+    </style>
+    <div class="preview-loading-card">
+      <div class="preview-loading-title">
+        <span class="preview-loading-dot"></span>
+        Preparando previsualizacion de la tabla...
+      </div>
+      <table class="preview-skel-table">
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{''.join(body_rows)}</tbody>
+      </table>
+    </div>
+    """
+
+
 def _logo_b64() -> str:
     logo = Path(__file__).parent.parent / "assets" / "logo.png"
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
@@ -674,6 +751,42 @@ def _sheet_key(filename: str, index: int) -> str:
     return f"sheet_names_{index}_{safe}"
 
 
+@st.cache_data(show_spinner=False, max_entries=30)
+def _cached_get_excel_sheets(file_bytes: bytes) -> list:
+    return get_excel_sheets(file_bytes)
+
+
+@st.cache_data(show_spinner=False, max_entries=30)
+def _cached_read_uploaded_file(
+    file_bytes: bytes,
+    filename: str,
+    delimiter: str = ",",
+    encoding: str = "utf-8",
+    sheet_name: Optional[str] = None,
+) -> tuple[Optional[pd.DataFrame], Optional[str]]:
+    return read_uploaded_file(
+        file_bytes=file_bytes,
+        filename=filename,
+        delimiter=delimiter,
+        encoding=encoding,
+        sheet_name=sheet_name,
+    )
+
+
+def _friendly_preview_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "duplicate column names" in text or "column names found" in text:
+        return (
+            "No se pudo mostrar la previsualizacion porque la cabecera del archivo "
+            "no se interpreto correctamente: hay columnas repetidas. Revisa el separador "
+            "en 'Ajustar lectura' o valida que la primera fila tenga nombres de columnas unicos."
+        )
+    return (
+        "No se pudo mostrar la previsualizacion del archivo. Revisa la lectura del archivo "
+        "o intenta con otro separador/codificacion."
+    )
+
+
 def _row_origin_records(label: str, df: pd.DataFrame, file_name: str, sheet_name: str = "") -> list[dict]:
     return [
         {
@@ -883,11 +996,18 @@ def _render_upload_step(catalog: dict) -> None:
                 st.session_state.uploaded_df = None
                 return
 
+            progress_slot = st.empty()
+            load_progress = progress_slot.progress(
+                5,
+                text="Preparando archivos para lectura...",
+            )
+
             text_payloads = [p for p in uploaded_payloads if not p["is_excel"]]
             excel_payloads = [p for p in uploaded_payloads if p["is_excel"]]
 
             if text_payloads:
                 enc = st.session_state.get("encoding", "utf-8")
+                load_progress.progress(10, text="Detectando separador del archivo...")
                 detected = detect_file_delimiter(text_payloads[0]["bytes"], enc)
 
                 st.success(
@@ -933,8 +1053,13 @@ def _render_upload_step(catalog: dict) -> None:
                         "Selecciona una o varias hojas por cada archivo Excel. "
                         "Si no cambias nada, se leerá la primera hoja de cada Excel."
                     )
-                    for payload in excel_payloads:
-                        sheets = get_excel_sheets(payload["bytes"])
+                    total_excel = max(1, len(excel_payloads))
+                    for excel_idx, payload in enumerate(excel_payloads, start=1):
+                        load_progress.progress(
+                            min(30, 12 + int(excel_idx / total_excel * 18)),
+                            text=f"Leyendo hojas de Excel: {payload['name']}...",
+                        )
+                        sheets = _cached_get_excel_sheets(payload["bytes"])
                         if not sheets:
                             st.error(f"**{payload['name']}**: no se pudieron leer las hojas del Excel.")
                             excel_sheet_selection[payload["name"]] = []
@@ -962,6 +1087,7 @@ def _render_upload_step(catalog: dict) -> None:
                             "Selecciona al menos una hoja para: "
                             + ", ".join(empty_selection)
                         )
+                        progress_slot.empty()
                         st.session_state.uploaded_df = None
                         st.session_state.uploaded_preview_items = []
                         st.session_state.uploaded_row_origins = []
@@ -974,19 +1100,31 @@ def _render_upload_step(catalog: dict) -> None:
             original_files = []
             errores_lectura = []
 
+            total_reads = len(text_payloads) + sum(
+                len(excel_sheet_selection.get(p["name"], [None]))
+                for p in excel_payloads
+            )
+            total_reads = max(1, total_reads)
+            read_done = 0
+
             for payload in uploaded_payloads:
                 original_files.append((payload["name"], payload["bytes"]))
                 if payload["is_excel"]:
                     sheets_to_read = excel_sheet_selection.get(payload["name"], [None])
                     for sheet_name in sheets_to_read:
-                        df_i, err_i = read_uploaded_file(
+                        display_name = f"{payload['name']} [{sheet_name}]" if sheet_name else payload["name"]
+                        load_progress.progress(
+                            min(85, 35 + int(read_done / total_reads * 45)),
+                            text=f"Leyendo datos: {display_name}...",
+                        )
+                        df_i, err_i = _cached_read_uploaded_file(
                             file_bytes=payload["bytes"],
                             filename=payload["name"],
                             delimiter=st.session_state.get("delimiter", ","),
                             encoding=st.session_state.get("encoding", "utf-8"),
                             sheet_name=sheet_name,
                         )
-                        display_name = f"{payload['name']} [{sheet_name}]" if sheet_name else payload["name"]
+                        read_done += 1
                         if err_i:
                             errores_lectura.append(f"**{display_name}**: {err_i}")
                         elif df_i is None or df_i.empty:
@@ -1004,12 +1142,17 @@ def _render_upload_step(catalog: dict) -> None:
                                 }
                             )
                 else:
-                    df_i, err_i = read_uploaded_file(
+                    load_progress.progress(
+                        min(85, 35 + int(read_done / total_reads * 45)),
+                        text=f"Leyendo datos: {payload['name']}...",
+                    )
+                    df_i, err_i = _cached_read_uploaded_file(
                         file_bytes=payload["bytes"],
                         filename=payload["name"],
                         delimiter=st.session_state.get("delimiter", ","),
                         encoding=st.session_state.get("encoding", "utf-8"),
                     )
+                    read_done += 1
                     if err_i:
                         errores_lectura.append(f"**{payload['name']}**: {err_i}")
                     elif df_i is None or df_i.empty:
@@ -1028,6 +1171,7 @@ def _render_upload_step(catalog: dict) -> None:
                         )
 
             if errores_lectura:
+                progress_slot.empty()
                 for msg in errores_lectura:
                     st.error(msg)
                 st.session_state.uploaded_df = None
@@ -1047,16 +1191,18 @@ def _render_upload_step(catalog: dict) -> None:
                         unsafe_allow_html=True,
                     )
 
+            load_progress.progress(88, text="Combinando archivos y preparando previsualizacion...")
             combined_df   = pd.concat([d for _, d, _ in dfs], ignore_index=True)
             combined_name = " + ".join(fname for fname, _, _ in dfs)
             total_bytes   = sum(len(file_bytes) for _, file_bytes in original_files)
             audit_bytes, audit_name = _build_audit_payload(original_files)
 
             if len(combined_df) > MAX_ROWS_IN_MEMORY:
+                progress_slot.empty()
                 st.error(
-                    "El conjunto combinado excede el límite configurado de "
-                    f"{MAX_ROWS_IN_MEMORY:,} filas en memoria. "
-                    "Divide la carga en archivos más pequeños o ajusta MAX_ROWS_IN_MEMORY."
+                    "El archivo tiene demasiadas filas para procesarlo de una sola vez. "
+                    f"Este portal puede revisar hasta {MAX_ROWS_IN_MEMORY:,} filas por carga. "
+                    "Divide el archivo en partes más pequeñas o solicita apoyo al administrador."
                 )
                 st.session_state.uploaded_df = None
                 return
@@ -1080,6 +1226,8 @@ def _render_upload_step(catalog: dict) -> None:
                     for source in validation_sources
                 ],
             ]
+            load_progress.progress(100, text="Previsualizacion lista.")
+            progress_slot.empty()
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Filas totales", f"{stats['filas']:,}")
@@ -1103,18 +1251,38 @@ def _render_upload_step(catalog: dict) -> None:
                 label_visibility="collapsed",
             )
             preview_df = preview_items[selected_preview]["df"]
-            st.dataframe(
-                preview_df.head(20),
-                use_container_width=True,
-                height=320,
+            preview_placeholder = st.empty()
+            preview_placeholder.markdown(
+                _preview_table_loading_html(
+                    rows=min(8, max(3, min(20, len(preview_df)))),
+                    cols=min(5, max(1, len(preview_df.columns))),
+                ),
+                unsafe_allow_html=True,
             )
-            st.caption(
-                f"Primeras {min(20, len(preview_df))} filas "
-                f"de {len(preview_df):,} en esta vista."
-            )
+            st.session_state.preview_render_failed = False
+            try:
+                with preview_placeholder.container():
+                    st.dataframe(
+                        preview_df.head(20),
+                        use_container_width=True,
+                        height=320,
+                    )
+            except Exception as exc:
+                preview_placeholder.empty()
+                st.session_state.preview_render_failed = True
+                st.error(_friendly_preview_error(exc))
+                st.info(
+                    "Sugerencia: abre 'Las columnas no se ven bien? Ajustar lectura' "
+                    "y prueba Coma (,), Punto y coma (;), Pipe (|) o Tabulador."
+                )
+            else:
+                st.caption(
+                    f"Primeras {min(20, len(preview_df))} filas "
+                    f"de {len(preview_df):,} en esta vista."
+                )
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    if st.session_state.get("uploaded_df") is not None:
+    if st.session_state.get("uploaded_df") is not None and not st.session_state.get("preview_render_failed"):
         if st.button("Continuar → Validar datos", type="primary", key="btn_to_validate"):
             st.session_state.current_step      = "validate"
             st.session_state.validation_result = None

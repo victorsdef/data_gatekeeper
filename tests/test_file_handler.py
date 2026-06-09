@@ -29,3 +29,21 @@ def test_read_uploaded_csv_falls_back_to_latin1():
 
     assert error is None
     assert df.iloc[0]["descripcion"] == "Español"
+
+
+def test_read_uploaded_csv_rejects_duplicate_headers():
+    data = b"codigo;codigo;estado\n1;2;A\n"
+
+    df, error = read_uploaded_file(data, "catalogo.csv", delimiter=";")
+
+    assert df is None
+    assert "columnas repetidas" in error
+
+
+def test_read_uploaded_csv_rejects_data_row_used_as_duplicate_header():
+    data = b"40,40,PEDIDOSYA,PEDIDOSYA,NA,NA\n9,9,PEDIDOSYA,PEDIDOSYA,NA,NA\n"
+
+    df, error = read_uploaded_file(data, "catalogo.csv", delimiter=",")
+
+    assert df is None
+    assert "cabecera" in error

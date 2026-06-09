@@ -86,6 +86,9 @@ def _read_csv(file_bytes: bytes, delimiter: str, encoding: str) -> Tuple[Optiona
         tried.append(enc)
         try:
             sep = delimiter if delimiter != "," else _detect_delimiter(file_bytes, enc)
+            header_error = _validate_delimited_header(file_bytes, sep, enc)
+            if header_error:
+                return None, header_error
             df = pd.read_csv(
                 io.BytesIO(file_bytes),
                 sep=sep,
@@ -94,7 +97,10 @@ def _read_csv(file_bytes: bytes, delimiter: str, encoding: str) -> Tuple[Optiona
                 keep_default_na=True,
                 skipinitialspace=True,
             )
-            df.columns = [c.strip() for c in df.columns]
+            df.columns = [str(c).strip() for c in df.columns]
+            column_error = _validate_column_names(df)
+            if column_error:
+                return None, column_error
             return df, None
         except UnicodeDecodeError:
             continue
@@ -113,7 +119,61 @@ def _read_excel(file_bytes: bytes, sheet_name: Optional[str]) -> Tuple[Optional[
         keep_default_na=True,
     )
     df.columns = [str(c).strip() for c in df.columns]
+    column_error = _validate_column_names(df)
+    if column_error:
+        return None, column_error
     return df, None
+
+
+def _validate_column_names(df: pd.DataFrame) -> Optional[str]:
+    duplicated = _duplicated_columns(df.columns)
+    if duplicated:
+        return _column_names_error(duplicated)
+    return None
+
+
+def _validate_delimited_header(file_bytes: bytes, delimiter: str, encoding: str) -> Optional[str]:
+    try:
+        sample = file_bytes[:65536].decode(encoding)
+    except UnicodeDecodeError:
+        return None
+
+    reader = csv.reader(io.StringIO(sample), delimiter=delimiter)
+    header = None
+    for row in reader:
+        if any(str(cell).strip() for cell in row):
+            header = [str(cell).strip() for cell in row]
+            break
+
+    if not header:
+        return None
+
+    duplicated = _duplicated_columns(header)
+    if duplicated:
+        return _column_names_error(duplicated)
+    return None
+
+
+def _column_names_error(duplicated: list[str]) -> str:
+    sample = ", ".join(duplicated[:5])
+    extra = "" if len(duplicated) <= 5 else f" y {len(duplicated) - 5} mas"
+    return (
+        "No se pudo interpretar correctamente la cabecera del archivo. "
+        f"Hay columnas repetidas ({sample}{extra}). "
+        "Prueba cambiar el separador en 'Ajustar lectura' o revisa que la primera fila "
+        "tenga nombres de columnas unicos."
+    )
+
+
+def _duplicated_columns(columns) -> list[str]:
+    seen = set()
+    duplicated = []
+    for column in columns:
+        name = str(column).strip()
+        if name in seen and name not in duplicated:
+            duplicated.append(name)
+        seen.add(name)
+    return duplicated
 
 
 def _get_extension(filename: str) -> str:
@@ -124,6 +184,12 @@ def _get_extension(filename: str) -> str:
 
 def _friendly_file_error(exc: Exception, ext: str) -> str:
     text = str(exc).lower()
+    if "duplicate column names" in text or "column names found" in text:
+        return (
+            "No se pudo interpretar correctamente la cabecera del archivo. "
+            "Hay columnas repetidas o el separador seleccionado no corresponde. "
+            "Prueba con coma, punto y coma, pipe o tabulador en 'Ajustar lectura'."
+        )
     if "encoding" in text or "decode" in text or "codec" in text:
         return "No se pudo leer la codificación del archivo. Prueba con Latin-1, ISO-8859-1 o Windows-1252."
     if "delimiter" in text or "tokenizing" in text or "expected" in text or "fields" in text:

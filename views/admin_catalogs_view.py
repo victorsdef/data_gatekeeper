@@ -100,14 +100,10 @@ def _usuario_label(username: str, usuarios_lookup: Dict[str, Dict]) -> str:
     username = str(username or "").strip()
     user = usuarios_lookup.get(username.lower(), {})
     nombre = str(user.get("nombre") or "").strip()
-    email = str(user.get("email") or "").strip()
-
     parts = []
     if nombre and nombre.lower() != username.lower():
         parts.append(nombre)
     parts.append(username)
-    if email:
-        parts.append(email)
     return " · ".join(parts)
 
 
@@ -128,6 +124,24 @@ def _format_permiso_chip(permiso: Dict, usuarios_lookup: Dict[str, Dict], icon_u
         f'padding:2px 7px;border-radius:999px;font-size:11px;line-height:1.4;">'
         f'{label}</span>'
     )
+
+
+def _normalize_ba_username(username: str) -> str:
+    return str(username or "").strip().lower()
+
+
+def _validate_ba_publicador_username(username: str, usuarios_lookup: Dict[str, Dict]) -> str | None:
+    if not username:
+        return "Ingresa el usuario BA."
+    if not username.startswith("ba"):
+        return "El usuario debe iniciar con `ba`, por ejemplo `ba01006646`."
+    if not re.fullmatch(r"ba[\w.-]+", username):
+        return "El usuario BA contiene caracteres no validos."
+
+    existing = usuarios_lookup.get(username)
+    if existing and str(existing.get("rol") or "").strip().lower() == "admin":
+        return "Ese usuario ya es Admin. Los Admin ven todos los catalogos sin permisos puntuales."
+    return None
 
 
 def _skeleton_html(n_lines: int = 4, card: bool = False) -> str:
@@ -429,6 +443,7 @@ def render_admin_view() -> None:
         if st.button("Volver al inicio", use_container_width=True, key="admin_brand_home", help="Volver al inicio"):
             st.session_state.current_view = "upload"
             st.session_state.current_step = "upload"
+            st.session_state.pop("adm_catalog_dialog", None)
             for key in [
                 "selected_project_id", "selected_project_name", "selected_catalog",
                 "uploaded_df", "uploaded_bytes", "uploaded_audit_bytes",
@@ -442,6 +457,7 @@ def render_admin_view() -> None:
         st.divider()
         if st.button("← Volver al portal", use_container_width=True):
             st.session_state.current_view = "upload"
+            st.session_state.pop("adm_catalog_dialog", None)
             st.rerun()
 
     st.markdown("""
@@ -467,6 +483,9 @@ def render_admin_view() -> None:
         key="adm_active_tab",
         label_visibility="collapsed",
     )
+
+    if active_tab != "Catálogos activos":
+        st.session_state.pop("adm_catalog_dialog", None)
 
     if active_tab == "Resumen":
         _tab_resumen()
@@ -1684,6 +1703,46 @@ def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None
                 key=f"{key_prefix}_users",
                 format_func=lambda username: _usuario_label(username, usuarios_lookup),
             )
+
+            st.caption("Si el publicador aun no ingreso al portal, agregalo por usuario BA.")
+            add_col, btn_col = st.columns([3, 1])
+            with add_col:
+                new_ba = st.text_input(
+                    "Agregar BA como publicador",
+                    placeholder="ba01006646",
+                    key=f"{key_prefix}_new_publicador_ba",
+                    label_visibility="collapsed",
+                )
+            with btn_col:
+                add_clicked = st.button(
+                    "Agregar BA",
+                    key=f"{key_prefix}_add_publicador_ba",
+                    use_container_width=True,
+                )
+
+            if add_clicked:
+                username_norm = _normalize_ba_username(new_ba)
+                validation_error = _validate_ba_publicador_username(username_norm, usuarios_lookup)
+                if validation_error:
+                    st.error(validation_error)
+                else:
+                    try:
+                        actor = st.session_state.get("user_info", {}).get("username", "")
+                        create_or_promote_user(
+                            username=username_norm,
+                            rol="Publicador",
+                            actor_username=actor,
+                        )
+                        selected_users = list(st.session_state.get(f"{key_prefix}_users", []))
+                        if username_norm not in selected_users:
+                            selected_users.append(username_norm)
+                        st.session_state[f"{key_prefix}_users"] = selected_users
+                        st.session_state[f"{key_prefix}_role_display"] = True
+                        st.session_state.pop(f"{key_prefix}_new_publicador_ba", None)
+                        st.success(f"Usuario `{username_norm}` agregado como Publicador autorizado.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(user_facing_error(e, context="database"))
         else:
             st.caption("Sin publicadores autorizados. Solo Admins veran el catalogo.")
             st.session_state[f"{key_prefix}_users"] = []
