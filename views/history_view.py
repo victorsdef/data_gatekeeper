@@ -437,6 +437,7 @@ def _inject_css() -> None:
         }
         [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-visual img { width:28px !important; height:28px !important; }
         [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-row { justify-content:center !important; gap:0 !important; margin-bottom:0 !important; }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-logo-img { width:46px !important; height:46px !important; display:block !important; margin:0 auto !important; }
         [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand { padding: 36px 4px 4px !important; }
         [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div { height:50px !important; margin-top:-50px !important; }
         [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div button { height:50px !important; }

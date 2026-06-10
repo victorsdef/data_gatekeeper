@@ -25,7 +25,7 @@ from services.db_admin import (
     describe_table, build_schema_json,
     get_hive_databases, get_hive_tables, describe_hive_table,
     get_all_projects, get_active_catalogs,
-    save_catalog_config, catalog_exists, deactivate_catalog, ensure_project_exists,
+    save_catalog_config, catalog_exists, deactivate_catalog, deactivate_project, ensure_project_exists,
     get_catalog_permissions, save_permissions, get_catalog_id_by_table,
     update_catalog_config,
     get_catalog_schema,
@@ -3062,57 +3062,83 @@ def _render_deactivate_catalog_dialog(cat: dict) -> None:
             st.rerun()
 
 
+def _render_catalog_backup_dialog() -> None:
+    st.caption("Exporta la configuración actual o restaura un backup JSON generado por el sistema.")
+    if st.button("Preparar backup JSON", use_container_width=True, key="adm_export_bundle_modal"):
+        try:
+            st.session_state["adm_export_bundle_payload"] = export_catalogs_bundle()
+            st.success("Backup preparado.")
+        except Exception as e:
+            st.error(user_facing_error(e, context="database"))
+    payload = st.session_state.get("adm_export_bundle_payload")
+    if payload:
+        st.download_button(
+            "Descargar backup",
+            data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name="catalogos_config_backup.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    st.divider()
+    uploaded_bundle = st.file_uploader(
+        "Restaurar configuración desde backup JSON",
+        type=["json"],
+        key="adm_import_bundle_modal",
+        help="Importa proyectos, catálogos y permisos desde un backup exportado por Data Gatekeeper.",
+    )
+    overwrite_existing = st.checkbox(
+        "Sobrescribir catálogos existentes",
+        key="adm_import_overwrite_modal",
+        help="Si está activo, actualiza configuración y permisos de catálogos ya registrados.",
+    )
+    if uploaded_bundle is not None and st.button("Importar backup", use_container_width=True, key="adm_import_bundle_btn_modal"):
+        _import_ok = False
+        try:
+            bundle = json.loads(uploaded_bundle.getvalue().decode("utf-8"))
+            result = import_catalogs_bundle(bundle, overwrite_existing=overwrite_existing)
+            st.success(
+                "Importación completada. "
+                f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
+            )
+            _import_ok = True
+        except Exception:
+            st.error("No se pudo importar el backup. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
+        if _import_ok:
+            st.rerun()
+    if st.button("Cerrar", use_container_width=True, key="adm_backup_close"):
+        st.rerun()
+
+
+def _render_deactivate_project_dialog(project_id: str, project_name: str, catalogs_count: int) -> None:
+    st.warning(
+        f"Vas a desactivar **{project_name}** y sus **{catalogs_count} catálogo(s)**. "
+        "Los publicadores perderán acceso inmediatamente."
+    )
+    st.caption("No se elimina la trazabilidad histórica ni los registros de auditoría.")
+    if st.button("Eliminar proyecto", type="primary", key=f"yes_deact_project_{project_id}", use_container_width=True):
+        try:
+            deactivate_project(project_id)
+        except Exception as e:
+            st.error(user_facing_error(e, context="database"))
+            return
+        st.rerun()
+
+
 # ------------------------------------------------------------------
 # Tab 2: Catálogos activos
 # ------------------------------------------------------------------
 def _tab_activos() -> None:
-    st.markdown("##### Respaldo y restauración")
-    ex1, ex2 = st.columns([1, 2])
-    with ex1:
-        if st.button("Preparar backup JSON", use_container_width=True, key="adm_export_bundle"):
-            try:
-                st.session_state["adm_export_bundle_payload"] = export_catalogs_bundle()
-                st.success("Backup preparado.")
-            except Exception as e:
-                st.error(user_facing_error(e, context="database"))
-        payload = st.session_state.get("adm_export_bundle_payload")
-        if payload:
-            st.download_button(
-                "Descargar backup",
-                data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name="catalogos_config_backup.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-    with ex2:
-        uploaded_bundle = st.file_uploader(
-            "Restaurar configuración desde backup JSON",
-            type=["json"],
-            key="adm_import_bundle",
-            label_visibility="collapsed",
-            help="Importa proyectos, catálogos y permisos desde un backup exportado por el sistema.",
-        )
-        overwrite_existing = st.checkbox(
-            "Sobrescribir catálogos existentes",
-            key="adm_import_overwrite",
-            help="Si está activo, actualiza configuración y permisos de catálogos ya registrados.",
-        )
-        if uploaded_bundle is not None and st.button("Importar backup", use_container_width=True, key="adm_import_bundle_btn"):
-            _import_ok = False
-            try:
-                bundle = json.loads(uploaded_bundle.getvalue().decode("utf-8"))
-                result = import_catalogs_bundle(bundle, overwrite_existing=overwrite_existing)
-                st.success(
-                    "Importación completada. "
-                    f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
-                )
-                _import_ok = True
-            except Exception as e:
-                st.error("No se pudo importar el backup. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
-            if _import_ok:
-                st.rerun()
+    for _stale_key in ("adm_backup_dialog_open", "adm_project_dialog"):
+        st.session_state.pop(_stale_key, None)
 
-    st.divider()
+    head_left, head_right = st.columns([4, 1])
+    with head_left:
+        st.markdown("##### Catálogos activos")
+        st.caption("Administra proyectos, catálogos, permisos y estado de publicación.")
+    with head_right:
+        with st.popover("Respaldo / Restaurar", use_container_width=True):
+            _render_catalog_backup_dialog()
+
     search = st.text_input(
         "Buscar", placeholder="Nombre, base de datos o tabla...",
         key="adm_ac_search", label_visibility="collapsed"
@@ -3139,17 +3165,35 @@ def _tab_activos() -> None:
         st.info("No hay catálogos activos." if not search else f"Sin resultados para '{search}'.")
         return
 
-    st.caption(f"{len(catalogs)} catálogo(s) activo(s)")
+    proyectos_count = len({c.get("project_id") for c in catalogs})
+    restricted_count = 0
+    for _cat in catalogs:
+        try:
+            if get_catalog_permissions(_cat["catalog_id"]):
+                restricted_count += 1
+        except Exception:
+            pass
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Catálogos activos", len(catalogs))
+    m2.metric("Proyectos", proyectos_count)
+    m3.metric("Con permisos específicos", restricted_count)
 
     # Group by project preserving order
     from collections import defaultdict
-    by_project: Dict[str, List] = defaultdict(list)
+    by_project: Dict[tuple, List] = defaultdict(list)
     for cat in catalogs:
-        by_project[cat["proyecto"]].append(cat)
+        by_project[(cat.get("project_id", ""), cat["proyecto"])].append(cat)
     usuarios_lookup = _load_usuarios_lookup()
 
-    for project_name, group in by_project.items():
+    for (project_id, project_name), group in by_project.items():
         with st.expander(f"📁 {project_name}  —  {len(group)} catálogo(s)", expanded=False):
+            pc1, pc2 = st.columns([5, 1])
+            with pc1:
+                st.caption(f"ID proyecto: `{project_id}`")
+            with pc2:
+                with st.popover("Eliminar proyecto", use_container_width=True):
+                    _render_deactivate_project_dialog(project_id, project_name, len(group))
+
             for cat in group:
                 cid = cat["catalog_id"]
                 try:
@@ -3204,10 +3248,13 @@ def _tab_activos() -> None:
                     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
                     if st.button("Editar", key=f"btn_edit_{cid}", use_container_width=True):
                         st.session_state["adm_catalog_dialog"] = {"action": "edit", "catalog_id": cid}
+                        st.rerun()
                     if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
                         st.session_state["adm_catalog_dialog"] = {"action": "permissions", "catalog_id": cid}
+                        st.rerun()
                     if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
                         st.session_state["adm_catalog_dialog"] = {"action": "deactivate", "catalog_id": cid}
+                        st.rerun()
 
                 active_dialog = st.session_state.get("adm_catalog_dialog") or {}
                 if active_dialog.get("catalog_id") == cid:
@@ -3218,6 +3265,7 @@ def _tab_activos() -> None:
                         _render_catalog_permissions_dialog(cat)
                     elif action == "deactivate":
                         _render_deactivate_catalog_dialog(cat)
+
 
 
 # ------------------------------------------------------------------
@@ -3291,7 +3339,6 @@ def _render_user_list(usuarios: list, system_admin: str) -> None:
 
 
 def _render_add_admin_form() -> None:
-    st.markdown("##### Agregar admin BA")
     st.caption(
         "Preautoriza un usuario BA como Admin. "
         "Cuando inicie sesion con LDAP, tomara este rol automaticamente."
@@ -3342,68 +3389,69 @@ def _render_add_admin_form() -> None:
         st.rerun()
 
 
+def _render_users_backup_dialog() -> None:
+    st.caption("Exporta usuarios, roles y estado activo/inactivo, o restaura un backup JSON.")
+    if st.button("Preparar backup usuarios", use_container_width=True, key="usr_export_bundle_modal"):
+        try:
+            st.session_state["usr_export_bundle_payload"] = export_users_bundle()
+            st.success("Backup de usuarios preparado.")
+        except Exception as e:
+            st.error(user_facing_error(e, context="database"))
+    users_payload = st.session_state.get("usr_export_bundle_payload")
+    if users_payload:
+        st.download_button(
+            "Descargar backup usuarios",
+            data=json.dumps(users_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name="usuarios_backup.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    st.divider()
+    uploaded_users = st.file_uploader(
+        "Restaurar usuarios desde backup JSON",
+        type=["json"],
+        key="usr_import_bundle_modal",
+        help="Importa usuarios, roles y estado activo/inactivo.",
+    )
+    overwrite_users = st.checkbox(
+        "Sobrescribir usuarios existentes",
+        key="usr_import_overwrite_modal",
+        help="Si está activo, actualiza rol, nombre, correo y estado de usuarios ya existentes.",
+    )
+    if uploaded_users is not None and st.button("Importar usuarios", use_container_width=True, key="usr_import_bundle_btn_modal"):
+        _users_import_ok = False
+        try:
+            bundle = json.loads(uploaded_users.getvalue().decode("utf-8"))
+            result = import_users_bundle(bundle, overwrite_existing=overwrite_users)
+            st.success(
+                "Importación de usuarios completada. "
+                f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
+            )
+            _users_import_ok = True
+        except Exception:
+            st.error("No se pudo importar el backup de usuarios. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
+        if _users_import_ok:
+            st.rerun()
+    if st.button("Cerrar", use_container_width=True, key="usr_backup_close"):
+        st.rerun()
+
+
 def _tab_usuarios() -> None:
     from config.settings import SYSTEM_ADMIN_USERNAME
+    st.session_state.pop("usr_dialog", None)
 
-    st.markdown("""
-    <div style="padding:4px 0 16px;">
-        <p style="font-size:13px; color:#6B7280; margin:0;">
-            Usuarios registrados automáticamente al iniciar sesión.
-            Cambia el rol o desactiva el acceso desde aquí.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    _render_add_admin_form()
-    st.divider()
-
-    st.markdown("##### Respaldo y restauración")
-    ux1, ux2 = st.columns([1, 2])
-    with ux1:
-        if st.button("Preparar backup usuarios", use_container_width=True, key="usr_export_bundle"):
-            try:
-                st.session_state["usr_export_bundle_payload"] = export_users_bundle()
-                st.success("Backup de usuarios preparado.")
-            except Exception as e:
-                st.error(user_facing_error(e, context="database"))
-        users_payload = st.session_state.get("usr_export_bundle_payload")
-        if users_payload:
-            st.download_button(
-                "Descargar backup usuarios",
-                data=json.dumps(users_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name="usuarios_backup.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-    with ux2:
-        uploaded_users = st.file_uploader(
-            "Restaurar usuarios desde backup JSON",
-            type=["json"],
-            key="usr_import_bundle",
-            label_visibility="collapsed",
-            help="Importa usuarios, roles y estado activo/inactivo.",
-        )
-        overwrite_users = st.checkbox(
-            "Sobrescribir usuarios existentes",
-            key="usr_import_overwrite",
-            help="Si está activo, actualiza rol, nombre, correo y estado de usuarios ya existentes.",
-        )
-        if uploaded_users is not None and st.button("Importar usuarios", use_container_width=True, key="usr_import_bundle_btn"):
-            _users_import_ok = False
-            try:
-                bundle = json.loads(uploaded_users.getvalue().decode("utf-8"))
-                result = import_users_bundle(bundle, overwrite_existing=overwrite_users)
-                st.success(
-                    "Importación de usuarios completada. "
-                    f"Creados: {result['created']} · Actualizados: {result['updated']} · Omitidos: {result['skipped']}"
-                )
-                _users_import_ok = True
-            except Exception as e:
-                st.error("No se pudo importar el backup de usuarios. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
-            if _users_import_ok:
-                st.rerun()
-
-    st.divider()
+    header_left, header_actions = st.columns([4, 1.4])
+    with header_left:
+        st.markdown("##### Usuarios")
+        st.caption("Usuarios registrados automáticamente al iniciar sesión. Cambia rol o estado desde esta vista.")
+    with header_actions:
+        a1, a2 = st.columns(2)
+        with a1:
+            with st.popover("Agregar admin BA", use_container_width=True):
+                _render_add_admin_form()
+        with a2:
+            with st.popover("Respaldo", use_container_width=True):
+                _render_users_backup_dialog()
 
     ph = st.empty()
     ph.markdown(_skeleton_html(5), unsafe_allow_html=True)
@@ -3421,18 +3469,48 @@ def _tab_usuarios() -> None:
 
     admins      = [u for u in usuarios if u["rol"] == "Admin"]
     publicadores = [u for u in usuarios if u["rol"] != "Admin"]
+    activos = [u for u in usuarios if bool(u["activo"])]
+    inactivos = [u for u in usuarios if not bool(u["activo"])]
 
-    st.caption(f"{len(admins)} admin(s) · {len(publicadores)} publicador(es)")
+    mt1, mt2, mt3, mt4 = st.columns(4)
+    mt1.metric("Usuarios activos", len(activos))
+    mt2.metric("Admins", len(admins))
+    mt3.metric("Publicadores", len(publicadores))
+    mt4.metric("Inactivos", len(inactivos))
 
-    col_pub, col_adm = st.columns(2)
+    f1, f2, f3 = st.columns([2.4, 1, 1])
+    with f1:
+        search_user = st.text_input(
+            "Buscar usuario",
+            placeholder="Usuario, nombre o correo...",
+            key="usr_search",
+            label_visibility="collapsed",
+        )
+    with f2:
+        rol_filter = st.selectbox("Rol", ["Todos", "Admin", "Publicador"], key="usr_filter_rol")
+    with f3:
+        estado_filter = st.selectbox("Estado", ["Todos", "Activo", "Inactivo"], key="usr_filter_estado")
 
-    with col_pub:
-        st.markdown("##### Publicadores")
-        _render_user_list(publicadores, SYSTEM_ADMIN_USERNAME)
+    filtered = usuarios
+    if search_user:
+        q = search_user.strip().lower()
+        filtered = [
+            u for u in filtered
+            if q in str(u.get("username") or "").lower()
+            or q in str(u.get("nombre") or "").lower()
+            or q in str(u.get("email") or "").lower()
+        ]
+    if rol_filter != "Todos":
+        filtered = [u for u in filtered if (u.get("rol") or "Publicador") == rol_filter]
+    if estado_filter != "Todos":
+        expected = estado_filter == "Activo"
+        filtered = [u for u in filtered if bool(u.get("activo")) == expected]
 
-    with col_adm:
-        st.markdown("##### Admins")
-        _render_user_list(admins, SYSTEM_ADMIN_USERNAME)
+    st.markdown("##### Usuarios registrados")
+    if not filtered:
+        st.info("No hay usuarios que coincidan con los filtros.")
+        return
+    _render_user_list(filtered, SYSTEM_ADMIN_USERNAME)
 
 
 # ------------------------------------------------------------------
@@ -3662,6 +3740,12 @@ def _inject_admin_css() -> None:
             justify-content: center !important;
             gap: 0 !important;
             margin-bottom: 0 !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-logo-img {
+            width: 46px !important;
+            height: 46px !important;
+            display: block !important;
+            margin: 0 auto !important;
         }
         [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand {
             padding: 36px 4px 4px !important;

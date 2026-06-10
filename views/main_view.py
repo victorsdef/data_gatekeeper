@@ -1899,6 +1899,12 @@ def _inject_main_css() -> None:
             gap: 0 !important;
             margin-bottom: 0 !important;
         }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-logo-img {
+            width: 46px !important;
+            height: 46px !important;
+            display: block !important;
+            margin: 0 auto !important;
+        }
         [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand {
             padding: 36px 4px 4px !important;
         }

@@ -153,6 +153,7 @@ def get_active_catalogs() -> List[Dict]:
             cur.execute(f"""
                 SELECT
                     c.catalog_id,
+                    c.project_id,
                     c.nombre,
                     c.descripcion,
                     c.base_datos,
@@ -277,6 +278,21 @@ def deactivate_catalog(catalog_id: str) -> None:
             cur.execute(
                 f"UPDATE {TBL_CATALOGOS} SET activo = 0 WHERE catalog_id = %s",
                 (catalog_id,),
+            )
+        conn.commit()
+
+
+def deactivate_project(project_id: str) -> None:
+    """Desactiva un proyecto y todos sus catalogos asociados."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {TBL_PROYECTOS} SET activo = 0 WHERE project_id = %s",
+                (project_id,),
+            )
+            cur.execute(
+                f"UPDATE {TBL_CATALOGOS} SET activo = 0 WHERE project_id = %s",
+                (project_id,),
             )
         conn.commit()
 
