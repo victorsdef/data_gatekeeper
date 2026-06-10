@@ -64,6 +64,8 @@ def user_facing_error(exc: Any, context: str = "general") -> str:
         return "No tienes permisos suficientes o las credenciales del servicio no son válidas. Contacta al administrador."
 
     if any(token in text for token in (
+        "cannot be blank",
+        "1103",
         "unknown database",
         "database does not exist",
         "unknown table",

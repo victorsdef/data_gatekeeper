@@ -379,14 +379,19 @@ def _validate_project_fields(project_id: str, project_name: str) -> List[str]:
 
 
 def _validate_bulk_configs(db: str, tables: List[str]) -> List[str]:
+    if not db:
+        return []
     errors: List[str] = []
     fuente = st.session_state.get("adm_step2_fuente") or st.session_state.get("adm_fuente", "SingleStore")
     for table in tables:
         cfg = _get_bulk_table_config(db, table)
         schema = cfg.get("schema")
         if not schema:
-            rows = describe_hive_table(db, table) if fuente == "Hive" else describe_table(db, table)
-            schema = build_schema_json(rows)
+            try:
+                rows = describe_hive_table(db, table) if fuente == "Hive" else describe_table(db, table)
+                schema = build_schema_json(rows)
+            except Exception:
+                continue
         cfg_errors = _validate_catalog_form(
             catalog_id=str(cfg.get("catalog_id", "")).strip(),
             nombre=str(cfg.get("nombre", "")).strip(),
@@ -723,15 +728,36 @@ def _tab_resumen() -> None:
 # Tab 1: Registro progresivo de catálogos
 # ------------------------------------------------------------------
 def _tab_registro() -> None:
-    tab_selection, tab_config, tab_permissions, tab_review = st.tabs(
-        ["1. Selección", "2. Configuración", "3. Permisos", "4. Revisión"]
+    _SUBTABS = ["Selección", "Configuración", "Revisión"]
+
+    # Aplicar navegación pendiente ANTES de crear el widget
+    _pending = st.session_state.pop("adm_reg_subtab_next", None)
+    if _pending in _SUBTABS:
+        st.session_state.adm_reg_subtab = _pending
+    elif st.session_state.get("adm_reg_subtab") not in _SUBTABS:
+        st.session_state.adm_reg_subtab_next = "Selección"
+
+    active_subtab = st.radio(
+        "Paso del registro",
+        _SUBTABS,
+        horizontal=True,
+        key="adm_reg_subtab",
+        label_visibility="collapsed",
     )
-    selected: List[str] = []
-    db_sel = ""
+
+    # Estado compartido entre sub-tabs (leído de session_state)
+    # adm_db es clave de widget y puede perderse cuando el selectbox no renderiza;
+    # adm_db_persist es clave no-widget que sobrevive entre sub-tabs.
+    selected: List[str] = list(st.session_state.get("adm_selected_tables") or [])
+    db_sel: str = str(
+        st.session_state.get("adm_db")
+        or st.session_state.get("adm_db_persist")
+        or ""
+    )
     mapped: Set[tuple] = set()
 
-    # ── Selector de fuente ────────────────────────────────────────────
-    with tab_selection:
+    # ── Sub-tab: Selección ─────────────────────────────────────────
+    if active_subtab == "Selección":
         fuentes = ["SingleStore"] + (["Hive"] if HIVE_ENABLED else [])
         fuente = st.radio(
             "Fuente de datos",
@@ -760,7 +786,6 @@ def _tab_registro() -> None:
                 st.warning("No hay bases de datos disponibles en Hive.")
                 return
 
-        # ── Explorador + previsualización de esquema ───────────────────
         step_indicator = st.empty()
 
         col_left, col_right = st.columns([1, 2], gap="large")
@@ -772,6 +797,7 @@ def _tab_registro() -> None:
             db_sel = st.selectbox(
                 "Base de datos", databases, key="adm_db", label_visibility="collapsed"
             )
+            st.session_state["adm_db_persist"] = db_sel
 
             prev_key = f"adm_prev_db_{fuente}"
             if st.session_state.get(prev_key) != db_sel:
@@ -798,14 +824,13 @@ def _tab_registro() -> None:
                     all_tables = get_tables_from_db(db_sel)
                 else:
                     all_tables = get_hive_tables(db_sel)
-                mapped: Set[tuple] = get_mapped_tables()
+                mapped = get_mapped_tables()
                 ph_tables.empty()
             except Exception as e:
                 ph_tables.empty()
                 st.error(user_facing_error(e, context="database"))
                 return
 
-            # Cache de permisos por tabla registrada (roles: Público / Admin / etc.)
             _ci_key = f"adm_cat_info_{db_sel}"
             if _ci_key not in st.session_state:
                 try:
@@ -863,7 +888,6 @@ def _tab_registro() -> None:
                     st.session_state.pop("adm_active_table", None)
                     st.rerun()
 
-            # Paginación: resetear si el filtro cambió
             prev_search = st.session_state.get("adm_tbl_prev_search", "")
             if search != prev_search:
                 st.session_state.adm_tbl_page = 0
@@ -908,7 +932,6 @@ def _tab_registro() -> None:
                 else:
                     st.checkbox(t, key=f"adm_chk_{t}")
 
-            # Controles de paginación
             if total_pgs > 1:
                 pg1, pg2, pg3 = st.columns([1, 2, 1])
                 with pg1:
@@ -939,36 +962,53 @@ def _tab_registro() -> None:
                 active_table = _render_active_table_selector(selected, key_suffix="selection")
                 _render_selection_schema_preview(db_sel, active_table, mapped)
 
-    with tab_config:
-        if not selected:
-            st.info("Primero selecciona una o varias tablas en la pestaña **Selección**.")
-        elif len(selected) == 1:
-            active_table = selected[0]
-            st.session_state.adm_active_table = active_table
-            _render_config_only(db_sel, active_table, mapped)
+        # ── Botón navegación ───────────────────────────────────────
+        selected = list(st.session_state.get("adm_selected_tables") or [])
+        if selected:
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+            _, _nav_r = st.columns([3, 1])
+            with _nav_r:
+                if st.button("Configuración →", type="primary", use_container_width=True, key="btn_reg_sel_next"):
+                    st.session_state.adm_reg_subtab_next = "Configuración"
+                    st.rerun()
+
+    # ── Sub-tab: Configuración ─────────────────────────────────────
+    elif active_subtab == "Configuración":
+        if not selected or not db_sel:
+            st.info("Primero selecciona una base de datos y tablas en la pestaña **Selección**.")
         else:
-            active_table = st.session_state.get("adm_active_table")
-            if active_table not in selected:
+            try:
+                mapped = get_mapped_tables()
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
+            if len(selected) == 1:
                 active_table = selected[0]
                 st.session_state.adm_active_table = active_table
-            _render_bulk_panel(db_sel, selected, mapped, active_table)
+                _render_config_only(db_sel, selected[0], mapped)
+            else:
+                active_table = st.session_state.get("adm_active_table")
+                if active_table not in selected:
+                    active_table = selected[0]
+                    st.session_state.adm_active_table = active_table
+                _render_bulk_panel(db_sel, selected, mapped, active_table)
 
-    with tab_permissions:
-        if not selected:
-            st.info("Selecciona una tabla para configurar sus permisos.")
-        elif len(selected) == 1 and (db_sel, selected[0]) in mapped:
-            catalog_id = _catalog_id_for_existing_table(db_sel, selected[0])
-            _render_permission_manager_inline(catalog_id, f"pm_flow_{catalog_id}")
-        else:
-            st.info(
-                "Los permisos se definen dentro de la configuración del catálogo. "
-                "Si seleccionaste varias tablas, se aplicarán como permisos comunes del lote."
-            )
+    # ── Sub-tab: Revisión ──────────────────────────────────────────
+    elif active_subtab == "Revisión":
+        _back_rev, _ = st.columns([1, 3])
+        with _back_rev:
+            if st.button("← Configuración", use_container_width=True, key="btn_reg_rev_back"):
+                st.session_state.adm_reg_subtab_next = "Configuración"
+                st.rerun()
 
-    with tab_review:
-        if not selected:
+        if not selected or not db_sel:
             st.info("Cuando selecciones tablas, aquí verás el resumen antes de registrar.")
         else:
+            try:
+                mapped = get_mapped_tables()
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
             configs_saved = st.session_state.get("adm_bulk_table_configs", {})
             _render_register_flow_summary(db_sel, selected, mapped, configs_saved)
 
@@ -1221,6 +1261,16 @@ def _render_single_panel(db: str, table: str, mapped: Set[tuple]) -> None:
         _render_registro_form(db, table, schema, key_prefix="ex")
 
 
+@st.experimental_dialog("Regla de calidad", width="large")
+def _dialog_reglas_calidad(columns: list, state_key: str) -> None:
+    _render_rules_editor(columns, state_key)
+
+
+@st.experimental_dialog("Reglas de ingesta", width="large")
+def _dialog_reglas_ingesta(columns: list, state_key: str, estrategia: str) -> None:
+    _render_ingestion_rule_form(columns, state_key, estrategia)
+
+
 # ------------------------------------------------------------------
 # Panel derecho: múltiples tablas seleccionadas (registro en lote)
 # ------------------------------------------------------------------
@@ -1270,8 +1320,8 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         unsafe_allow_html=True,
     )
 
-    tab_project, tab_data, tab_columns, tab_rules, tab_permissions, tab_load, tab_review = st.tabs(
-        ["Proyecto", "Datos", "Columnas", "Reglas", "Permisos", "Carga", "Revisión"]
+    tab_project, tab_data, tab_columns, tab_permissions, tab_load, tab_review = st.tabs(
+        ["Proyecto", "Datos", "Columnas", "Permisos", "Carga", "Revisión"]
     )
 
     with tab_project:
@@ -1330,6 +1380,27 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
             _render_schema_editor(schema, key_prefix=active_key_prefix, show_rule_actions=False)
             current_schema = _collect_schema(schema, active_key_prefix)
 
+        schema_cache_key = st.session_state.get("adm_schema_key", "default")
+        rules_key = f"{active_key_prefix}_rules_{hash(schema_cache_key)}"
+        ingestion_key = f"{active_key_prefix}_ingestion_{hash(schema_cache_key)}"
+        rule_columns = [
+            {
+                "nombre": str(col.get("nombre", "")).strip(),
+                "tipo": str(col.get("tipo", "str") or "str").strip().lower(),
+            }
+            for col in current_schema.get("columnas", [])
+            if str(col.get("nombre", "")).strip()
+        ]
+        st.markdown("---")
+        _bk_est = st.session_state.get("adm_bk_est", "overwrite")
+        _bcal, _bing = st.columns(2)
+        with _bcal:
+            if st.button("Regla de calidad", use_container_width=True, key=f"btn_calidad_{active_key_prefix}"):
+                _dialog_reglas_calidad(rule_columns, rules_key)
+        with _bing:
+            if st.button("Reglas de ingesta", use_container_width=True, key=f"btn_ingesta_{active_key_prefix}"):
+                _dialog_reglas_ingesta(rule_columns, ingestion_key, _bk_est)
+
     if schema is not None:
         current_schema = _collect_schema(schema, active_key_prefix) if (db, active_table) not in mapped else schema
         rule_columns = [
@@ -1340,16 +1411,9 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
             for col in current_schema.get("columnas", [])
             if str(col.get("nombre", "")).strip()
         ]
-
     schema_cache_key = st.session_state.get("adm_schema_key", "default")
     rules_key = f"{active_key_prefix}_rules_{hash(schema_cache_key)}"
     ingestion_key = f"{active_key_prefix}_ingestion_{hash(schema_cache_key)}"
-
-    with tab_rules:
-        if (db, active_table) in mapped:
-            st.info("Esta tabla ya está registrada. Sus reglas se gestionan editando el catálogo activo.")
-        else:
-            _render_rules_editor(rule_columns, rules_key)
 
     with tab_permissions:
         _render_permisos_selector("bk")
@@ -1958,11 +2022,7 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
     _init_ingestion_state(ingestion_key, schema.get("regla_ingesta"))
 
     df = st.session_state[state_key]
-    rules = st.session_state.get(rules_key, {})
     display_df = df.copy()
-    display_df["reglas"] = display_df["nombre"].apply(
-        lambda name: len(rules.get(str(name).strip(), []))
-    )
     height = 38 + len(display_df) * 35 + 2
 
     # Stats bar
@@ -1993,16 +2053,11 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
     edited = st.data_editor(
         display_df,
         column_config={
-            "nombre":   st.column_config.TextColumn("Columna",  width="medium"),
+            "nombre":   st.column_config.TextColumn("Columna y Regla", width="medium"),
             "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True, width="small"),
             "nullable": st.column_config.CheckboxColumn("Acepta vacíos", width="small"),
-            "reglas":   st.column_config.NumberColumn(
-                "Reglas",
-                width="small",
-                help="Cantidad de reglas de calidad configuradas. Debajo de la tabla puedes pasar el cursor sobre cada columna para ver el detalle.",
-            ),
         },
-        disabled=["nombre", "reglas"],
+        disabled=["nombre"],
         use_container_width=True,
         num_rows="fixed",
         hide_index=True,
@@ -2010,7 +2065,6 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
         key=f"de_{state_key}",
     )
     st.session_state[result_key] = edited
-    st.markdown(_rules_count_hover_html(edited, rules), unsafe_allow_html=True)
 
     rule_columns = [
         {
@@ -2401,17 +2455,17 @@ def _render_registro_form(
         projects = []
 
     tabs = (
-        st.tabs(["Proyecto", "Datos", "Columnas", "Reglas", "Permisos", "Carga", "Revisión"])
+        st.tabs(["Proyecto", "Datos", "Columnas", "Permisos", "Revisión"])
         if not bulk_mode else
-        st.tabs(["Datos", "Columnas", "Reglas", "Carga", "Revisión"])
+        st.tabs(["Datos", "Columnas", "Revisión"])
     )
 
     if not bulk_mode:
-        tab_project, tab_catalog, tab_columns, tab_rules, tab_permissions, tab_ingestion, tab_review = tabs
+        tab_project, tab_catalog, tab_columns, tab_permissions, tab_review = tabs
         with tab_project:
             proj_sel, proj_name, create_project = _render_project_inputs(db_sel, key_prefix, projects, tbl_sel)
     else:
-        tab_catalog, tab_columns, tab_rules, tab_ingestion, tab_review = tabs
+        tab_catalog, tab_columns, tab_review = tabs
         proj_sel = proj_name = ""
         create_project = False
 
@@ -2446,10 +2500,31 @@ def _render_registro_form(
             estrategia = st.session_state.get("adm_bk_est", "overwrite")
             destino = st.session_state.get("adm_bk_dest", "singlestore")
 
+    schema_cache_key = st.session_state.get("adm_schema_key", "default")
+    rules_key = f"{key_prefix}_rules_{hash(schema_cache_key)}"
+    ingestion_key = f"{key_prefix}_ingestion_{hash(schema_cache_key)}"
+
     with tab_columns:
         st.markdown("**Columnas del esquema**")
         st.caption("Edita nombre, tipo y si cada columna acepta vacíos. Usa la última fila vacía para agregar columnas.")
         _render_schema_editor(schema, key_prefix=key_prefix, show_rule_actions=False)
+        current_schema = _collect_schema(schema, key_prefix)
+        rule_columns = [
+            {
+                "nombre": str(col.get("nombre", "")).strip(),
+                "tipo": str(col.get("tipo", "str") or "str").strip().lower(),
+            }
+            for col in current_schema.get("columnas", [])
+            if str(col.get("nombre", "")).strip()
+        ]
+        st.markdown("---")
+        _rcal, _ring = st.columns(2)
+        with _rcal:
+            if st.button("Regla de calidad", use_container_width=True, key=f"btn_calidad_{key_prefix}"):
+                _dialog_reglas_calidad(rule_columns, rules_key)
+        with _ring:
+            if st.button("Reglas de ingesta", use_container_width=True, key=f"btn_ingesta_{key_prefix}"):
+                _dialog_reglas_ingesta(rule_columns, ingestion_key, estrategia)
 
     current_schema = _collect_schema(schema, key_prefix)
     rule_columns = [
@@ -2460,19 +2535,10 @@ def _render_registro_form(
         for col in current_schema.get("columnas", [])
         if str(col.get("nombre", "")).strip()
     ]
-    schema_cache_key = st.session_state.get("adm_schema_key", "default")
-    rules_key = f"{key_prefix}_rules_{hash(schema_cache_key)}"
-    ingestion_key = f"{key_prefix}_ingestion_{hash(schema_cache_key)}"
-
-    with tab_rules:
-        _render_rules_editor(rule_columns, rules_key)
 
     if not bulk_mode:
         with tab_permissions:
             _render_permisos_selector(key_prefix)
-
-    with tab_ingestion:
-        _render_ingestion_rule_form(rule_columns, ingestion_key, estrategia)
 
     cid = catalog_id.strip()
     current_schema = _collect_schema(schema, key_prefix)
@@ -3238,6 +3304,64 @@ def _inject_admin_css() -> None:
         }
         div[data-testid="stTabs"] button[aria-selected="true"] {
             border-bottom: 2px solid #F5A800 !important;
+        }
+
+        /* ── Pill-tab para st.radio(horizontal=True) ──────────── */
+        div[data-testid="stRadio"] {
+            margin-bottom: 14px !important;
+        }
+        div[data-testid="stRadio"] > div:last-child {
+            background: #EAEDF7;
+            border-radius: 12px;
+            padding: 4px 5px;
+            display: inline-flex !important;
+            gap: 2px;
+            align-items: center;
+        }
+        div[data-testid="stRadio"] input[type="radio"] {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            width: 0;
+            height: 0;
+        }
+        div[data-testid="stRadio"] label {
+            display: inline-flex !important;
+            align-items: center;
+            padding: 7px 18px !important;
+            border-radius: 9px !important;
+            cursor: pointer !important;
+            font-size: 14px !important;
+            font-weight: 500 !important;
+            color: #6B7280 !important;
+            margin: 0 !important;
+            transition: background 0.2s ease, box-shadow 0.2s ease,
+                        color 0.2s ease, transform 0.15s ease !important;
+            transform: scale(1);
+        }
+        div[data-testid="stRadio"] label:hover {
+            background: rgba(255,255,255,0.55) !important;
+            transform: scale(1.03) !important;
+        }
+        div[data-testid="stRadio"] label p,
+        div[data-testid="stRadio"] label div {
+            font-size: 14px !important;
+            font-weight: inherit !important;
+            color: inherit !important;
+            margin: 0 !important;
+        }
+        div[data-testid="stRadio"] label:has(input[type="radio"]:checked) {
+            background: #FFFFFF !important;
+            color: #1C2F6E !important;
+            font-weight: 700 !important;
+            box-shadow: 0 2px 8px rgba(28,47,110,0.18) !important;
+            transform: scale(1) !important;
+            animation: pill-pop 0.25s ease !important;
+        }
+        @keyframes pill-pop {
+            0%   { transform: scale(0.92); box-shadow: none; opacity: 0.7; }
+            60%  { transform: scale(1.05); }
+            100% { transform: scale(1);   box-shadow: 0 2px 8px rgba(28,47,110,0.18); opacity: 1; }
         }
         .adm-step-row {
             display: grid;
