@@ -786,20 +786,14 @@ def _tab_resumen() -> None:
 def _tab_registro() -> None:
     _SUBTABS = ["Selección", "Configuración", "Revisión"]
 
-    # Aplicar navegación pendiente ANTES de crear el widget
+    # Aplicar navegación pendiente
     _pending = st.session_state.pop("adm_reg_subtab_next", None)
     if _pending in _SUBTABS:
         st.session_state.adm_reg_subtab = _pending
     elif st.session_state.get("adm_reg_subtab") not in _SUBTABS:
-        st.session_state.adm_reg_subtab_next = "Selección"
+        st.session_state.adm_reg_subtab = "Selección"
 
-    active_subtab = st.radio(
-        "Paso del registro",
-        _SUBTABS,
-        horizontal=True,
-        key="adm_reg_subtab",
-        label_visibility="collapsed",
-    )
+    active_subtab = st.session_state.get("adm_reg_subtab", "Selección")
 
     # Estado compartido entre sub-tabs (leído de session_state)
     # adm_db es clave de widget y puede perderse cuando el selectbox no renderiza;
@@ -815,12 +809,29 @@ def _tab_registro() -> None:
     # ── Sub-tab: Selección ─────────────────────────────────────────
     if active_subtab == "Selección":
         fuentes = ["SingleStore"] + (["Hive"] if HIVE_ENABLED else [])
-        fuente = st.radio(
-            "Fuente de datos",
-            fuentes,
-            horizontal=True,
-            key="adm_fuente",
-        )
+        _current_fuente = st.session_state.get("adm_fuente", fuentes[0])
+
+        st.markdown('<p style="font-size:13px;font-weight:600;color:#374151;margin:0 0 10px;">Fuente de datos</p>', unsafe_allow_html=True)
+        _fuente_cols = st.columns(len(fuentes))
+        _FUENTE_ICONS = {"SingleStore": "🗄", "Hive": "🐝"}
+        _FUENTE_DESC  = {"SingleStore": "Base de datos analítica", "Hive": "Data lake Hadoop"}
+        for _f, _col in zip(fuentes, _fuente_cols):
+            with _col:
+                _active_cls = "active" if _current_fuente == _f else ""
+                st.markdown(
+                    f'<div class="reg-fuente-card {_active_cls}">'
+                    f'<span style="font-size:22px;line-height:1;">{_FUENTE_ICONS.get(_f,"🗄")}</span>'
+                    f'<div><div style="font-size:13px;font-weight:600;">{_f}</div>'
+                    f'<div style="font-size:11px;opacity:0.65;margin-top:1px;">{_FUENTE_DESC.get(_f,"")}</div></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button(_f, key=f"reg_fuente_{_f}", use_container_width=True):
+                    st.session_state["adm_fuente"] = _f
+                    st.session_state["adm_step2_fuente"] = _f
+                    st.rerun()
+
+        fuente = _current_fuente
         st.session_state["adm_step2_fuente"] = fuente
 
         if fuente == "SingleStore":
@@ -3554,7 +3565,7 @@ def _inject_admin_css() -> None:
             margin-bottom: 0 !important;
         }
         [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand {
-            padding: 10px 4px 4px !important;
+            padding: 36px 4px 4px !important;
         }
         /* En colapsado el botón overlay también se ajusta */
         [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div {
@@ -3564,6 +3575,47 @@ def _inject_admin_css() -> None:
         [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div button {
             height: 50px !important;
         }
+        /* ── Tarjetas de fuente de datos ── */
+        .reg-fuente-card {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: 1.5px solid #D1D9F0;
+            background: #FFFFFF;
+            font-size: 13px;
+            color: #6B7280;
+            cursor: pointer;
+            transition: border-color 0.18s, background 0.18s, color 0.18s, box-shadow 0.18s;
+            box-sizing: border-box;
+            min-height: 64px;
+        }
+        .reg-fuente-card.active {
+            border-color: #1C2F6E !important;
+            background: #EEF1FD !important;
+            color: #1C2F6E !important;
+            box-shadow: 0 2px 10px rgba(28,47,110,0.12) !important;
+        }
+        /* Overlay invisible en columnas para las tarjetas de fuente */
+        div[data-testid="column"] div:has(.reg-fuente-card) + div {
+            margin-top: -64px !important;
+            height: 64px !important;
+            position: relative !important;
+            z-index: 2 !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="column"] div:has(.reg-fuente-card) + div [data-testid="stButton"],
+        div[data-testid="column"] div:has(.reg-fuente-card) + div button {
+            width: 100% !important;
+            height: 64px !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
         /* ── Pill-tab para st.radio(horizontal=True) en content ── */
         div[data-testid="stMain"] div[data-testid="stRadio"] {
             margin-bottom: 14px !important;

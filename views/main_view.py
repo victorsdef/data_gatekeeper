@@ -144,6 +144,11 @@ def _logo_b64() -> str:
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
 
 
+def _nav_icon_b64(filename: str) -> str:
+    path = Path(__file__).parent.parent / "assets" / "icono" / filename
+    return base64.b64encode(path.read_bytes()).decode() if path.exists() else ""
+
+
 def _build_audit_payload(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
     if not files:
         return b"", "archivo"
@@ -500,17 +505,20 @@ def _render_sidebar() -> None:
     with st.sidebar:
         # Logo + título
         b64 = _logo_b64()
-        logo_img = f'<img src="data:image/png;base64,{b64}" width="56" style="flex-shrink:0;">' if b64 else ""
+        logo_img = (
+            f'<img class="adm-brand-logo-img" src="data:image/png;base64,{b64}" width="40">'
+            if b64 else ""
+        )
         st.markdown(f"""
         <div class="sidebar-brand">
-            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+            <div class="adm-brand-row">
                 {logo_img}
-                <div style="min-width:0;">
+                <div class="adm-brand-text">
                     <div style="font-size:11px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
                     <div style="font-size:22px;font-weight:800;color:white;letter-spacing:0;line-height:1.05;">Austro</div>
                 </div>
             </div>
-            <div style="font-size:12px;color:#DCE4FF;margin-left:68px;">Portal de Ingesta · v1.0</div>
+            <div class="adm-brand-subtitle">Portal de Ingesta · v1.0</div>
         </div>
         """, unsafe_allow_html=True)
         if st.button("Volver al inicio", use_container_width=True, key="btn_brand_home", help="Volver al inicio"):
@@ -523,7 +531,7 @@ def _render_sidebar() -> None:
         rol_color = "#F5A800" if is_admin else "#6EE7B7"
         rol_bg    = "rgba(245,168,0,0.18)" if is_admin else "rgba(110,231,183,0.15)"
         st.markdown(f"""
-        <div style="padding:12px; background:rgba(255,255,255,0.07);
+        <div class="mn-user-card" style="padding:12px; background:rgba(255,255,255,0.07);
                     border-radius:10px; margin-bottom:16px;
                     border:1px solid rgba(255,255,255,0.10);">
             <div style="font-weight:600; font-size:13px; color:white;">
@@ -551,7 +559,7 @@ def _render_sidebar() -> None:
             schema     = selected_cat.get("schema", {})
 
             st.markdown(f"""
-            <div style="margin-top:4px; padding:10px 12px;
+            <div class="mn-catalog-info" style="margin-top:4px; padding:10px 12px;
                         background:rgba(255,255,255,0.07);
                         border:1px solid rgba(255,255,255,0.10);
                         border-radius:8px; font-size:12px; color:#A8B4D8;">
@@ -597,15 +605,35 @@ def _render_sidebar() -> None:
                 else:
                     st.caption("Sin esquema configurado.")
 
+            _cat_icon_b64 = _nav_icon_b64("registro.png")
+            _cat_icon_html = (
+                f'<img src="data:image/png;base64,{_cat_icon_b64}" width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+                if _cat_icon_b64 else '<span style="width:22px;display:inline-block;"></span>'
+            )
+            st.markdown(
+                f'<div class="adm-nav-visual">{_cat_icon_html}'
+                f'<span class="adm-nav-label">Cambiar catálogo</span></div>',
+                unsafe_allow_html=True,
+            )
             if st.button("Cambiar catálogo", use_container_width=True, key="btn_cambiar_catalogo"):
                 _render_catalog_selector_dialog()
         else:
             st.markdown(
-                "<div style='padding:12px; background:rgba(255,255,255,0.04);"
+                "<div class='mn-no-catalog' style='padding:12px; background:rgba(255,255,255,0.04);"
                 "border:1px dashed rgba(255,255,255,0.15); border-radius:8px;"
                 "font-size:12px; color:#7A8EC0; text-align:center; margin-bottom:12px;'>"
                 "Selecciona un catálogo para comenzar la carga."
                 "</div>",
+                unsafe_allow_html=True,
+            )
+            _sel_icon_b64 = _nav_icon_b64("registro.png")
+            _sel_icon_html = (
+                f'<img src="data:image/png;base64,{_sel_icon_b64}" width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+                if _sel_icon_b64 else '<span style="width:22px;display:inline-block;"></span>'
+            )
+            st.markdown(
+                f'<div class="adm-nav-visual">{_sel_icon_html}'
+                f'<span class="adm-nav-label">Seleccionar catálogo</span></div>',
                 unsafe_allow_html=True,
             )
             if st.button("Seleccionar catálogo", use_container_width=True, key="btn_sel_catalogo"):
@@ -617,13 +645,45 @@ def _render_sidebar() -> None:
 def _render_sidebar_footer(user: dict) -> None:
     st.divider()
     if user.get("rol") == "Admin":
+        _icon_b64 = _nav_icon_b64("activos.png")
+        _icon_html = (
+            f'<img src="data:image/png;base64,{_icon_b64}" width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+            if _icon_b64 else '<span style="width:22px;display:inline-block;"></span>'
+        )
+        st.markdown(
+            f'<div class="adm-nav-visual">{_icon_html}'
+            f'<span class="adm-nav-label">Administrar catálogos</span></div>',
+            unsafe_allow_html=True,
+        )
         if st.button("Administrar catálogos", use_container_width=True, key="btn_admin"):
             st.session_state.current_view = "admin"
             st.rerun()
+
+    _hist_b64 = _nav_icon_b64("resumen.png")
+    _hist_html = (
+        f'<img src="data:image/png;base64,{_hist_b64}" width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+        if _hist_b64 else '<span style="width:22px;display:inline-block;"></span>'
+    )
+    st.markdown(
+        f'<div class="adm-nav-visual">{_hist_html}'
+        f'<span class="adm-nav-label">Historial de cargas</span></div>',
+        unsafe_allow_html=True,
+    )
     if st.button("Historial de cargas", use_container_width=True, key="btn_history"):
         st.session_state.current_view = "history"
         st.rerun()
-    if st.button("Cerrar sesión", use_container_width=True, key="btn_logout", type="primary"):
+
+    _logout_b64 = _nav_icon_b64("usuarios.png")
+    _logout_html = (
+        f'<img src="data:image/png;base64,{_logout_b64}" width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+        if _logout_b64 else '<span style="width:22px;display:inline-block;"></span>'
+    )
+    st.markdown(
+        f'<div class="adm-nav-visual adm-nav-logout">{_logout_html}'
+        f'<span class="adm-nav-label">Cerrar sesión</span></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Cerrar sesión", use_container_width=True, key="btn_logout"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
@@ -1711,41 +1771,139 @@ def _inject_main_css() -> None:
         section[data-testid="stSidebar"] .block-container {
             padding-top: 12px !important;
         }
+        /* ── Sidebar brand ── */
         section[data-testid="stSidebar"] .sidebar-brand {
             display: block;
-            padding: 8px 8px 22px;
+            padding: 8px 8px 4px;
             border-radius: 12px;
-            text-decoration: none !important;
-            transition: background .15s ease, transform .15s ease;
         }
-        section[data-testid="stSidebar"] .sidebar-brand:hover {
-            background: rgba(255,255,255,0.08);
-            text-decoration: none !important;
-            transform: translateY(-1px);
+        section[data-testid="stSidebar"] .adm-brand-row {
+            display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
         }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container {
-            margin-top: -116px !important;
-            height: 116px !important;
-            margin-bottom: 18px !important;
+        section[data-testid="stSidebar"] .adm-brand-logo-img { flex-shrink: 0; }
+        section[data-testid="stSidebar"] .adm-brand-text { min-width: 0; }
+        section[data-testid="stSidebar"] .adm-brand-subtitle {
+            font-size: 12px; color: #DCE4FF; margin-left: 52px;
+        }
+
+        /* Invisible overlay sobre el brand */
+        section[data-testid="stSidebar"] div:has(> div > .sidebar-brand) + div,
+        section[data-testid="stSidebar"] div:has(.sidebar-brand) + div {
+            margin-top: -88px !important;
+            height: 88px !important;
             position: relative !important;
             z-index: 5 !important;
+            overflow: hidden !important;
+            margin-bottom: 0 !important;
         }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container .stButton {
-            height: 116px !important;
-        }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button {
-            height: 116px !important;
+        section[data-testid="stSidebar"] div:has(.sidebar-brand) + div [data-testid="stButton"],
+        section[data-testid="stSidebar"] div:has(.sidebar-brand) + div button {
+            width: 100% !important;
+            height: 88px !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
             background: transparent !important;
             border: 0 !important;
-            color: transparent !important;
             box-shadow: none !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
         }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button:hover {
-            background: rgba(255,255,255,0.08) !important;
+        section[data-testid="stSidebar"] div:has(.sidebar-brand) + div button:hover {
+            opacity: 1 !important;
+            background: rgba(255,255,255,0.07) !important;
             border-radius: 12px !important;
         }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button * {
-            color: transparent !important;
+
+        /* ── Nav visual (botones con ícono) ── */
+        section[data-testid="stSidebar"] .adm-nav-visual {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            height: 44px;
+            padding: 0 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.22);
+            color: rgba(220,228,255,0.85);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s;
+            box-sizing: border-box;
+        }
+        section[data-testid="stSidebar"] .adm-nav-label {
+            flex: 1; white-space: nowrap; overflow: hidden;
+        }
+        section[data-testid="stSidebar"] .adm-nav-logout {
+            border-color: rgba(230,80,80,0.5) !important;
+            color: rgba(255,160,160,0.9) !important;
+        }
+
+        /* Overlay invisible sobre cada nav visual */
+        section[data-testid="stSidebar"] div:has(.adm-nav-visual) + div {
+            margin-top: -44px !important;
+            height: 44px !important;
+            position: relative !important;
+            z-index: 2 !important;
+            overflow: hidden !important;
+        }
+        section[data-testid="stSidebar"] div:has(.adm-nav-visual) + div [data-testid="stButton"],
+        section[data-testid="stSidebar"] div:has(.adm-nav-visual) + div button {
+            width: 100% !important;
+            height: 44px !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
+        /* ── Sidebar colapsado: solo iconos ── */
+        [data-testid="stSidebar"][aria-expanded="false"] {
+            min-width: 74px !important;
+            width: 74px !important;
+            transform: none !important;
+            margin-left: 0 !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] > div {
+            overflow: hidden !important;
+            width: 74px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-text,
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-subtitle,
+        [data-testid="stSidebar"][aria-expanded="false"] hr,
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-label { display: none !important; }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-visual {
+            justify-content: center !important;
+            padding: 0 !important;
+            gap: 0 !important;
+            height: 50px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-visual img {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-row {
+            justify-content: center !important;
+            gap: 0 !important;
+            margin-bottom: 0 !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand {
+            padding: 36px 4px 4px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div {
+            height: 50px !important;
+            margin-top: -50px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div button {
+            height: 50px !important;
+        }
+        /* Ocultar tarjeta usuario, info catálogo y mensaje cuando está colapsado */
+        [data-testid="stSidebar"][aria-expanded="false"] .mn-user-card,
+        [data-testid="stSidebar"][aria-expanded="false"] .mn-catalog-info,
+        [data-testid="stSidebar"][aria-expanded="false"] .mn-no-catalog,
+        [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stExpander"] {
+            display: none !important;
         }
         section[data-testid="stSidebar"] * {
             color: #E8ECF8 !important;
