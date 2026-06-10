@@ -786,7 +786,8 @@ def _tab_registro() -> None:
                 st.warning("No hay bases de datos disponibles en Hive.")
                 return
 
-        step_indicator = st.empty()
+        _sel_preview: List[str] = list(st.session_state.get("adm_selected_tables") or [])
+        _render_step_indicator(current=2 if _sel_preview else 1)
 
         col_left, col_right = st.columns([1, 2], gap="large")
 
@@ -948,8 +949,6 @@ def _tab_registro() -> None:
                         st.rerun()
 
             selected = _sync_selected_tables(all_tables)
-            with step_indicator:
-                _render_step_indicator(current=2 if selected else 1)
 
             if selected:
                 st.markdown("##### Seleccionadas")
@@ -974,6 +973,7 @@ def _tab_registro() -> None:
 
     # ── Sub-tab: Configuración ─────────────────────────────────────
     elif active_subtab == "Configuración":
+        _render_step_indicator(current=2)
         if not selected or not db_sel:
             st.info("Primero selecciona una base de datos y tablas en la pestaña **Selección**.")
         else:
@@ -995,11 +995,7 @@ def _tab_registro() -> None:
 
     # ── Sub-tab: Revisión ──────────────────────────────────────────
     elif active_subtab == "Revisión":
-        _back_rev, _ = st.columns([1, 3])
-        with _back_rev:
-            if st.button("← Configuración", use_container_width=True, key="btn_reg_rev_back"):
-                st.session_state.adm_reg_subtab_next = "Configuración"
-                st.rerun()
+        _render_step_indicator(current=3)
 
         if not selected or not db_sel:
             st.info("Cuando selecciones tablas, aquí verás el resumen antes de registrar.")
@@ -1042,27 +1038,26 @@ def _render_empty_state() -> None:
 # Wizard: indicador de pasos
 # ------------------------------------------------------------------
 def _render_step_indicator(current: int) -> None:
-    steps = ["Seleccionar tablas", "Configurar catálogo", "Revisar y registrar"]
-    parts = []
-    for i, name in enumerate(steps, start=1):
-        if i < current:
-            cls, icon = "done", "✓"
-        elif i == current:
-            cls, icon = "active", str(i)
-        else:
-            cls, icon = "pending", str(i)
-        parts.append(
-            f'<div class="adm-step-card {cls}">'
-            f'<span class="adm-step-dot">{icon}</span>'
-            f'<span><b>Paso {i}</b><br>{name}</span>'
-            f'</div>'
-        )
-    st.markdown(
-        '<div class="adm-step-row">'
-        + "".join(parts)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
+    _SUBTABS = ["Selección", "Configuración", "Revisión"]
+    _NAMES   = ["Seleccionar tablas", "Configurar catálogo", "Revisar y registrar"]
+    st.markdown('<div class="adm-steps-marker"></div>', unsafe_allow_html=True)
+    cols = st.columns(3)
+    for idx, (col, name, tab) in enumerate(zip(cols, _NAMES, _SUBTABS), start=1):
+        is_done   = idx < current
+        is_active = idx == current
+        icon      = "✓" if is_done else str(idx)
+        card_cls  = "done" if is_done else ("active" if is_active else "pending")
+        with col:
+            st.markdown(
+                f'<div class="adm-step-card {card_cls}">'
+                f'<span class="adm-step-dot">{icon}</span>'
+                f'<span><b>Paso {idx}</b><br>{name}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(" ", use_container_width=True, key=f"step_goto_{current}_{idx}"):
+                st.session_state.adm_reg_subtab_next = tab
+                st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -3304,6 +3299,38 @@ def _inject_admin_css() -> None:
         }
         div[data-testid="stTabs"] button[aria-selected="true"] {
             border-bottom: 2px solid #F5A800 !important;
+        }
+
+
+        /* ── Step indicator: HTML cards + botón invisible superpuesto ── */
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] div[data-testid="column"] {
+            position: relative !important;
+        }
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] div[data-testid="column"] .element-container:has(.stButton) {
+            position: absolute !important;
+            inset: 0 !important;
+            z-index: 5 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] div[data-testid="column"] .stButton,
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] div[data-testid="column"] button {
+            width: 100% !important;
+            height: 100% !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] .adm-step-card {
+            cursor: pointer;
+            transition: filter 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        div.element-container:has(.adm-steps-marker) + div[data-testid="stHorizontalBlock"] .adm-step-card:hover {
+            filter: brightness(0.95);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(28,47,110,0.14) !important;
         }
 
         /* ── Pill-tab para st.radio(horizontal=True) ──────────── */
