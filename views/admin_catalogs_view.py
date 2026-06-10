@@ -780,6 +780,36 @@ def _tab_resumen() -> None:
         st.dataframe(by_project, use_container_width=True, hide_index=True)
 
 
+@st.experimental_dialog("Confirmar registro de tablas", width="small")
+def _confirm_bulk_register_dialog() -> None:
+    params = st.session_state.get("adm_bk_register_params", {})
+    tables = params.get("tables", [])
+    db     = params.get("db", "")
+    st.markdown(
+        f"<p style='font-size:14px;margin-bottom:4px;'>Se registrarán <b>{len(tables)} tabla(s)</b> "
+        f"en la base de datos <code>{html_escape(db)}</code>.</p>"
+        "<p style='color:#6B7280;font-size:12px;margin-bottom:8px;'>Esta acción no puede deshacerse.</p>",
+        unsafe_allow_html=True,
+    )
+    if tables:
+        st.markdown(
+            "<ul style='font-size:12px;color:#374151;margin:0 0 12px;padding-left:18px;'>"
+            + "".join(f"<li><code>{html_escape(t)}</code></li>" for t in tables)
+            + "</ul>",
+            unsafe_allow_html=True,
+        )
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        if st.button("Cancelar", use_container_width=True, key="confirm_bk_cancel"):
+            st.session_state.pop("adm_bk_confirm_open", None)
+            st.rerun()
+    with _dc2:
+        if st.button("Confirmar registro", type="primary", use_container_width=True, key="confirm_bk_ok"):
+            st.session_state.pop("adm_bk_confirm_open", None)
+            st.session_state["adm_bk_do_register"] = True
+            st.rerun()
+
+
 # ------------------------------------------------------------------
 # Tab 1: Registro progresivo de catálogos
 # ------------------------------------------------------------------
@@ -1060,9 +1090,43 @@ def _tab_registro() -> None:
                     st.session_state.adm_active_table = active_table
                 _render_bulk_panel(db_sel, selected, mapped, active_table)
 
+        # ── Navegación inferior ──
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        st.divider()
+        _c_back, _, _c_fwd = st.columns([1, 2, 1])
+        with _c_back:
+            if st.button("← Paso 1", use_container_width=True, key="adm_step2_back"):
+                st.session_state.adm_reg_subtab_next = "Selección"
+                st.rerun()
+        if selected and db_sel:
+            with _c_fwd:
+                _bk_ready = st.session_state.get("adm_bk_is_ready", False)
+                if st.button(
+                    "Continuar →", type="primary",
+                    use_container_width=True, key="adm_step2_continue",
+                    disabled=not _bk_ready,
+                ):
+                    _persist_bulk_form_state()
+                    st.session_state.adm_reg_subtab_next = "Revisión"
+                    st.rerun()
+
     # ── Sub-tab: Revisión ──────────────────────────────────────────
     elif active_subtab == "Revisión":
         _render_step_indicator(current=3)
+
+        # Execute registration after confirmation dialog
+        if st.session_state.pop("adm_bk_do_register", False):
+            params = st.session_state.pop("adm_bk_register_params", {})
+            if params:
+                _ejecutar_registro_masivo(
+                    db=params["db"],
+                    tables=params["tables"],
+                    project_id=params["project_id"],
+                    estrategia=params["estrategia"],
+                    destino=params["destino"],
+                    permisos=params["permisos"],
+                )
+            return
 
         if not selected or not db_sel:
             st.info("Cuando selecciones tablas, aquí verás el resumen antes de registrar.")
@@ -1073,8 +1137,8 @@ def _tab_registro() -> None:
                 st.error(user_facing_error(e, context="database"))
                 return
 
-            to_reg   = [t for t in selected if (db_sel, t) not in mapped]
-            already  = [t for t in selected if (db_sel, t) in mapped]
+            to_reg        = [t for t in selected if (db_sel, t) not in mapped]
+            already       = [t for t in selected if (db_sel, t) in mapped]
             configs_saved = st.session_state.get("adm_bulk_table_configs", {})
 
             bk_mode = st.session_state.get("adm_bk_project_mode", "Crear o usar sugerido")
@@ -1098,28 +1162,56 @@ def _tab_registro() -> None:
                 publicadores_enabled=bool(st.session_state.get("bk_role_display", False)),
             )
 
-            cfg_errors = _validate_bulk_configs(db_sel, to_reg)
-            for err in cfg_errors:
-                st.warning(err)
+            pending_tables = [t for t in to_reg if t not in configs_saved]
+            cfg_errors     = _validate_bulk_configs(db_sel, to_reg) if not pending_tables else []
+
+            if pending_tables:
+                st.markdown(
+                    "<div style='background:#FEF9C3;border:1px solid #FDE047;border-radius:8px;"
+                    "padding:10px 14px;margin:8px 0;font-size:13px;color:#713F12;'>"
+                    "<b>⚠ Tablas sin configurar</b> — Las siguientes tablas aún no han sido "
+                    "configuradas. Regresa al <b>Paso 2</b> para completarlas:<br>"
+                    "<ul style='margin:6px 0 0;padding-left:18px;'>"
+                    + "".join(f"<li><code>{html_escape(t)}</code></li>" for t in pending_tables)
+                    + "</ul></div>",
+                    unsafe_allow_html=True,
+                )
+            elif cfg_errors:
+                for err in cfg_errors:
+                    st.warning(err)
+
             if already:
                 st.caption(f"Se omitirán (ya existen): {', '.join(already)}")
+
+            if st.session_state.get("adm_bk_confirm_open"):
+                _confirm_bulk_register_dialog()
 
             if not to_reg:
                 st.info("Todas las tablas seleccionadas ya están registradas.")
             else:
-                if st.button(
-                    "Registrar tablas seleccionadas", type="primary",
-                    use_container_width=True, key="adm_bk_final_register",
-                    disabled=bool(cfg_errors),
-                ):
-                    _ejecutar_registro_masivo(
-                        db=db_sel,
-                        tables=to_reg,
-                        project_id=bk_proj_id,
-                        estrategia=bk_est,
-                        destino=bk_dest,
-                        permisos=_collect_permisos("bk"),
-                    )
+                st.divider()
+                _r_back, _, _r_fwd = st.columns([1, 2, 1])
+                with _r_back:
+                    if st.button("← Paso 2", use_container_width=True, key="adm_step3_back"):
+                        st.session_state.adm_reg_subtab_next = "Configuración"
+                        st.rerun()
+                with _r_fwd:
+                    _is_blocked = bool(pending_tables or cfg_errors)
+                    if st.button(
+                        "Registrar tablas seleccionadas", type="primary",
+                        use_container_width=True, key="adm_bk_final_register",
+                        disabled=_is_blocked,
+                    ):
+                        st.session_state["adm_bk_register_params"] = {
+                            "db": db_sel,
+                            "tables": to_reg,
+                            "project_id": bk_proj_id,
+                            "estrategia": bk_est,
+                            "destino": bk_dest,
+                            "permisos": _collect_permisos("bk"),
+                        }
+                        st.session_state["adm_bk_confirm_open"] = True
+                        st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -1553,15 +1645,8 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
             st.caption(f"Se omitirán (ya existen): {', '.join(already_reg)}")
         if not to_register:
             st.info("Todas las tablas seleccionadas ya están registradas.")
-        else:
-            if st.button(
-                "Continuar →", type="primary",
-                use_container_width=True, key="adm_bk_continue",
-                disabled=bool(_proj_errors or _cfg_errors),
-            ):
-                _persist_bulk_form_state()
-                st.session_state.adm_reg_subtab_next = "Revisión"
-                st.rerun()
+        # Guardar estado de validación para la barra de navegación inferior
+        st.session_state["adm_bk_is_ready"] = not bool(_proj_errors or _cfg_errors) and bool(to_register)
 
 
 def _ejecutar_registro_masivo(
@@ -3377,12 +3462,29 @@ def _inject_admin_css() -> None:
         section[data-testid="stSidebar"] * { color: #E8ECF8 !important; }
         section[data-testid="stSidebar"] hr { border-color: #2E4090 !important; }
 
-        div[data-testid="stTabs"] button {
-            font-size: 14px;
-            font-weight: 500;
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+            gap: 4px !important;
+            border-bottom: 2px solid #E5E8F2 !important;
+            margin-bottom: 4px !important;
         }
-        div[data-testid="stTabs"] button[aria-selected="true"] {
-            border-bottom: 2px solid #F5A800 !important;
+        div[data-testid="stTabs"] button[role="tab"] {
+            font-size: 15px !important;
+            font-weight: 600 !important;
+            color: #6B7280 !important;
+            padding: 10px 20px !important;
+            border-radius: 8px 8px 0 0 !important;
+            transition: color 0.15s, background 0.15s !important;
+            letter-spacing: 0.1px !important;
+        }
+        div[data-testid="stTabs"] button[role="tab"]:hover {
+            color: #1C2F6E !important;
+            background: #F0F3FB !important;
+        }
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            color: #1C2F6E !important;
+            font-weight: 700 !important;
+            border-bottom: 3px solid #F5A800 !important;
+            background: transparent !important;
         }
 
 

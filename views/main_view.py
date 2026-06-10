@@ -335,6 +335,18 @@ def _schema_table_html(cols_schema: list) -> str:
 
 
 # ------------------------------------------------------------------
+# Modal: historial de cargas
+# ------------------------------------------------------------------
+@st.experimental_dialog("Historial de cargas", width="large")
+def _render_history_dialog() -> None:
+    from views.history_view import render_history_content
+    user     = st.session_state.user_info or {}
+    is_admin = user.get("rol") == "Admin"
+    username = user.get("username", "")
+    render_history_content(user, is_admin, username)
+
+
+# ------------------------------------------------------------------
 # Modal: selector de catálogo
 # ------------------------------------------------------------------
 @st.experimental_dialog("Seleccionar catálogo", width="large")
@@ -670,8 +682,7 @@ def _render_sidebar_footer(user: dict) -> None:
         unsafe_allow_html=True,
     )
     if st.button("Historial de cargas", use_container_width=True, key="btn_history"):
-        st.session_state.current_view = "history"
-        st.rerun()
+        _render_history_dialog()
 
     _logout_b64 = _nav_icon_b64("usuarios.png")
     _logout_html = (

@@ -138,6 +138,10 @@ def render_history_view() -> None:
                 del st.session_state[key]
             st.rerun()
 
+    render_history_content(user, is_admin, username)
+
+
+def render_history_content(user: dict, is_admin: bool, username: str) -> None:
     # ── Encabezado ───────────────────────────────────────────────────
     st.markdown("""
     <div style="padding:8px 0 20px;">
