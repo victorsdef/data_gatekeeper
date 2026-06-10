@@ -173,6 +173,11 @@ def _logo_b64() -> str:
     return base64.b64encode(logo.read_bytes()).decode() if logo.exists() else ""
 
 
+def _nav_icon_b64(filename: str) -> str:
+    path = Path(__file__).parent.parent / "assets" / "icono" / filename
+    return base64.b64encode(path.read_bytes()).decode() if path.exists() else ""
+
+
 def _sync_selected_tables(all_tables: List[str]) -> List[str]:
     adm_sel_set = st.session_state.setdefault("adm_sel_set", set())
 
@@ -513,42 +518,105 @@ def _render_project_inputs(
 # ------------------------------------------------------------------
 # Entry point
 # ------------------------------------------------------------------
+_ADM_NAV_ITEMS = [
+    ("Resumen",             "resumen.png",  "resumen"),
+    ("Registrar catálogos", "registro.png", "registro"),
+    ("Catálogos activos",   "activos.png",  "activos"),
+    ("Usuarios",            "usuarios.png", "usuarios"),
+]
+_ADM_TAB_FROM_ID = {_id: _name for _name, _icon, _id in _ADM_NAV_ITEMS}
+
+_ADM_PORTAL_KEYS = [
+    "selected_project_id", "selected_project_name", "selected_catalog",
+    "uploaded_df", "uploaded_bytes", "uploaded_audit_bytes",
+    "uploaded_audit_name", "uploaded_name", "uploaded_preview_items",
+    "uploaded_row_origins", "uploaded_validation_sources",
+    "validation_result", "validation_failure_zip_path",
+    "carga_ejecutada", "load_result",
+]
+
+
+def _adm_go_portal() -> None:
+    st.session_state.current_view = "upload"
+    st.session_state.current_step = "upload"
+    st.session_state.pop("adm_catalog_dialog", None)
+    for _k in _ADM_PORTAL_KEYS:
+        st.session_state.pop(_k, None)
+
+
 def render_admin_view() -> None:
     _inject_admin_css()
 
+    admin_tabs = [t[0] for t in _ADM_NAV_ITEMS]
+    if st.session_state.get("adm_active_tab") not in admin_tabs:
+        st.session_state.adm_active_tab = "Resumen"
+
+    active_tab = st.session_state.get("adm_active_tab", "Resumen")
+
     with st.sidebar:
         b64 = _logo_b64()
-        logo_img = f'<img src="data:image/png;base64,{b64}" width="56" style="flex-shrink:0;">' if b64 else ""
+        logo_img = (
+            f'<img class="adm-brand-logo-img" src="data:image/png;base64,{b64}" width="40">'
+            if b64 else ""
+        )
         st.markdown(f"""
-        <div class="sidebar-brand" style="display:block;padding:8px 8px 12px;border-radius:12px;text-decoration:none;">
-            <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+        <div class="sidebar-brand">
+            <div class="adm-brand-row">
                 {logo_img}
-                <div style="min-width:0;">
+                <div class="adm-brand-text">
                     <div style="font-size:11px;font-weight:500;color:#A8B4D8;letter-spacing:0.5px;">banco del</div>
                     <div style="font-size:22px;font-weight:800;color:white;letter-spacing:0;line-height:1.05;">Austro</div>
                 </div>
             </div>
-            <div style="font-size:12px;color:#DCE4FF;margin-left:68px;">Administración de Catálogos</div>
+            <div class="adm-brand-subtitle">Administración de Catálogos</div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button("Volver al inicio", use_container_width=True, key="admin_brand_home", help="Volver al inicio"):
-            st.session_state.current_view = "upload"
-            st.session_state.current_step = "upload"
-            st.session_state.pop("adm_catalog_dialog", None)
-            for key in [
-                "selected_project_id", "selected_project_name", "selected_catalog",
-                "uploaded_df", "uploaded_bytes", "uploaded_audit_bytes",
-                "uploaded_audit_name", "uploaded_name", "uploaded_preview_items",
-                "uploaded_row_origins", "uploaded_validation_sources",
-                "validation_result", "validation_failure_zip_path",
-                "carga_ejecutada", "load_result",
-            ]:
-                st.session_state.pop(key, None)
+        if st.button("← Volver al portal", use_container_width=True, key="adm_logo_home"):
+            _adm_go_portal()
             st.rerun()
+
         st.divider()
-        if st.button("← Volver al portal", use_container_width=True):
-            st.session_state.current_view = "upload"
-            st.session_state.pop("adm_catalog_dialog", None)
+        for _tab_name, _icon_file, _tab_id in _ADM_NAV_ITEMS:
+            _is_active = active_tab == _tab_name
+            _icon_b64 = _nav_icon_b64(_icon_file)
+            _icon_html = (
+                f'<img src="data:image/png;base64,{_icon_b64}" '
+                f'width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+                if _icon_b64
+                else '<span style="width:22px;display:inline-block;"></span>'
+            )
+            _active_cls = "adm-nav-active" if _is_active else ""
+            st.markdown(
+                f'<div class="adm-nav-visual {_active_cls}">'
+                f'{_icon_html}'
+                f'<span class="adm-nav-label">{_tab_name}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                _tab_name,
+                use_container_width=True,
+                key=f"adm_nav_{_tab_id}",
+            ):
+                st.session_state.adm_active_tab = _tab_name
+                st.rerun()
+        st.divider()
+        _portal_icon_b64 = _nav_icon_b64("portal.png")
+        _portal_icon_html = (
+            f'<img src="data:image/png;base64,{_portal_icon_b64}" '
+            f'width="22" height="22" style="object-fit:contain;flex-shrink:0;">'
+            if _portal_icon_b64
+            else '<span style="width:22px;display:inline-block;"></span>'
+        )
+        st.markdown(
+            f'<div class="adm-nav-visual adm-nav-portal">'
+            f'{_portal_icon_html}'
+            f'<span class="adm-nav-label">← Volver al portal</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("← Volver al portal", use_container_width=True, key="adm_back_portal"):
+            _adm_go_portal()
             st.rerun()
 
     st.markdown("""
@@ -562,18 +630,6 @@ def render_admin_view() -> None:
         </p>
     </div>
     """, unsafe_allow_html=True)
-
-    admin_tabs = ["Resumen", "Registrar catálogos", "Catálogos activos", "Usuarios"]
-    if st.session_state.get("adm_active_tab") not in admin_tabs:
-        st.session_state.adm_active_tab = "Resumen"
-
-    active_tab = st.radio(
-        "Sección de administración",
-        admin_tabs,
-        horizontal=True,
-        key="adm_active_tab",
-        label_visibility="collapsed",
-    )
 
     if active_tab != "Catálogos activos":
         st.session_state.pop("adm_catalog_dialog", None)
@@ -1005,8 +1061,54 @@ def _tab_registro() -> None:
             except Exception as e:
                 st.error(user_facing_error(e, context="database"))
                 return
+
+            to_reg   = [t for t in selected if (db_sel, t) not in mapped]
+            already  = [t for t in selected if (db_sel, t) in mapped]
             configs_saved = st.session_state.get("adm_bulk_table_configs", {})
-            _render_register_flow_summary(db_sel, selected, mapped, configs_saved)
+
+            bk_mode = st.session_state.get("adm_bk_project_mode", "Crear o usar sugerido")
+            if bk_mode == "Usar proyecto existente":
+                bk_proj_id   = st.session_state.get("adm_bk_project_existing", "")
+                bk_proj_name = bk_proj_id
+            else:
+                bk_proj_id   = st.session_state.get("adm_bk_project_id", "")
+                bk_proj_name = st.session_state.get("adm_bk_project_name", "")
+            bk_est  = st.session_state.get("adm_bk_est", "overwrite")
+            bk_dest = st.session_state.get("adm_bk_dest", "singlestore")
+
+            _render_bulk_registration_review(
+                db=db_sel,
+                tables=to_reg,
+                project_name=bk_proj_name,
+                estrategia=bk_est,
+                destino=bk_dest,
+                permisos=_collect_permisos("bk"),
+                configs_saved=configs_saved,
+                publicadores_enabled=bool(st.session_state.get("bk_role_display", False)),
+            )
+
+            cfg_errors = _validate_bulk_configs(db_sel, to_reg)
+            for err in cfg_errors:
+                st.warning(err)
+            if already:
+                st.caption(f"Se omitirán (ya existen): {', '.join(already)}")
+
+            if not to_reg:
+                st.info("Todas las tablas seleccionadas ya están registradas.")
+            else:
+                if st.button(
+                    "Registrar tablas seleccionadas", type="primary",
+                    use_container_width=True, key="adm_bk_final_register",
+                    disabled=bool(cfg_errors),
+                ):
+                    _ejecutar_registro_masivo(
+                        db=db_sel,
+                        tables=to_reg,
+                        project_id=bk_proj_id,
+                        estrategia=bk_est,
+                        destino=bk_dest,
+                        permisos=_collect_permisos("bk"),
+                    )
 
 
 # ------------------------------------------------------------------
@@ -1315,8 +1417,8 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         unsafe_allow_html=True,
     )
 
-    tab_project, tab_data, tab_columns, tab_permissions, tab_load, tab_review = st.tabs(
-        ["Proyecto", "Datos", "Columnas", "Permisos", "Carga", "Revisión"]
+    tab_project, tab_data, tab_columns, tab_permissions, tab_load = st.tabs(
+        ["Proyecto", "Datos", "Columnas", "Permisos", "Carga"]
     )
 
     with tab_project:
@@ -1410,6 +1512,16 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
     rules_key = f"{active_key_prefix}_rules_{hash(schema_cache_key)}"
     ingestion_key = f"{active_key_prefix}_ingestion_{hash(schema_cache_key)}"
 
+    # Auto-guardar tabla activa en cada render (fuera de tabs para que siempre corra)
+    if active_table in to_register:
+        _ac = st.session_state.setdefault("adm_bulk_table_configs", {})
+        _ac[active_table] = {
+            "catalog_id": st.session_state.get(_bulk_field_key(active_table, "catalog_id"), "").strip(),
+            "nombre": st.session_state.get(_bulk_field_key(active_table, "nombre"), "").strip(),
+            "descripcion": st.session_state.get(_bulk_field_key(active_table, "descripcion"), "").strip(),
+            "schema": current_schema,
+        }
+
     with tab_permissions:
         _render_permisos_selector("bk")
 
@@ -1421,67 +1533,24 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
             _dest_default = 1 if HIVE_ENABLED and st.session_state.get("adm_step2_fuente") == "Hive" else 0
             bk_dest = st.selectbox("Destino", _DESTINOS, index=_dest_default, key="adm_bk_dest")
         st.info("La estrategia y el destino se aplican a todas las tablas pendientes del lote.")
-
-    with tab_review:
-        project_errors = _validate_project_fields(bk_proj, bk_project_name)
-        active_errors: List[str] = []
-        if active_table in to_register:
-            active_errors = _validate_catalog_form(
-                catalog_id=st.session_state.get(_bulk_field_key(active_table, "catalog_id"), "").strip(),
-                nombre=st.session_state.get(_bulk_field_key(active_table, "nombre"), "").strip(),
-                schema=current_schema,
-            )
-
-        if active_table in to_register:
-            if st.button(
-                "Guardar configuración de esta tabla",
-                type="primary",
-                use_container_width=True,
-                key=f"adm_bulk_save_{active_table}",
-                disabled=bool(active_errors),
-            ):
-                configs = st.session_state.setdefault("adm_bulk_table_configs", {})
-                configs[active_table] = {
-                    "catalog_id": st.session_state.get(_bulk_field_key(active_table, "catalog_id"), "").strip(),
-                    "nombre": st.session_state.get(_bulk_field_key(active_table, "nombre"), "").strip(),
-                    "descripcion": st.session_state.get(_bulk_field_key(active_table, "descripcion"), "").strip(),
-                    "schema": current_schema,
-                }
-                st.success(f"Configuración de **{active_table}** guardada.")
-                st.rerun()
-
-        configs_saved = st.session_state.get("adm_bulk_table_configs", {})
-        bulk_config_errors = _validate_bulk_configs(db, to_register)
-
-        _render_bulk_registration_review(
-            db=db,
-            tables=to_register,
-            project_name=bk_project_name,
-            estrategia=bk_est,
-            destino=bk_dest,
-            permisos=_collect_permisos("bk"),
-            configs_saved=configs_saved,
-        )
-
-        for err in project_errors + active_errors + bulk_config_errors:
-            st.warning(err)
-
+        st.markdown("---")
+        _proj_errors = _validate_project_fields(bk_proj, bk_project_name)
+        _cfg_errors = _validate_bulk_configs(db, to_register)
+        for _e in _proj_errors + _cfg_errors:
+            st.warning(_e)
         if already_reg:
             st.caption(f"Se omitirán (ya existen): {', '.join(already_reg)}")
-
         if not to_register:
             st.info("Todas las tablas seleccionadas ya están registradas.")
-            return
-
-        if st.button(
-            f"Registrar tablas seleccionadas ({len(to_register)})", type="primary",
-            use_container_width=True, key="adm_bk_go", disabled=bool(project_errors or bulk_config_errors)
-        ):
-            _persist_bulk_form_state()
-            if create_project:
-                ensure_project_exists(bk_proj, bk_project_name)
-            permisos = _collect_permisos("bk")
-            _ejecutar_registro_masivo(db, to_register, bk_proj, bk_est, bk_dest, permisos)
+        else:
+            if st.button(
+                "Continuar →", type="primary",
+                use_container_width=True, key="adm_bk_continue",
+                disabled=bool(_proj_errors or _cfg_errors),
+            ):
+                _persist_bulk_form_state()
+                st.session_state.adm_reg_subtab_next = "Revisión"
+                st.rerun()
 
 
 def _ejecutar_registro_masivo(
@@ -2278,6 +2347,7 @@ def _render_registration_review(
     schema: dict,
     permisos: List[Dict],
     bulk_mode: bool = False,
+    publicadores_enabled: bool = False,
 ) -> None:
     columns = schema.get("columnas", []) if isinstance(schema, dict) else []
     total_rules = sum(len(col.get("reglas", []) or []) for col in columns)
@@ -2287,11 +2357,20 @@ def _render_registration_review(
         _INGESTION_MODES.get(ingestion_rule.get("modo"), "Regla activa")
         if ingestion_rule else "Sin control especial"
     )
-    access_label = (
-        "Todos los publicadores"
-        if not permisos else
-        ", ".join(p["valor"] for p in permisos if p.get("tipo") == "usuario") or "Permisos configurados"
-    )
+    if not publicadores_enabled:
+        access_label = "Solo administradores"
+    else:
+        user_vals = [p["valor"] for p in permisos if p.get("tipo") == "usuario"]
+        if user_vals:
+            lookup = _load_usuarios_lookup()
+            parts = []
+            for u in user_vals:
+                info = lookup.get(str(u).lower(), {})
+                display = f"{u} ({info['nombre']})" if info.get("nombre") else u
+                parts.append(display)
+            access_label = "Administradores + " + ", ".join(parts)
+        else:
+            access_label = "Administradores + todos los publicadores"
     project_text = project_name or ("Se toma del registro del lote" if bulk_mode else "Pendiente")
 
     st.markdown(
@@ -2324,6 +2403,7 @@ def _render_bulk_registration_review(
     destino: str,
     permisos: List[Dict],
     configs_saved: Dict[str, Dict],
+    publicadores_enabled: bool = False,
 ) -> None:
     saved_count = sum(1 for table in tables if table in configs_saved)
     total_columns = 0
@@ -2334,11 +2414,20 @@ def _render_bulk_registration_review(
         total_columns += len(cols)
         total_rules += sum(len(col.get("reglas", []) or []) for col in cols)
 
-    access_label = (
-        "Todos los publicadores"
-        if not permisos else
-        ", ".join(p["valor"] for p in permisos if p.get("tipo") == "usuario") or "Permisos configurados"
-    )
+    if not publicadores_enabled:
+        access_label = "Solo administradores"
+    else:
+        user_vals = [p["valor"] for p in permisos if p.get("tipo") == "usuario"]
+        if user_vals:
+            lookup = _load_usuarios_lookup()
+            parts = []
+            for u in user_vals:
+                info = lookup.get(str(u).lower(), {})
+                display = f"{u} ({info['nombre']})" if info.get("nombre") else u
+                parts.append(display)
+            access_label = "Administradores + " + ", ".join(parts)
+        else:
+            access_label = "Administradores + todos los publicadores"
     table_list = "".join(
         f"<li><code>{html_escape(table)}</code>"
         f"<span style='color:{'#16A34A' if table in configs_saved else '#B45309'};font-weight:700;margin-left:6px;'>"
@@ -2450,9 +2539,9 @@ def _render_registro_form(
         projects = []
 
     tabs = (
-        st.tabs(["Proyecto", "Datos", "Columnas", "Permisos", "Revisión"])
+        st.tabs(["Proyecto", "Datos", "Columnas", "Permisos", "Detalles"])
         if not bulk_mode else
-        st.tabs(["Datos", "Columnas", "Revisión"])
+        st.tabs(["Datos", "Columnas", "Detalles"])
     )
 
     if not bulk_mode:
@@ -2558,6 +2647,16 @@ def _render_registro_form(
         )
 
     with tab_review:
+        if bulk_mode:
+            # Auto-guardar esta tabla localmente sin botón
+            configs = st.session_state.setdefault("adm_bulk_table_configs", {})
+            configs[tbl_sel] = {
+                "catalog_id": cid,
+                "nombre": nombre.strip(),
+                "descripcion": descripcion.strip(),
+                "schema": current_schema,
+            }
+
         _render_registration_review(
             project_name=proj_name,
             catalog_id=cid,
@@ -2569,27 +2668,31 @@ def _render_registro_form(
             schema=current_schema,
             permisos=[] if bulk_mode else _collect_permisos(key_prefix),
             bulk_mode=bulk_mode,
+            publicadores_enabled=(
+                bool(st.session_state.get("bk_role_display", False))
+                if bulk_mode
+                else bool(st.session_state.get(f"{key_prefix}_role_display", False))
+            ),
         )
         for e in errores:
             st.warning(e)
         if not bulk_mode:
             st.caption("El registro guarda la configuración en `gatekeeper_meta.catalogos_config`.")
 
+        if bulk_mode:
+            if st.button(
+                "Continuar →", type="primary", use_container_width=True,
+                key=f"{key_prefix}_continue", disabled=bool(errores)
+            ):
+                _persist_bulk_form_state()
+                st.session_state.adm_reg_subtab_next = "Revisión"
+                st.rerun()
+            return
+
         if st.button(
             submit_label, type="primary", use_container_width=True,
             key=f"{key_prefix}_save", disabled=bool(errores)
         ):
-            if bulk_mode:
-                configs = st.session_state.setdefault("adm_bulk_table_configs", {})
-                configs[tbl_sel] = {
-                    "catalog_id": cid,
-                    "nombre": nombre.strip(),
-                    "descripcion": descripcion.strip(),
-                    "schema": current_schema,
-                }
-                st.success(f"Configuración de **{tbl_sel}** guardada en memoria.")
-                return
-
             if catalog_exists(cid):
                 st.error(f"Ya existe un catálogo con ID `{cid}`.")
                 return
@@ -3260,38 +3363,8 @@ def _inject_admin_css() -> None:
             position: absolute;
             top: 0; left: 0; right: 0;
         }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container {
-            margin-top: -112px !important;
-            height: 112px !important;
-            margin-bottom: 18px !important;
-            position: relative !important;
-            z-index: 5 !important;
-        }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container .stButton {
-            height: 112px !important;
-        }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button {
-            height: 112px !important;
-            background: transparent !important;
-            border: 0 !important;
-            color: transparent !important;
-            box-shadow: none !important;
-        }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button:hover {
-            background: rgba(255,255,255,0.08) !important;
-            border-radius: 12px !important;
-        }
-        section[data-testid="stSidebar"] div.element-container:has(.sidebar-brand) + div.element-container button * {
-            color: transparent !important;
-        }
         section[data-testid="stSidebar"] * { color: #E8ECF8 !important; }
         section[data-testid="stSidebar"] hr { border-color: #2E4090 !important; }
-        section[data-testid="stSidebar"] button {
-            background: rgba(255,255,255,0.10) !important;
-            border: 1px solid rgba(255,255,255,0.20) !important;
-            color: white !important;
-            border-radius: 8px !important;
-        }
 
         div[data-testid="stTabs"] button {
             font-size: 14px;
@@ -3333,11 +3406,169 @@ def _inject_admin_css() -> None:
             box-shadow: 0 4px 12px rgba(28,47,110,0.14) !important;
         }
 
-        /* ── Pill-tab para st.radio(horizontal=True) ──────────── */
-        div[data-testid="stRadio"] {
+        /* ── Sidebar brand ───────────────────────────── */
+        .sidebar-brand { padding: 8px 8px 4px; border-radius: 12px; }
+        .adm-brand-row { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+        .adm-brand-logo-img { flex-shrink:0; }
+        .adm-brand-text { min-width:0; }
+        .adm-brand-subtitle { font-size:12px; color:#DCE4FF; margin-left:52px; }
+
+        /* Botón invisible superpuesto sobre el logo/brand (click para volver al portal) */
+        [data-testid="stSidebar"] div:has(> div > .sidebar-brand) + div,
+        [data-testid="stSidebar"] div:has(.sidebar-brand) + div {
+            margin-top: -88px !important;
+            height: 88px !important;
+            position: relative !important;
+            z-index: 5 !important;
+            overflow: hidden !important;
+            margin-bottom: 0 !important;
+        }
+        [data-testid="stSidebar"] div:has(.sidebar-brand) + div [data-testid="stButton"],
+        [data-testid="stSidebar"] div:has(.sidebar-brand) + div button {
+            width: 100% !important;
+            height: 88px !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        [data-testid="stSidebar"] div:has(.sidebar-brand) + div button:hover {
+            opacity: 1 !important;
+            background: rgba(255,255,255,0.07) !important;
+            border-radius: 12px !important;
+        }
+
+        /* ── Nav visual HTML en sidebar ───────────────────────────── */
+        .adm-nav-visual {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            height: 44px;
+            padding: 0 16px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.22);
+            color: rgba(220,228,255,0.85);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s, border-color 0.2s, color 0.2s, transform 0.18s;
+            box-sizing: border-box;
+        }
+        .adm-nav-label { flex: 1; white-space: nowrap; overflow: hidden; }
+
+        /* Botón invisible superpuesto sobre el visual */
+        [data-testid="stSidebar"] div:has(.adm-nav-visual) + div {
+            margin-top: -44px !important;
+            height: 44px !important;
+            position: relative !important;
+            z-index: 2 !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stSidebar"] div:has(.adm-nav-visual) + div [data-testid="stButton"],
+        [data-testid="stSidebar"] div:has(.adm-nav-visual) + div button {
+            width: 100% !important;
+            height: 44px !important;
+            min-height: 0 !important;
+            opacity: 0 !important;
+            cursor: pointer !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+
+        /* Hover y active en el visual (propagado vía CSS sibling) */
+        [data-testid="stSidebar"] div:has(.adm-nav-visual):has(+ div button:hover) .adm-nav-visual,
+        [data-testid="stSidebar"] div:has(.adm-nav-visual):has(+ div button:focus-visible) .adm-nav-visual {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(255,255,255,0.5);
+            color: #FFFFFF;
+            transform: translateX(4px);
+        }
+
+        /* Estado activo */
+        .adm-nav-visual.adm-nav-active {
+            background: rgba(255,255,255,0.1) !important;
+            border: 1.5px solid rgba(255,255,255,0.4) !important;
+            color: #FFFFFF !important;
+            font-weight: 700 !important;
+            transform: none !important;
+            animation: adm-nav-shine 3s linear infinite;
+        }
+        @keyframes adm-nav-shine {
+            0%   { box-shadow: -3px  0   7px 0px rgba(255,255,255,0.5); }
+            25%  { box-shadow:  0   -3px 7px 0px rgba(255,255,255,0.5); }
+            50%  { box-shadow:  3px  0   7px 0px rgba(255,255,255,0.5); }
+            75%  { box-shadow:  0    3px 7px 0px rgba(255,255,255,0.5); }
+            100% { box-shadow: -3px  0   7px 0px rgba(255,255,255,0.5); }
+        }
+
+        /* Volver al portal: st.button con estilo sidebar */
+        [data-testid="stSidebar"] [data-testid="stButton"] button {
+            background: transparent !important;
+            border: 1px solid rgba(255,255,255,0.18) !important;
+            color: rgba(180,195,230,0.8) !important;
+            font-weight: 500 !important;
+            transition: background 0.2s, border-color 0.2s, color 0.2s !important;
+        }
+        [data-testid="stSidebar"] [data-testid="stButton"] button:hover {
+            background: rgba(255,255,255,0.08) !important;
+            border-color: rgba(255,255,255,0.4) !important;
+            color: #FFFFFF !important;
+        }
+
+        /* ── Sidebar colapsado: solo iconos ── */
+        [data-testid="stSidebar"][aria-expanded="false"] {
+            min-width: 74px !important;
+            width: 74px !important;
+            transform: none !important;
+            margin-left: 0 !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] > div {
+            overflow: hidden !important;
+            width: 74px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-text,
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-subtitle,
+        [data-testid="stSidebar"][aria-expanded="false"] hr,
+        /* Los stButton del nav overlay deben seguir visibles (aunque opacity 0) para ser clickeables */
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-label {
+            display: none !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-visual {
+            justify-content: center !important;
+            padding: 0 !important;
+            gap: 0 !important;
+            transform: none !important;
+            height: 50px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-nav-visual img {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .adm-brand-row {
+            justify-content: center !important;
+            gap: 0 !important;
+            margin-bottom: 0 !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] .sidebar-brand {
+            padding: 10px 4px 4px !important;
+        }
+        /* En colapsado el botón overlay también se ajusta */
+        [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div {
+            height: 50px !important;
+            margin-top: -50px !important;
+        }
+        [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div button {
+            height: 50px !important;
+        }
+        /* ── Pill-tab para st.radio(horizontal=True) en content ── */
+        div[data-testid="stMain"] div[data-testid="stRadio"] {
             margin-bottom: 14px !important;
         }
-        div[data-testid="stRadio"] > div:last-child {
+        div[data-testid="stMain"] div[data-testid="stRadio"] > div:last-child {
             background: #EAEDF7;
             border-radius: 12px;
             padding: 4px 5px;
@@ -3345,14 +3576,14 @@ def _inject_admin_css() -> None:
             gap: 2px;
             align-items: center;
         }
-        div[data-testid="stRadio"] input[type="radio"] {
+        div[data-testid="stMain"] div[data-testid="stRadio"] input[type="radio"] {
             position: absolute;
             opacity: 0;
             pointer-events: none;
             width: 0;
             height: 0;
         }
-        div[data-testid="stRadio"] label {
+        div[data-testid="stMain"] div[data-testid="stRadio"] label {
             display: inline-flex !important;
             align-items: center;
             padding: 7px 18px !important;
@@ -3366,18 +3597,18 @@ def _inject_admin_css() -> None:
                         color 0.2s ease, transform 0.15s ease !important;
             transform: scale(1);
         }
-        div[data-testid="stRadio"] label:hover {
+        div[data-testid="stMain"] div[data-testid="stRadio"] label:hover {
             background: rgba(255,255,255,0.55) !important;
             transform: scale(1.03) !important;
         }
-        div[data-testid="stRadio"] label p,
-        div[data-testid="stRadio"] label div {
+        div[data-testid="stMain"] div[data-testid="stRadio"] label p,
+        div[data-testid="stMain"] div[data-testid="stRadio"] label div {
             font-size: 14px !important;
             font-weight: inherit !important;
             color: inherit !important;
             margin: 0 !important;
         }
-        div[data-testid="stRadio"] label:has(input[type="radio"]:checked) {
+        div[data-testid="stMain"] div[data-testid="stRadio"] label:has(input[type="radio"]:checked) {
             background: #FFFFFF !important;
             color: #1C2F6E !important;
             font-weight: 700 !important;
