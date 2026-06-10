@@ -1079,16 +1079,11 @@ def _tab_registro() -> None:
             except Exception as e:
                 st.error(user_facing_error(e, context="database"))
                 return
-            if len(selected) == 1:
+            active_table = st.session_state.get("adm_active_table")
+            if active_table not in selected:
                 active_table = selected[0]
                 st.session_state.adm_active_table = active_table
-                _render_config_only(db_sel, selected[0], mapped)
-            else:
-                active_table = st.session_state.get("adm_active_table")
-                if active_table not in selected:
-                    active_table = selected[0]
-                    st.session_state.adm_active_table = active_table
-                _render_bulk_panel(db_sel, selected, mapped, active_table)
+            _render_bulk_panel(db_sel, selected, mapped, active_table)
 
         # ── Navegación inferior ──
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
@@ -2525,9 +2520,11 @@ def _render_bulk_registration_review(
         else:
             access_label = "Administradores + todos los publicadores"
     table_list = "".join(
-        f"<li><code>{html_escape(table)}</code>"
-        f"<span style='color:{'#16A34A' if table in configs_saved else '#B45309'};font-weight:700;margin-left:6px;'>"
-        f"{'configurada' if table in configs_saved else 'pendiente'}</span></li>"
+        f"<li style='{'background:#FEFCE8;border-radius:5px;padding:2px 6px;margin-bottom:3px;' if table not in configs_saved else 'padding:2px 6px;margin-bottom:3px;'}'>"
+        f"<code>{html_escape(table)}</code>"
+        f"<span style='color:{'#16A34A' if table in configs_saved else '#92400E'};font-weight:700;margin-left:6px;"
+        f"background:{'#DCFCE7' if table in configs_saved else '#FEF08A'};padding:1px 6px;border-radius:99px;font-size:10px;'>"
+        f"{'configurada' if table in configs_saved else '⚠ pendiente'}</span></li>"
         for table in tables
     )
     st.markdown(
@@ -3893,9 +3890,13 @@ def _inject_admin_css() -> None:
             padding: 3px 7px;
             white-space: nowrap;
         }
+        .adm-table-status.pending {
+            border-color: #FDE047;
+            background: #FEFCE8;
+        }
         .adm-table-status.pending span {
-            background: #F3F4F6;
-            color: #6B7280;
+            background: #FEF08A;
+            color: #713F12;
         }
         .adm-table-status.active {
             border-color: #534AB7;
@@ -3965,6 +3966,14 @@ def _inject_admin_css() -> None:
         .adm-scroll-chip.done span {
             background: #DCFCE7;
             color: #166534;
+        }
+        .adm-scroll-chip.pending {
+            border-color: #FDE047;
+            background: #FEFCE8;
+        }
+        .adm-scroll-chip.pending span {
+            background: #FEF08A;
+            color: #713F12;
         }
         .adm-section-title {
             color: #1C2F6E;
