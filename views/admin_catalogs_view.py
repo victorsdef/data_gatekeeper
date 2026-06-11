@@ -25,7 +25,8 @@ from services.db_admin import (
     describe_table, build_schema_json,
     get_hive_databases, get_hive_tables, describe_hive_table,
     get_all_projects, get_active_catalogs,
-    save_catalog_config, catalog_exists, deactivate_catalog, deactivate_project, ensure_project_exists,
+    save_catalog_config, catalog_exists, deactivate_catalog, activate_catalog,
+    ensure_project_exists,
     get_catalog_permissions, save_permissions, get_catalog_id_by_table,
     update_catalog_config,
     get_catalog_schema,
@@ -1996,6 +1997,50 @@ def _render_schema_rule_actions(
         _render_ingestion_rule_dialog(columns, ingestion_key, estrategia, ingestion_open_key)
 
 
+def _delete_quality_rule(state_key: str, column_name: str, index: int) -> None:
+    rules = dict(st.session_state.get(state_key, {}))
+    col_rules = list(rules.get(column_name, []))
+    if 0 <= index < len(col_rules):
+        rules[column_name] = [rule for i, rule in enumerate(col_rules) if i != index]
+        st.session_state[state_key] = rules
+
+
+def _add_quality_rule(state_key: str, column_name: str, rule_type: str) -> None:
+    new_rule = None
+    if rule_type == "isin":
+        input_key = f"{state_key}_new_isin"
+        raw_value = str(st.session_state.get(input_key, "") or "")
+        values = [value.strip() for value in raw_value.split(",") if value.strip()]
+        if values:
+            new_rule = {"tipo": "isin", "valor": values}
+            st.session_state[input_key] = ""
+    elif rule_type in ("gte", "lte"):
+        raw_value = st.session_state.get(f"{state_key}_new_num", 0.0)
+        new_rule = {"tipo": rule_type, "valor": float(raw_value)}
+    elif rule_type == "min_length":
+        raw_value = st.session_state.get(f"{state_key}_new_minlen", 1)
+        new_rule = {"tipo": "min_length", "valor": int(raw_value)}
+    elif rule_type == "str_length":
+        min_value = int(st.session_state.get(f"{state_key}_new_slmin", 1))
+        max_value = int(st.session_state.get(f"{state_key}_new_slmax", 50))
+        new_rule = {"tipo": "str_length", "min": min_value, "max": max_value}
+    elif rule_type == "regex":
+        input_key = f"{state_key}_new_regex"
+        pattern = str(st.session_state.get(input_key, "") or "").strip()
+        if pattern:
+            new_rule = {"tipo": "regex", "valor": pattern}
+            st.session_state[input_key] = ""
+
+    if new_rule is None:
+        return
+
+    rules = dict(st.session_state.get(state_key, {}))
+    col_rules = list(rules.get(column_name, []))
+    col_rules.append(new_rule)
+    rules[column_name] = col_rules
+    st.session_state[state_key] = rules
+
+
 def _render_rules_editor(columns: list, state_key: str) -> None:
     """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
     if not columns:
@@ -2059,12 +2104,14 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
                 with c1:
                     st.markdown(_rule_chip_html(regla), unsafe_allow_html=True)
                 with c2:
-                    if st.button("×", key=f"{state_key}_del_{sel_col}_{i}",
-                                 help="Eliminar", use_container_width=True):
-                        new_rules = dict(rules)
-                        new_rules[sel_col] = [r for j, r in enumerate(col_rules) if j != i]
-                        st.session_state[state_key] = new_rules
-                        st.rerun()
+                    st.button(
+                        "×",
+                        key=f"{state_key}_del_{sel_col}_{i}",
+                        help="Eliminar",
+                        use_container_width=True,
+                        on_click=_delete_quality_rule,
+                        args=(state_key, sel_col, i),
+                    )
     else:
         st.markdown(
             '<div style="color:#9CA3AF;font-size:12px;font-style:italic;'
@@ -2092,57 +2139,74 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         label_visibility="collapsed",
     )
 
-    nueva_regla = None
     if tipo_sel == "isin":
-        val_str = st.text_input(
+        st.text_input(
             "Valores permitidos (separados por coma)",
             key=f"{state_key}_new_isin",
             placeholder="Ej: C, D, N",
         )
-        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
-            valores = [v.strip() for v in val_str.split(",") if v.strip()]
-            if valores:
-                nueva_regla = {"tipo": "isin", "valor": valores}
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, sel_col, "isin"),
+        )
 
     elif tipo_sel in ("gte", "lte"):
         label = "Valor mínimo (≥)" if tipo_sel == "gte" else "Valor máximo (≤)"
-        num_val = st.number_input(label, key=f"{state_key}_new_num", value=0.0)
-        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
-            nueva_regla = {"tipo": tipo_sel, "valor": float(num_val)}
+        st.number_input(label, key=f"{state_key}_new_num", value=0.0)
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, sel_col, tipo_sel),
+        )
 
     elif tipo_sel == "min_length":
-        min_val = st.number_input(
+        st.number_input(
             "Caracteres mínimos",
             key=f"{state_key}_new_minlen",
             value=1, min_value=1, step=1,
         )
-        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
-            nueva_regla = {"tipo": "min_length", "valor": int(min_val)}
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, sel_col, "min_length"),
+        )
 
     elif tipo_sel == "str_length":
-        sl_min = st.number_input("Longitud mínima", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
-        sl_max = st.number_input("Longitud máxima", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
-        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
-            nueva_regla = {"tipo": "str_length", "min": int(sl_min), "max": int(sl_max)}
+        st.number_input("Longitud mínima", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
+        st.number_input("Longitud máxima", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, sel_col, "str_length"),
+        )
 
     elif tipo_sel == "regex":
-        pattern = st.text_input(
+        st.text_input(
             "Patrón regex",
             key=f"{state_key}_new_regex",
             placeholder=r"^[A-Z0-9_-]+$",
         )
-        if st.button("+ Agregar", key=f"{state_key}_add_btn", type="primary", use_container_width=True):
-            pattern = pattern.strip()
-            if pattern:
-                nueva_regla = {"tipo": "regex", "valor": pattern}
-
-    if nueva_regla is not None:
-        new_rules = dict(rules)
-        col_list = list(new_rules.get(sel_col, []))
-        col_list.append(nueva_regla)
-        new_rules[sel_col] = col_list
-        st.session_state[state_key] = new_rules
-        st.rerun()
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, sel_col, "regex"),
+        )
 
 
 def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool = True) -> None:
@@ -2178,6 +2242,10 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
 
     df = st.session_state[state_key]
     display_df = df.copy()
+    rules_por_columna = st.session_state.get(rules_key, {})
+    display_df["reglas"] = display_df["nombre"].apply(
+        lambda name: len(rules_por_columna.get(str(name).strip(), []))
+    )
     height = 38 + len(display_df) * 35 + 2
 
     # Stats bar
@@ -2185,6 +2253,7 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
         from collections import Counter
         tipo_counts   = Counter(df["tipo"].tolist())
         nullable_n    = int(df["nullable"].sum())
+        total_rules   = sum(len(v) for v in rules_por_columna.values())
         tipo_badges   = "".join(
             f'<span style="background:#EDE9FE;color:#534AB7;font-size:10px;font-weight:600;'
             f'padding:1px 7px;border-radius:20px;margin-right:4px;">{t} ×{n}</span>'
@@ -2200,6 +2269,8 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
         f'padding:1px 7px;border-radius:20px;">{nullable_n} aceptan vacíos</span>'
             f'<span style="background:#FEE2E2;color:#991B1B;font-size:10px;font-weight:600;'
             f'padding:1px 7px;border-radius:20px;">{len(df)-nullable_n} requerido</span>'
+            f'<span style="background:#DBEAFE;color:#1E3A8A;font-size:10px;font-weight:600;'
+            f'padding:1px 7px;border-radius:20px;">{total_rules} regla(s)</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2211,8 +2282,14 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
             "nombre":   st.column_config.TextColumn("Columna y Regla", width="medium"),
             "tipo":     st.column_config.SelectboxColumn("Tipo", options=_TIPOS, required=True, width="small"),
             "nullable": st.column_config.CheckboxColumn("Acepta vacíos", width="small"),
+            "reglas":   st.column_config.NumberColumn(
+                "Reglas",
+                help="Cantidad de reglas de calidad configuradas para esta columna.",
+                width="small",
+                format="%d",
+            ),
         },
-        disabled=["nombre"],
+        disabled=["nombre", "reglas"],
         use_container_width=True,
         num_rows="fixed",
         hide_index=True,
@@ -2220,6 +2297,21 @@ def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool
         key=f"de_{state_key}",
     )
     st.session_state[result_key] = edited
+
+    rule_summary = [
+        (str(name).strip(), len(rules))
+        for name, rules in rules_por_columna.items()
+        if str(name).strip() and rules
+    ]
+    if rule_summary:
+        chips = "".join(
+            f'<span class="adm-rule-summary-chip"><code>{html_escape(name)}</code> {count} regla(s)</span>'
+            for name, count in sorted(rule_summary)
+        )
+        st.markdown(
+            f'<div class="adm-rule-summary"><span>Columnas con reglas:</span>{chips}</div>',
+            unsafe_allow_html=True,
+        )
 
     rule_columns = [
         {
@@ -3062,6 +3154,26 @@ def _render_deactivate_catalog_dialog(cat: dict) -> None:
             st.rerun()
 
 
+@st.experimental_dialog("Activar catálogo", width="small")
+def _render_activate_catalog_dialog(cat: dict) -> None:
+    cid = cat["catalog_id"]
+    st.info(f"¿Activar **{cat['nombre']}**? Los usuarios con permisos volverán a verlo en el portal.")
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        if st.button("Activar", type="primary", key=f"yes_act_{cid}", use_container_width=True):
+            try:
+                activate_catalog(cid)
+            except Exception as e:
+                st.error(user_facing_error(e, context="database"))
+                return
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+    with ac2:
+        if st.button("Cancelar", key=f"no_act_{cid}", use_container_width=True):
+            st.session_state.pop("adm_catalog_dialog", None)
+            st.rerun()
+
+
 def _render_catalog_backup_dialog() -> None:
     st.caption("Exporta la configuración actual o restaura un backup JSON generado por el sistema.")
     if st.button("Preparar backup JSON", use_container_width=True, key="adm_export_bundle_modal"):
@@ -3109,23 +3221,8 @@ def _render_catalog_backup_dialog() -> None:
         st.rerun()
 
 
-def _render_deactivate_project_dialog(project_id: str, project_name: str, catalogs_count: int) -> None:
-    st.warning(
-        f"Vas a desactivar **{project_name}** y sus **{catalogs_count} catálogo(s)**. "
-        "Los publicadores perderán acceso inmediatamente."
-    )
-    st.caption("No se elimina la trazabilidad histórica ni los registros de auditoría.")
-    if st.button("Eliminar proyecto", type="primary", key=f"yes_deact_project_{project_id}", use_container_width=True):
-        try:
-            deactivate_project(project_id)
-        except Exception as e:
-            st.error(user_facing_error(e, context="database"))
-            return
-        st.rerun()
-
-
 # ------------------------------------------------------------------
-# Tab 2: Catálogos activos
+# Tab 2: Catálogos registrados
 # ------------------------------------------------------------------
 def _tab_activos() -> None:
     for _stale_key in ("adm_backup_dialog_open", "adm_project_dialog"):
@@ -3133,21 +3230,30 @@ def _tab_activos() -> None:
 
     head_left, head_right = st.columns([4, 1])
     with head_left:
-        st.markdown("##### Catálogos activos")
-        st.caption("Administra proyectos, catálogos, permisos y estado de publicación.")
+        st.markdown("##### Catálogos registrados")
+        st.caption("Administra proyectos, catálogos, permisos y estado de publicación. Los inactivos no aparecen para publicadores.")
     with head_right:
         with st.popover("Respaldo / Restaurar", use_container_width=True):
             _render_catalog_backup_dialog()
 
-    search = st.text_input(
-        "Buscar", placeholder="Nombre, base de datos o tabla...",
-        key="adm_ac_search", label_visibility="collapsed"
-    )
+    f_search, f_estado = st.columns([3, 1])
+    with f_search:
+        search = st.text_input(
+            "Buscar", placeholder="Nombre, base de datos o tabla...",
+            key="adm_ac_search", label_visibility="collapsed"
+        )
+    with f_estado:
+        estado_filter = st.selectbox(
+            "Estado",
+            ["Activos", "Todos", "Inactivos"],
+            key="adm_ac_estado_filter",
+            label_visibility="collapsed",
+        )
 
     ph = st.empty()
     ph.markdown(_skeleton_html(4, card=True), unsafe_allow_html=True)
     try:
-        catalogs = get_active_catalogs()
+        catalogs = get_active_catalogs(include_inactive=True)
         ph.empty()
     except Exception as e:
         ph.empty()
@@ -3161,11 +3267,18 @@ def _tab_activos() -> None:
                     q in c["base_datos"].lower() or
                     q in c["tabla_destino"].lower()]
 
+    if estado_filter == "Activos":
+        catalogs = [c for c in catalogs if bool(c.get("activo")) and bool(c.get("proyecto_activo", True))]
+    elif estado_filter == "Inactivos":
+        catalogs = [c for c in catalogs if not bool(c.get("activo")) or not bool(c.get("proyecto_activo", True))]
+
     if not catalogs:
-        st.info("No hay catálogos activos." if not search else f"Sin resultados para '{search}'.")
+        st.info("No hay catálogos para el filtro seleccionado." if not search else f"Sin resultados para '{search}'.")
         return
 
     proyectos_count = len({c.get("project_id") for c in catalogs})
+    active_count = sum(1 for c in catalogs if bool(c.get("activo")) and bool(c.get("proyecto_activo", True)))
+    inactive_count = len(catalogs) - active_count
     restricted_count = 0
     for _cat in catalogs:
         try:
@@ -3173,10 +3286,11 @@ def _tab_activos() -> None:
                 restricted_count += 1
         except Exception:
             pass
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Catálogos activos", len(catalogs))
-    m2.metric("Proyectos", proyectos_count)
-    m3.metric("Con permisos específicos", restricted_count)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Activos", active_count)
+    m2.metric("Inactivos", inactive_count)
+    m3.metric("Proyectos", proyectos_count)
+    m4.metric("Con permisos específicos", restricted_count)
 
     # Group by project preserving order
     from collections import defaultdict
@@ -3186,13 +3300,10 @@ def _tab_activos() -> None:
     usuarios_lookup = _load_usuarios_lookup()
 
     for (project_id, project_name), group in by_project.items():
-        with st.expander(f"📁 {project_name}  —  {len(group)} catálogo(s)", expanded=False):
-            pc1, pc2 = st.columns([5, 1])
-            with pc1:
-                st.caption(f"ID proyecto: `{project_id}`")
-            with pc2:
-                with st.popover("Eliminar proyecto", use_container_width=True):
-                    _render_deactivate_project_dialog(project_id, project_name, len(group))
+        project_is_active = any(bool(cat.get("proyecto_activo", True)) for cat in group)
+        project_status = "Activo" if project_is_active else "Inactivo"
+        with st.expander(f"📁 {project_name}  —  {len(group)} catálogo(s) · {project_status}", expanded=False):
+            st.caption(f"ID proyecto: `{project_id}` · Estado: **{project_status}**")
 
             for cat in group:
                 cid = cat["catalog_id"]
@@ -3226,10 +3337,18 @@ def _tab_activos() -> None:
                 col_card, col_btns = st.columns([5, 2])
 
                 with col_card:
+                    cat_active = bool(cat.get("activo")) and bool(cat.get("proyecto_activo", True))
+                    status_bg = "#DCFCE7" if cat_active else "#F3F4F6"
+                    status_fg = "#166534" if cat_active else "#6B7280"
+                    status_text = "ACTIVO" if cat_active else "INACTIVO"
+                    border_color = "#534AB7" if cat_active else "#9CA3AF"
                     st.markdown(
                         '<div style="padding:12px 16px;background:var(--secondary-background-color);'
-                        'border-radius:10px;margin-bottom:4px;border-left:3px solid #534AB7;">'
-                        f'<div style="font-weight:600;font-size:14px;">{cat["nombre"]}</div>'
+                        f'border-radius:10px;margin-bottom:4px;border-left:3px solid {border_color};">'
+                        f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+                        f'<span style="font-weight:600;font-size:14px;">{cat["nombre"]}</span>'
+                        f'<span style="background:{status_bg};color:{status_fg};padding:1px 8px;border-radius:20px;font-size:10px;font-weight:700;">{status_text}</span>'
+                        '</div>'
                         '<div style="font-size:12px;color:#6B7280;margin-top:4px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;">'
                         '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6B7280" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/></svg>'
                         f'<code>{cat["base_datos"]}.{cat["tabla_destino"]}</code>'
@@ -3252,9 +3371,14 @@ def _tab_activos() -> None:
                     if st.button("Permisos", key=f"btn_perm_{cid}", use_container_width=True):
                         st.session_state["adm_catalog_dialog"] = {"action": "permissions", "catalog_id": cid}
                         st.rerun()
-                    if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
-                        st.session_state["adm_catalog_dialog"] = {"action": "deactivate", "catalog_id": cid}
-                        st.rerun()
+                    if bool(cat.get("activo")) and bool(cat.get("proyecto_activo", True)):
+                        if st.button("Desactivar", key=f"btn_deact_{cid}", use_container_width=True):
+                            st.session_state["adm_catalog_dialog"] = {"action": "deactivate", "catalog_id": cid}
+                            st.rerun()
+                    else:
+                        if st.button("Activar", key=f"btn_act_{cid}", use_container_width=True):
+                            st.session_state["adm_catalog_dialog"] = {"action": "activate", "catalog_id": cid}
+                            st.rerun()
 
                 active_dialog = st.session_state.get("adm_catalog_dialog") or {}
                 if active_dialog.get("catalog_id") == cid:
@@ -3265,6 +3389,8 @@ def _tab_activos() -> None:
                         _render_catalog_permissions_dialog(cat)
                     elif action == "deactivate":
                         _render_deactivate_catalog_dialog(cat)
+                    elif action == "activate":
+                        _render_activate_catalog_dialog(cat)
 
 
 
@@ -4119,6 +4245,31 @@ def _inject_admin_css() -> None:
         }
         div[data-testid="stCheckbox"] label {
             font-size: 13px !important;
+        }
+        .adm-rule-summary {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin: 10px 0 4px;
+            color: #6B7280;
+            font-size: 12px;
+        }
+        .adm-rule-summary-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid #BFD0FF;
+            background: #F4F7FF;
+            color: #1C2F6E;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .adm-rule-summary-chip code {
+            color: #1C2F6E;
+            font-size: 11px;
         }
     </style>
     """, unsafe_allow_html=True)

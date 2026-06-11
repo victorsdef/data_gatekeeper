@@ -147,9 +147,10 @@ def get_all_projects() -> List[Dict]:
             return [{"id": r[0], "nombre": r[1]} for r in cur.fetchall()]
 
 
-def get_active_catalogs() -> List[Dict]:
+def get_active_catalogs(include_inactive: bool = False) -> List[Dict]:
     with _connect() as conn:
         with conn.cursor() as cur:
+            where_clause = "" if include_inactive else "WHERE c.activo = 1"
             cur.execute(f"""
                 SELECT
                     c.catalog_id,
@@ -160,10 +161,12 @@ def get_active_catalogs() -> List[Dict]:
                     c.tabla_destino,
                     c.estrategia,
                     c.destino,
+                    c.activo,
+                    COALESCE(p.activo, 1) AS proyecto_activo,
                     COALESCE(p.nombre, c.project_id) AS proyecto
                 FROM {TBL_CATALOGOS} c
                 LEFT JOIN {TBL_PROYECTOS} p ON p.project_id = c.project_id
-                WHERE c.activo = 1
+                {where_clause}
                 ORDER BY proyecto, c.nombre
             """)
             cols = [d[0] for d in cur.description]
@@ -282,6 +285,16 @@ def deactivate_catalog(catalog_id: str) -> None:
         conn.commit()
 
 
+def activate_catalog(catalog_id: str) -> None:
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {TBL_CATALOGOS} SET activo = 1 WHERE catalog_id = %s",
+                (catalog_id,),
+            )
+        conn.commit()
+
+
 def deactivate_project(project_id: str) -> None:
     """Desactiva un proyecto y todos sus catalogos asociados."""
     with _connect() as conn:
@@ -292,6 +305,21 @@ def deactivate_project(project_id: str) -> None:
             )
             cur.execute(
                 f"UPDATE {TBL_CATALOGOS} SET activo = 0 WHERE project_id = %s",
+                (project_id,),
+            )
+        conn.commit()
+
+
+def activate_project(project_id: str) -> None:
+    """Activa un proyecto y todos sus catalogos asociados."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {TBL_PROYECTOS} SET activo = 1 WHERE project_id = %s",
+                (project_id,),
+            )
+            cur.execute(
+                f"UPDATE {TBL_CATALOGOS} SET activo = 1 WHERE project_id = %s",
                 (project_id,),
             )
         conn.commit()
