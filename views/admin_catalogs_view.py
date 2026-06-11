@@ -34,6 +34,7 @@ from services.db_admin import (
 )
 from services.db_writer import get_audit_log
 from utils.error_messages import user_facing_error
+from utils.streamlit_compat import dialog
 from services.user_service import (
     get_all_usuarios, update_user_rol, toggle_user_activo,
     export_users_bundle, import_users_bundle, create_or_promote_user,
@@ -781,7 +782,7 @@ def _tab_resumen() -> None:
         st.dataframe(by_project, use_container_width=True, hide_index=True)
 
 
-@st.experimental_dialog("Confirmar registro de tablas", width="small")
+@dialog("Confirmar registro de tablas", width="small")
 def _confirm_bulk_register_dialog() -> None:
     params = st.session_state.get("adm_bk_register_params", {})
     tables = params.get("tables", [])
@@ -1457,12 +1458,12 @@ def _render_single_panel(db: str, table: str, mapped: Set[tuple]) -> None:
         _render_registro_form(db, table, schema, key_prefix="ex")
 
 
-@st.experimental_dialog("Regla de calidad", width="large")
+@dialog("Regla de calidad", width="large")
 def _dialog_reglas_calidad(columns: list, state_key: str) -> None:
     _render_rules_editor(columns, state_key)
 
 
-@st.experimental_dialog("Reglas de ingesta", width="large")
+@dialog("Reglas de ingesta", width="large")
 def _dialog_reglas_ingesta(columns: list, state_key: str, estrategia: str) -> None:
     _render_ingestion_rule_form(columns, state_key, estrategia)
 
@@ -1930,7 +1931,7 @@ def _render_ingestion_rule_form(columns: list, state_key: str, estrategia: str) 
     )
 
 
-@st.experimental_dialog("Reglas de calidad", width="large")
+@dialog("Reglas de calidad", width="large")
 def _render_quality_rules_dialog(columns: list, state_key: str, open_key: str) -> None:
     st.caption(
         "Configura reglas por columna. Estas reglas se validan en memoria antes de cargar datos."
@@ -1941,7 +1942,7 @@ def _render_quality_rules_dialog(columns: list, state_key: str, open_key: str) -
         st.rerun()
 
 
-@st.experimental_dialog("Accion de ingesta", width="large")
+@dialog("Accion de ingesta", width="large")
 def _render_ingestion_rule_dialog(columns: list, state_key: str, estrategia: str, open_key: str) -> None:
     st.caption(
         "Define que debe pasar si ya existen datos para el campo de control seleccionado."
@@ -2922,7 +2923,7 @@ def _render_permission_manager_inline(catalog_id: str, key_prefix: str) -> None:
             st.error(user_facing_error(e, context="database"))
 
 
-@st.experimental_dialog("Editar catálogo", width="large")
+@dialog("Editar catálogo", width="large")
 def _render_edit_catalog_dialog(cat: dict) -> None:
     cid = cat["catalog_id"]
     ek = f"ed_{cid}"
@@ -3100,7 +3101,7 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
             st.rerun()
 
 
-@st.experimental_dialog("Permisos del catálogo", width="large")
+@dialog("Permisos del catálogo", width="large")
 def _render_catalog_permissions_dialog(cat: dict) -> None:
     cid = cat["catalog_id"]
     st.markdown(
@@ -3134,7 +3135,7 @@ def _render_catalog_permissions_dialog(cat: dict) -> None:
             st.rerun()
 
 
-@st.experimental_dialog("Desactivar catálogo", width="small")
+@dialog("Desactivar catálogo", width="small")
 def _render_deactivate_catalog_dialog(cat: dict) -> None:
     cid = cat["catalog_id"]
     st.warning(f"¿Desactivar **{cat['nombre']}**? Los publicadores perderán acceso inmediatamente.")
@@ -3154,7 +3155,7 @@ def _render_deactivate_catalog_dialog(cat: dict) -> None:
             st.rerun()
 
 
-@st.experimental_dialog("Activar catálogo", width="small")
+@dialog("Activar catálogo", width="small")
 def _render_activate_catalog_dialog(cat: dict) -> None:
     cid = cat["catalog_id"]
     st.info(f"¿Activar **{cat['nombre']}**? Los usuarios con permisos volverán a verlo en el portal.")

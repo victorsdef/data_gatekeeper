@@ -18,6 +18,7 @@ from storage.file_handler import read_uploaded_file, get_file_stats, detect_file
 from reports.report_builder import build_error_report
 from services.db_writer import execute_load, save_validation_failure_file
 from utils.error_messages import user_facing_error
+from utils.streamlit_compat import dialog
 from config.catalogs import get_proyectos_list, get_catalogs_by_project
 from config import settings
 
@@ -132,6 +133,95 @@ def _preview_table_loading_html(rows: int = 8, cols: int = 4) -> str:
         Preparando previsualizacion de la tabla...
       </div>
       <table class="preview-skel-table">
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>{''.join(body_rows)}</tbody>
+      </table>
+    </div>
+    """
+
+
+def _preview_dataframe_html(df: pd.DataFrame, max_rows: int = 20) -> str:
+    preview = df.head(max_rows).copy()
+    header_cells = "".join(
+        f"<th title='{html.escape(str(col))}'>{html.escape(str(col))}</th>"
+        for col in preview.columns
+    )
+
+    body_rows = []
+    for _, row in preview.iterrows():
+        cells = []
+        for value in row.tolist():
+            if pd.isna(value):
+                text = ""
+                css_class = " empty"
+            else:
+                text = str(value)
+                css_class = ""
+            safe_text = html.escape(text)
+            cells.append(f"<td class='preview-cell{css_class}' title='{safe_text}'>{safe_text}</td>")
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    if not body_rows:
+        body_rows.append(
+            f"<tr><td colspan='{max(1, len(preview.columns))}' class='preview-empty'>Sin filas para mostrar.</td></tr>"
+        )
+
+    return f"""
+    <style>
+      .preview-html-wrap {{
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid #D1D9F0;
+        border-radius: 10px;
+        background: #FFFFFF;
+      }}
+      .preview-html-table {{
+        width: 100%;
+        min-width: 620px;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 12px;
+        color: #0B1F5E;
+      }}
+      .preview-html-table thead th {{
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #EFF4FF;
+        color: #0B1F5E;
+        font-weight: 800;
+        text-align: left;
+        padding: 9px 10px;
+        border-bottom: 1px solid #C9D3EE;
+        border-right: 1px solid #DDE4F5;
+        white-space: nowrap;
+      }}
+      .preview-html-table tbody td {{
+        padding: 8px 10px;
+        border-bottom: 1px solid #EEF2FB;
+        border-right: 1px solid #EEF2FB;
+        max-width: 220px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }}
+      .preview-html-table tbody tr:nth-child(even) td {{
+        background: #FAFBFF;
+      }}
+      .preview-html-table tbody tr:hover td {{
+        background: #FFF7E5;
+      }}
+      .preview-html-table .preview-cell.empty {{
+        background-image: linear-gradient(135deg, rgba(245,168,0,.07), rgba(245,168,0,.02));
+      }}
+      .preview-html-table .preview-empty {{
+        color: #6B7280;
+        text-align: center;
+        padding: 18px;
+      }}
+    </style>
+    <div class="preview-html-wrap">
+      <table class="preview-html-table">
         <thead><tr>{header_cells}</tr></thead>
         <tbody>{''.join(body_rows)}</tbody>
       </table>
@@ -257,7 +347,7 @@ def _schema_table_html(cols_schema: list) -> str:
         reglas_html = _rules_chips_html(col.get("reglas") or [])
         rows_html.append(
             "<tr>"
-            f"<td><code>{nombre}</code></td>"
+            f"<td class='schema-col-name'><code>{nombre}</code></td>"
             f"<td>{tipo}</td>"
             f"<td>{acepta_vacios}</td>"
             f"<td>{reglas_html}</td>"
@@ -294,6 +384,28 @@ def _schema_table_html(cols_schema: list) -> str:
         border-bottom: 1px solid #E5E9F5;
         color: #1C2F6E;
         vertical-align: top;
+      }}
+      .schema-table td.schema-col-name {{
+        width: 40%;
+      }}
+      .schema-table td.schema-col-name code {{
+        display: inline-block;
+        max-width: 100%;
+        color: #0B1F5E;
+        background: #EEF4FF;
+        border: 1px solid #C7D2FE;
+        border-radius: 6px;
+        padding: 3px 7px;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.35;
+        letter-spacing: .01em;
+        white-space: normal;
+        word-break: break-word;
+      }}
+      .schema-table tbody tr:hover td.schema-col-name code {{
+        background: #E0E7FF;
+        border-color: #93A4E8;
       }}
       .schema-table tr:last-child td {{
         border-bottom: 0;
@@ -334,10 +446,95 @@ def _schema_table_html(cols_schema: list) -> str:
     """
 
 
+def _sidebar_expected_columns_html(cols_schema: list) -> str:
+    if not cols_schema:
+        return (
+            '<div class="sidebar-schema-empty">'
+            'Sin esquema configurado.'
+            '</div>'
+        )
+
+    rows = []
+    for col in cols_schema:
+        name = html.escape(str(col.get("nombre", "")))
+        tipo = html.escape(str(col.get("tipo", "")))
+        nullable = bool(col.get("nullable"))
+        nullable_label = "Opcional" if nullable else "Requerido"
+        nullable_class = "optional" if nullable else "required"
+        rules_count = len(col.get("reglas") or [])
+        rules_chip = (
+            f'<span class="sidebar-schema-chip rules">{rules_count} regla(s)</span>'
+            if rules_count
+            else '<span class="sidebar-schema-chip muted">Sin reglas</span>'
+        )
+        rows.append(
+            '<div class="sidebar-schema-row">'
+            f'<div class="sidebar-schema-name" title="{name}">{name}</div>'
+            '<div class="sidebar-schema-meta">'
+            f'<span class="sidebar-schema-chip type">{tipo}</span>'
+            f'<span class="sidebar-schema-chip {nullable_class}">{nullable_label}</span>'
+            f'{rules_chip}'
+            '</div>'
+            '</div>'
+        )
+
+    return (
+        '<div class="sidebar-schema-summary">'
+        f'<span>{len(cols_schema)} columna(s) esperadas</span>'
+        '<span>estructura del archivo</span>'
+        '</div>'
+        '<div class="sidebar-schema-list">'
+        + ''.join(rows)
+        + '</div>'
+    )
+
+
+def _sidebar_catalog_card_html(selected_cat: dict, estrategia: str, destino: str, cols_count: int) -> str:
+    nombre = html.escape(str(selected_cat.get("nombre", "")))
+    base_datos = html.escape(str(selected_cat.get("base_datos", "")))
+    tabla = html.escape(str(selected_cat.get("tabla_destino", "")))
+    estrategia_label = {
+        "append": "Agregar datos",
+        "overwrite": "Reemplazar tabla",
+        "reproceso": "Reproceso",
+    }.get(str(estrategia).lower(), str(estrategia).upper())
+    destino_label = str(destino).upper()
+
+    return f"""
+    <div class="mn-catalog-card">
+      <div class="mn-catalog-card-head">
+        <span class="mn-catalog-eyebrow">Seleccionado</span>
+        <span class="mn-catalog-count">{cols_count} col.</span>
+      </div>
+      <div class="mn-catalog-title" title="{nombre}">{nombre}</div>
+      <div class="mn-catalog-target">
+        <span class="mn-catalog-target-label">Destino fisico</span>
+        <code title="{base_datos}.{tabla}">
+          <span>{base_datos}</span><b>.</b><span>{tabla}</span>
+        </code>
+      </div>
+      <div class="mn-catalog-badges">
+        <span class="mn-catalog-badge strategy">{html.escape(estrategia_label)}</span>
+        <span class="mn-catalog-badge destination">{html.escape(destino_label)}</span>
+      </div>
+    </div>
+    """
+
+
+def _sidebar_details_html(title: str, body_html: str, open_by_default: bool = False) -> str:
+    open_attr = " open" if open_by_default else ""
+    return (
+        f'<details class="sidebar-native-details"{open_attr}>'
+        f'<summary>{html.escape(title)}</summary>'
+        f'<div class="sidebar-native-details-body">{body_html}</div>'
+        '</details>'
+    )
+
+
 # ------------------------------------------------------------------
 # Modal: historial de cargas
 # ------------------------------------------------------------------
-@st.experimental_dialog("Historial de cargas", width="large")
+@dialog("Historial de cargas", width="large")
 def _render_history_dialog() -> None:
     from views.history_view import render_history_content
     user     = st.session_state.user_info or {}
@@ -349,7 +546,7 @@ def _render_history_dialog() -> None:
 # ------------------------------------------------------------------
 # Modal: selector de catálogo
 # ------------------------------------------------------------------
-@st.experimental_dialog("Seleccionar catálogo", width="large")
+@dialog("Seleccionar catálogo", width="large")
 def _render_catalog_selector_dialog() -> None:
     user = st.session_state.get("user_info") or {}
 
@@ -454,9 +651,7 @@ def _render_catalog_selector_dialog() -> None:
     if st.button("Confirmar selección", type="primary", use_container_width=True, key="btn_dialog_confirmar"):
         prev_id = (st.session_state.get("selected_catalog") or {}).get("catalog_id")
         if prev_id != cat_sel_id:
-            for k in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name",
-                      "uploaded_name", "validation_result", "carga_ejecutada", "load_result"]:
-                st.session_state.pop(k, None)
+            _reset_upload_flow(remount_uploader=True)
             st.session_state.current_step = "upload"
         st.session_state.selected_catalog = {
             "catalog_id":    cat_sel_id,
@@ -481,6 +676,40 @@ def render_main_app() -> None:
     _render_main_content()
 
 
+_UPLOAD_STATE_KEYS = [
+    "uploaded_df",
+    "uploaded_bytes",
+    "uploaded_audit_bytes",
+    "uploaded_audit_name",
+    "uploaded_name",
+    "uploaded_preview_items",
+    "uploaded_row_origins",
+    "uploaded_validation_sources",
+    "uploaded_file_signature",
+    "validation_result",
+    "validation_failure_zip_path",
+    "validation_error_group",
+    "validation_dialog_open",
+    "confirm_load_requested",
+    "carga_ejecutada",
+    "load_result",
+    "preview_item_idx",
+    "preview_render_failed",
+]
+
+
+def _reset_upload_flow(remount_uploader: bool = False) -> None:
+    """Limpia una carga anterior para evitar estados cruzados entre archivos."""
+    for key in _UPLOAD_STATE_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.validation_result = None
+    st.session_state.validation_dialog_open = False
+    st.session_state.confirm_load_requested = False
+    st.session_state.preview_render_failed = False
+    if remount_uploader:
+        st.session_state.upload_widget_nonce = st.session_state.get("upload_widget_nonce", 0) + 1
+
+
 def _go_to_post_login_home() -> None:
     st.session_state.current_view = "upload"
     st.session_state.current_step = "upload"
@@ -488,23 +717,9 @@ def _go_to_post_login_home() -> None:
         "selected_project_id",
         "selected_project_name",
         "selected_catalog",
-        "uploaded_df",
-        "uploaded_bytes",
-        "uploaded_audit_bytes",
-        "uploaded_audit_name",
-        "uploaded_name",
-        "uploaded_preview_items",
-        "uploaded_row_origins",
-        "uploaded_validation_sources",
-        "validation_result",
-        "validation_failure_zip_path",
-        "carga_ejecutada",
-        "load_result",
     ]:
         st.session_state.pop(key, None)
-    st.session_state.validation_result = None
-    st.session_state.validation_dialog_open = False
-    st.session_state.confirm_load_requested = False
+    _reset_upload_flow(remount_uploader=True)
     st.rerun()
 
 
@@ -570,52 +785,27 @@ def _render_sidebar() -> None:
             destino    = selected_cat["destino"]
             schema     = selected_cat.get("schema", {})
 
-            st.markdown(f"""
-            <div class="mn-catalog-info" style="margin-top:4px; padding:10px 12px;
-                        background:rgba(255,255,255,0.07);
-                        border:1px solid rgba(255,255,255,0.10);
-                        border-radius:8px; font-size:12px; color:#A8B4D8;">
-                <div style="color:#A8B4D8; font-size:10px; text-transform:uppercase;
-                            letter-spacing:0.5px; margin-bottom:6px;">Catálogo activo</div>
-                <div style="color:white; font-weight:600; font-size:13px; margin-bottom:4px;">
-                    {selected_cat['nombre']}
-                </div>
-                <div style="margin-bottom:6px;">
-                    <code style="color:#F5A800; background:rgba(245,168,0,0.12);
-                        padding:2px 6px; border-radius:4px; font-size:11px;">
-                        {selected_cat['base_datos']}.{selected_cat['tabla_destino']}
-                    </code>
-                </div>
-                <div>
-                    <span style="background:rgba(245,168,0,0.18); color:#F5A800;
-                        padding:1px 8px; border-radius:20px; font-size:11px;
-                        border:1px solid rgba(245,168,0,0.3);
-                        margin-right:6px;">{estrategia.upper()}</span>
-                    <span style="background:rgba(110,231,183,0.15); color:#6EE7B7;
-                        padding:1px 8px; border-radius:20px; font-size:11px;
-                        border:1px solid rgba(110,231,183,0.3);">{destino.upper()}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                _sidebar_details_html(
+                    "Catálogo activo",
+                    _sidebar_catalog_card_html(
+                        selected_cat,
+                        estrategia,
+                        destino,
+                        len(schema.get("columnas", []) or []),
+                    ),
+                ),
+                unsafe_allow_html=True,
+            )
 
-            with st.expander("Ver columnas esperadas", expanded=False):
-                cols = schema.get("columnas", [])
-                if cols:
-                    for col in cols:
-                        acepta_vacios = "Sí" if col.get("nullable") else "No"
-                        acepta_color = "#6EE7B7" if col.get("nullable") else "#FCA5A5"
-                        st.markdown(
-                            f"<div style='font-size:12px; padding:4px 6px; display:flex;"
-                            f"justify-content:space-between; align-items:center;"
-                            f"border-bottom:1px solid rgba(255,255,255,0.06);'>"
-                            f"<span style='color:#F5A800; font-family:monospace; font-size:11px;'>{col['nombre']}</span>"
-                            f"<span style='color:#A8B4D8; font-size:10px; text-align:right;'>"
-                            f"{col['tipo']} · Acepta vacíos: "
-                            f"<b style='color:{acepta_color};'>{acepta_vacios}</b></span></div>",
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.caption("Sin esquema configurado.")
+            cols = schema.get("columnas", [])
+            st.markdown(
+                _sidebar_details_html(
+                    "Ver columnas esperadas",
+                    _sidebar_expected_columns_html(cols),
+                ),
+                unsafe_allow_html=True,
+            )
 
             _cat_icon_b64 = _nav_icon_b64("registro.png")
             _cat_icon_html = (
@@ -1019,7 +1209,7 @@ def _execute_validation(df: pd.DataFrame, catalog: dict, schema_config: dict) ->
     return result
 
 
-@st.experimental_dialog("Resultado de validación", width="large")
+@dialog("Resultado de validación", width="large")
 def _render_validation_result_dialog(result: ValidationResult, df: pd.DataFrame, catalog: dict) -> None:
     _render_validation_results(result, df, catalog, in_dialog=True)
 
@@ -1030,20 +1220,27 @@ def _render_upload_step(catalog: dict) -> None:
     with col1:
         st.markdown("#### Subir archivos")
 
+        uploader_nonce = st.session_state.get("upload_widget_nonce", 0)
         uploaded_files = st.file_uploader(
             label="Arrastra uno o más archivos aquí o haz clic para seleccionar",
             type=["csv", "txt", "xlsx", "xls"],
-            key="file_uploader",
+            key=f"file_uploader_{uploader_nonce}",
             help="Máximo 50 MB por archivo. Todos deben tener el mismo formato y columnas.",
             accept_multiple_files=True,
         )
 
         if not uploaded_files:
-            st.session_state.uploaded_df = None
-            st.session_state.uploaded_preview_items = []
-            st.session_state.uploaded_row_origins = []
-            st.session_state.uploaded_validation_sources = []
+            if st.session_state.get("uploaded_df") is not None:
+                _reset_upload_flow()
         else:
+            uploaded_signature = tuple(
+                (uf.name, getattr(uf, "size", None), _upload_ext(uf.name))
+                for uf in uploaded_files
+            )
+            if uploaded_signature != st.session_state.get("uploaded_file_signature"):
+                _reset_upload_flow()
+                st.session_state.uploaded_file_signature = uploaded_signature
+
             uploaded_payloads = []
             oversized = []
             max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -1364,10 +1561,9 @@ def _render_upload_step(catalog: dict) -> None:
             st.session_state.preview_render_failed = False
             try:
                 with preview_placeholder.container():
-                    st.dataframe(
-                        preview_df.head(20),
-                        use_container_width=True,
-                        height=320,
+                    st.markdown(
+                        _preview_dataframe_html(preview_df, max_rows=20),
+                        unsafe_allow_html=True,
                     )
             except Exception as exc:
                 preview_placeholder.empty()
@@ -1388,6 +1584,8 @@ def _render_upload_step(catalog: dict) -> None:
         if st.button("Continuar → Validar datos", type="primary", key="btn_to_validate"):
             st.session_state.current_step      = "validate"
             st.session_state.validation_result = None
+            st.session_state.validation_dialog_open = False
+            st.session_state.confirm_load_requested = False
             st.rerun()
 
 
@@ -1399,6 +1597,7 @@ def _render_validate_step(catalog: dict) -> None:
     if df is None:
         st.warning("No hay archivo cargado. Vuelve al paso anterior.")
         if st.button("← Volver", key="btn_back_upload"):
+            _reset_upload_flow(remount_uploader=True)
             st.session_state.current_step = "upload"
             st.rerun()
         return
@@ -1436,10 +1635,8 @@ def _render_validate_step(catalog: dict) -> None:
             st.rerun()
 
         if st.button("← Volver al archivo", use_container_width=True, key="btn_back_v"):
-            st.session_state.current_step      = "upload"
-            st.session_state.validation_result = None
-            st.session_state.validation_dialog_open = False
-            st.session_state.confirm_load_requested = False
+            _reset_upload_flow(remount_uploader=True)
+            st.session_state.current_step = "upload"
             st.rerun()
 
     if result is not None:
@@ -1673,8 +1870,7 @@ def _render_result_step(catalog: dict) -> None:
         </div>
         """, unsafe_allow_html=True)
         if st.button("← Volver e intentar de nuevo", key="btn_back_error"):
-            for key in ["carga_ejecutada", "load_result"]:
-                st.session_state.pop(key, None)
+            _reset_upload_flow(remount_uploader=True)
             st.session_state.current_step = "upload"
             st.rerun()
         return
@@ -1757,9 +1953,7 @@ def _render_result_step(catalog: dict) -> None:
 
     st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
     if st.button("Nueva carga", type="primary", key="btn_nueva_carga"):
-        for key in ["uploaded_df", "uploaded_audit_bytes", "uploaded_audit_name", "uploaded_name",
-                    "validation_result", "carga_ejecutada", "load_result"]:
-            st.session_state.pop(key, None)
+        _reset_upload_flow(remount_uploader=True)
         st.session_state.current_step = "upload"
         st.rerun()
 
@@ -1915,11 +2109,11 @@ def _inject_main_css() -> None:
         [data-testid="stSidebar"][aria-expanded="false"] div:has(.adm-nav-visual) + div button {
             height: 50px !important;
         }
-        /* Ocultar tarjeta usuario, info catálogo y mensaje cuando está colapsado */
+        /* Ocultar tarjeta usuario, info catalogo y mensaje cuando esta colapsado */
         [data-testid="stSidebar"][aria-expanded="false"] .mn-user-card,
-        [data-testid="stSidebar"][aria-expanded="false"] .mn-catalog-info,
+        [data-testid="stSidebar"][aria-expanded="false"] .sidebar-native-details,
         [data-testid="stSidebar"][aria-expanded="false"] .mn-no-catalog,
-        [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stExpander"] {
+        [data-testid="stSidebar"][aria-expanded="false"] .mn-catalog-info {
             display: none !important;
         }
         section[data-testid="stSidebar"] * {
@@ -1949,15 +2143,245 @@ def _inject_main_css() -> None:
             border-color: rgba(255,255,255,0.12) !important;
         }
 
-        /* Expander dentro del sidebar */
-        section[data-testid="stSidebar"] div[data-testid="stExpander"] {
-            background: rgba(255,255,255,0.06) !important;
-            border: 1px solid rgba(255,255,255,0.12) !important;
-            border-radius: 8px !important;
+        section[data-testid="stSidebar"] .sidebar-native-details {
+            margin: 0 0 8px;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 8px;
+            background: rgba(255,255,255,0.06);
+            overflow: hidden;
         }
-        section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
+        section[data-testid="stSidebar"] .sidebar-native-details summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 11px 12px;
+            color: #FFFFFF !important;
+            font-size: 12px;
+            font-weight: 800;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+        }
+        section[data-testid="stSidebar"] .sidebar-native-details summary::-webkit-details-marker {
+            display: none;
+        }
+        section[data-testid="stSidebar"] .sidebar-native-details summary::after {
+            content: "⌄";
+            color: #DCE4FF;
+            font-size: 14px;
+            line-height: 1;
+            transition: transform .15s ease;
+        }
+        section[data-testid="stSidebar"] .sidebar-native-details[open] summary::after {
+            transform: rotate(180deg);
+        }
+        section[data-testid="stSidebar"] .sidebar-native-details-body {
+            padding: 0 10px 10px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-card {
+            margin-top: 4px;
+            padding: 12px;
+            border-radius: 12px;
+            background:
+                linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.045)),
+                rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.13);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+            max-height: 190px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(168,180,216,0.55) rgba(255,255,255,0.06);
+        }
+        section[data-testid="stSidebar"] .mn-catalog-card::-webkit-scrollbar {
+            width: 6px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-card::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.06);
+            border-radius: 999px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-card::-webkit-scrollbar-thumb {
+            background: rgba(168,180,216,0.55);
+            border-radius: 999px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-eyebrow {
             color: #A8B4D8 !important;
-            font-size: 12px !important;
+            font-size: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-count {
+            color: #FFD37A !important;
+            background: rgba(245,168,0,0.14);
+            border: 1px solid rgba(245,168,0,0.24);
+            border-radius: 999px;
+            padding: 1px 7px;
+            font-size: 10px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-title {
+            color: #FFFFFF !important;
+            font-size: 13px;
+            line-height: 1.35;
+            font-weight: 800;
+            margin-bottom: 10px;
+            word-break: break-word;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-target {
+            padding: 8px;
+            border-radius: 9px;
+            background: rgba(0,0,0,0.13);
+            border: 1px solid rgba(255,255,255,0.08);
+            margin-bottom: 9px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-target-label {
+            display: block;
+            color: #A8B4D8 !important;
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            margin-bottom: 4px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-target code {
+            display: block;
+            color: #FFFFFF !important;
+            background: transparent !important;
+            font-size: 10px;
+            font-weight: 800;
+            line-height: 1.45;
+            white-space: normal;
+            word-break: break-word;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-target code span:first-child {
+            color: #FFD37A !important;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-target code b {
+            color: #A8B4D8 !important;
+            padding: 0 1px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-badge {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 800;
+            line-height: 1.4;
+        }
+        section[data-testid="stSidebar"] .mn-catalog-badge.strategy {
+            background: rgba(245,168,0,0.17);
+            color: #FFD37A !important;
+            border: 1px solid rgba(245,168,0,0.30);
+        }
+        section[data-testid="stSidebar"] .mn-catalog-badge.destination {
+            background: rgba(110,231,183,0.15);
+            color: #8FF3C7 !important;
+            border: 1px solid rgba(110,231,183,0.28);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-summary {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin: 2px 0 8px;
+            padding: 7px 8px;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.10);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-summary span:first-child {
+            color: #FFFFFF !important;
+            font-size: 11px;
+            font-weight: 800;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-summary span:last-child {
+            color: #A8B4D8 !important;
+            font-size: 10px;
+            text-align: right;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-list {
+            max-height: 260px;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-row {
+            padding: 8px 8px;
+            margin-bottom: 7px;
+            border-radius: 9px;
+            background: rgba(255,255,255,0.055);
+            border: 1px solid rgba(255,255,255,0.09);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-row:hover {
+            background: rgba(255,255,255,0.09);
+            border-color: rgba(245,168,0,0.28);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-name {
+            color: #FFFFFF !important;
+            font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+            font-size: 11px;
+            font-weight: 800;
+            line-height: 1.35;
+            word-break: break-word;
+            margin-bottom: 6px;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 1px 6px;
+            border-radius: 999px;
+            font-size: 9px;
+            font-weight: 800;
+            line-height: 1.5;
+            border: 1px solid transparent;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip.type {
+            background: rgba(245,168,0,0.20);
+            color: #FFD37A !important;
+            border-color: rgba(245,168,0,0.30);
+            text-transform: uppercase;
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip.optional {
+            background: rgba(110,231,183,0.15);
+            color: #8FF3C7 !important;
+            border-color: rgba(110,231,183,0.28);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip.required {
+            background: rgba(252,165,165,0.16);
+            color: #FFB4B4 !important;
+            border-color: rgba(252,165,165,0.30);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip.rules {
+            background: rgba(199,210,254,0.16);
+            color: #DCE4FF !important;
+            border-color: rgba(199,210,254,0.28);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-chip.muted {
+            background: rgba(255,255,255,0.06);
+            color: #A8B4D8 !important;
+            border-color: rgba(255,255,255,0.10);
+        }
+        section[data-testid="stSidebar"] .sidebar-schema-empty {
+            color: #A8B4D8 !important;
+            font-size: 12px;
+            padding: 8px;
         }
 
         @keyframes skel-shimmer {
