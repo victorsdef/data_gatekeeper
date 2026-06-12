@@ -521,6 +521,15 @@ def _sidebar_catalog_card_html(selected_cat: dict, estrategia: str, destino: str
     """
 
 
+def _strategy_user_label(strategy: str) -> str:
+    labels = {
+        "append": "Agregar datos",
+        "overwrite": "Reemplazar datos",
+        "reproceso": "Reprocesar datos",
+    }
+    return labels.get(str(strategy or "").lower(), str(strategy or "").upper() or "No definido")
+
+
 def _sidebar_details_html(title: str, body_html: str, open_by_default: bool = False) -> str:
     open_attr = " open" if open_by_default else ""
     return (
@@ -1821,6 +1830,277 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
 # ------------------------------------------------------------------
 # Paso 3: Resultado
 # ------------------------------------------------------------------
+def _render_success_result(catalog: dict, load_result: dict, filename: str, user: dict) -> None:
+    from datetime import datetime
+
+    audit_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    zip_path = load_result.get("zip_path") or "No disponible"
+    rows_loaded = int(load_result.get("rows", 0) or 0)
+    strategy_label = _strategy_user_label(catalog.get("estrategia", ""))
+    audit_note = (
+        "El archivo original fue guardado para auditoria."
+        if load_result.get("zip_path")
+        else "No se registro una ruta de archivo auditado."
+    )
+
+    catalog_name = html.escape(str(catalog.get("nombre", "")))
+    table_name = html.escape(str(catalog.get("tabla_destino", "")))
+    filename_safe = html.escape(str(filename))
+    username_safe = html.escape(str(user.get("username", "-")))
+    operation_id = html.escape(str(load_result.get("operation_id", "-")))
+    zip_path_safe = html.escape(str(zip_path))
+
+    st.markdown(f"""
+    <style>
+      .result-hero {{
+        padding: 30px 34px;
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 14% 0%, rgba(29,158,117,.18), transparent 34%),
+          linear-gradient(135deg, #F0FDF4 0%, #F8FAFF 100%);
+        border: 1px solid #86EFAC;
+        box-shadow: 0 18px 42px rgba(12, 50, 34, .08);
+        margin-bottom: 22px;
+      }}
+      .result-hero-inner {{
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        gap: 18px;
+        align-items: center;
+      }}
+      .result-check {{
+        width: 58px;
+        height: 58px;
+        border-radius: 999px;
+        background: #DCFCE7;
+        border: 1px solid #86EFAC;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      .result-title {{
+        color: #064E3B;
+        font-size: 22px;
+        font-weight: 850;
+        line-height: 1.2;
+        margin-bottom: 6px;
+      }}
+      .result-subtitle {{
+        color: #166534;
+        font-size: 13px;
+        line-height: 1.55;
+      }}
+      .result-card-grid {{
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 12px;
+        margin-bottom: 22px;
+      }}
+      .result-card {{
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: #FFFFFF;
+        border: 1px solid #D8E0F2;
+        min-height: 92px;
+        box-shadow: 0 8px 22px rgba(28, 47, 110, .05);
+      }}
+      .result-card-label {{
+        color: #6B7280;
+        font-size: 10px;
+        font-weight: 850;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }}
+      .result-card-value {{
+        color: #0B1F5E;
+        font-size: 20px;
+        font-weight: 850;
+        line-height: 1.18;
+        word-break: break-word;
+      }}
+      .result-card-value.small {{
+        font-size: 13px;
+        line-height: 1.35;
+      }}
+      .result-status-pill {{
+        display: inline-flex;
+        color: #166534;
+        background: #DCFCE7;
+        border: 1px solid #86EFAC;
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 13px;
+        font-weight: 850;
+      }}
+      .audit-details {{
+        margin: 2px 0 18px;
+        border: 1px solid #D8E0F2;
+        border-radius: 14px;
+        background: #FFFFFF;
+        overflow: hidden;
+      }}
+      .audit-details summary {{
+        cursor: pointer;
+        list-style: none;
+        padding: 15px 18px;
+        color: #0B1F5E;
+        font-size: 14px;
+        font-weight: 850;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }}
+      .audit-details summary::-webkit-details-marker {{
+        display: none;
+      }}
+      .audit-details summary::after {{
+        content: "Ver detalle";
+        color: #1C2F6E;
+        background: #EEF4FF;
+        border: 1px solid #C7D2FE;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 800;
+      }}
+      .audit-details[open] summary::after {{
+        content: "Ocultar";
+      }}
+      .audit-body {{
+        border-top: 1px solid #EEF2FB;
+        padding: 16px 18px 18px;
+      }}
+      .audit-grid {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(220px, 1fr));
+        gap: 14px 24px;
+      }}
+      .audit-label {{
+        color: #6B7280;
+        font-size: 10px;
+        font-weight: 850;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }}
+      .audit-value {{
+        color: #111827;
+        font-size: 13px;
+        line-height: 1.45;
+        word-break: break-word;
+      }}
+      .audit-value code {{
+        color: #065F46;
+        background: #ECFDF5;
+        border-radius: 6px;
+        padding: 2px 6px;
+      }}
+      @media (max-width: 980px) {{
+        .result-card-grid {{ grid-template-columns: repeat(2, minmax(150px, 1fr)); }}
+      }}
+      @media (max-width: 640px) {{
+        .result-hero-inner,
+        .audit-grid,
+        .result-card-grid {{ grid-template-columns: 1fr; }}
+      }}
+    </style>
+
+    <div class="result-hero">
+      <div class="result-hero-inner">
+        <div class="result-check">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#065F46" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 11 15 16 9"/></svg>
+        </div>
+        <div>
+          <div class="result-title">Carga completada correctamente</div>
+          <div class="result-subtitle">
+            Se cargaron <b>{rows_loaded:,}</b> fila(s) en el catalogo <b>{catalog_name}</b>.
+            {html.escape(audit_note)}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="result-card-grid">
+      <div class="result-card">
+        <div class="result-card-label">Filas cargadas</div>
+        <div class="result-card-value">{rows_loaded:,}</div>
+      </div>
+      <div class="result-card">
+        <div class="result-card-label">Catalogo</div>
+        <div class="result-card-value small">{catalog_name}</div>
+      </div>
+      <div class="result-card">
+        <div class="result-card-label">Tipo de carga</div>
+        <div class="result-card-value small">{html.escape(strategy_label)}</div>
+      </div>
+      <div class="result-card">
+        <div class="result-card-label">Estado</div>
+        <div class="result-status-pill">Exitoso</div>
+      </div>
+    </div>
+
+    <details class="audit-details">
+      <summary>Detalle tecnico de auditoria</summary>
+      <div class="audit-body">
+        <div class="audit-grid">
+          <div>
+            <div class="audit-label">Operacion</div>
+            <div class="audit-value"><code>{operation_id}</code></div>
+          </div>
+          <div>
+            <div class="audit-label">Fecha</div>
+            <div class="audit-value">{html.escape(audit_timestamp)}</div>
+          </div>
+          <div>
+            <div class="audit-label">Usuario</div>
+            <div class="audit-value">{username_safe}</div>
+          </div>
+          <div>
+            <div class="audit-label">Tabla destino</div>
+            <div class="audit-value"><code>{table_name}</code></div>
+          </div>
+          <div style="grid-column:1 / -1;">
+            <div class="audit-label">Archivo cargado</div>
+            <div class="audit-value">{filename_safe}</div>
+          </div>
+          <div style="grid-column:1 / -1;">
+            <div class="audit-label">Ruta auditada</div>
+            <div class="audit-value"><code>{zip_path_safe}</code></div>
+          </div>
+        </div>
+      </div>
+    </details>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    action_new, action_history, _ = st.columns([1, 1, 3])
+    with action_new:
+        if st.button("Nueva carga", type="primary", key="btn_nueva_carga", use_container_width=True):
+            _reset_upload_flow(remount_uploader=True)
+            st.session_state.current_step = "upload"
+            st.rerun()
+    with action_history:
+        if st.button("Ver historial", key="btn_result_history", use_container_width=True):
+            _render_history_dialog()
+
+
+def _is_ingestion_rule_failure(load_result: dict) -> bool:
+    text = " ".join(
+        str(load_result.get(key) or "")
+        for key in ("error", "technical_error")
+    ).lower()
+    return any(
+        token in text
+        for token in (
+            "regla de ingesta",
+            "evitar duplicados",
+            "columna referencial",
+            "debe tener un solo valor",
+        )
+    )
+
+
 def _render_result_step(catalog: dict) -> None:
     from datetime import datetime
 
@@ -1848,9 +2128,20 @@ def _render_result_step(catalog: dict) -> None:
     load_result = st.session_state.get("load_result", {})
     success     = load_result.get("success", False)
 
+    if success:
+        _render_success_result(catalog, load_result, filename, user)
+        return
+
     if not success:
         op_id = html.escape(str(load_result.get("operation_id", "—")))
         error_text = html.escape(str(load_result.get("error") or "Ocurrió un error inesperado durante la carga."))
+        is_rule_failure = _is_ingestion_rule_failure(load_result)
+        error_title = "Carga rechazada por regla de ingesta" if is_rule_failure else "No se pudo completar la carga"
+        error_hint = (
+            "No se inserto nada en la base. Revisa el motivo y corrige el archivo antes de intentar nuevamente."
+            if is_rule_failure
+            else "Intenta nuevamente o contacta al administrador."
+        )
         st.markdown(f"""
         <div style="
             padding:28px 32px; background:#FEF2F2;
@@ -1859,10 +2150,13 @@ def _render_result_step(catalog: dict) -> None:
         ">
             <div style="font-size:48px; margin-bottom:12px;">❌</div>
             <div style="font-weight:600; font-size:18px; color:#7F1D1D;">
-                No se pudo completar la carga
+                {html.escape(error_title)}
             </div>
             <div style="font-size:13px; color:#B91C1C; margin-top:8px;">
                 {error_text}
+            </div>
+            <div style="font-size:12px; color:#7F1D1D; margin-top:8px;">
+                {html.escape(error_hint)}
             </div>
             <div style="font-size:12px; color:#7F1D1D; margin-top:10px;">
                 Operación: <code>{op_id}</code>

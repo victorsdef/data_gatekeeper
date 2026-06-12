@@ -1882,6 +1882,24 @@ def _collect_ingestion_rule(state_key: str) -> dict | None:
     }
 
 
+def _collect_ingestion_rule_for_columns(state_key: str, columns: list) -> dict | None:
+    rule = _collect_ingestion_rule(state_key)
+    if not rule:
+        return None
+    field = str(rule.get("campo_referencia") or "").strip()
+    if field:
+        return rule
+    column_names = [
+        str(c.get("nombre", "")).strip()
+        for c in columns
+        if str(c.get("nombre", "")).strip()
+    ]
+    if not column_names:
+        return rule
+    rule["campo_referencia"] = column_names[0]
+    return rule
+
+
 def _ingestion_allowed_modes(estrategia: str) -> list[str]:
     return ["sin_regla", "evitar_duplicados", "reemplazar_por_campo"]
 
@@ -1915,6 +1933,9 @@ def _render_ingestion_rule_form(columns: list, state_key: str, estrategia: str) 
         return
 
     current_field = str(st.session_state.get(f"{state_key}_field") or "")
+    if not current_field and column_names:
+        st.session_state[f"{state_key}_field"] = column_names[0]
+        current_field = column_names[0]
     field_index = column_names.index(current_field) if current_field in column_names else 0
     st.selectbox(
         "Campo de control",
@@ -1962,7 +1983,7 @@ def _render_schema_rule_actions(
 ) -> None:
     rules = st.session_state.get(rules_key, {})
     total_rules = sum(len(v) for v in rules.values())
-    ingestion_rule = _collect_ingestion_rule(ingestion_key)
+    ingestion_rule = _collect_ingestion_rule_for_columns(ingestion_key, schema.get("columnas", []))
     ingestion_label = (
         _INGESTION_MODES.get(ingestion_rule.get("modo"), "Regla activa")
         if ingestion_rule else "Sin regla de ingesta"
@@ -2419,7 +2440,7 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
             if str(r.get("nombre", "")).strip()
         ]
     }
-    ingestion_rule = _collect_ingestion_rule(ingestion_key)
+    ingestion_rule = _collect_ingestion_rule_for_columns(ingestion_key, collected.get("columnas", []))
     if ingestion_rule:
         collected["regla_ingesta"] = ingestion_rule
     return collected
@@ -3042,9 +3063,11 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
             if str(r.get("nombre", "")).strip()
         ]
     }
-    edit_ingestion_rule = _collect_ingestion_rule(ingestion_edit_key)
+    edit_ingestion_rule = _collect_ingestion_rule_for_columns(ingestion_edit_key, edit_rule_columns)
     if edit_ingestion_rule:
         edit_schema_candidate["regla_ingesta"] = edit_ingestion_rule
+    else:
+        edit_schema_candidate.pop("regla_ingesta", None)
 
     edit_schema_errors = _validate_catalog_form(
         catalog_id=cid,
@@ -3070,13 +3093,16 @@ def _render_edit_catalog_dialog(cat: dict) -> None:
                     if str(r.get("nombre", "")).strip()
                 ]
             }
-            edit_ingestion_rule = _collect_ingestion_rule(ingestion_edit_key)
+            edit_ingestion_rule = _collect_ingestion_rule_for_columns(ingestion_edit_key, new_schema.get("columnas", []))
             if edit_ingestion_rule:
                 new_schema["regla_ingesta"] = edit_ingestion_rule
+            else:
+                new_schema.pop("regla_ingesta", None)
             try:
                 update_catalog_config(cid, ed_nombre.strip(), ed_desc.strip(), ed_est, ed_dest, new_schema)
             except Exception as e:
                 st.error(user_facing_error(e, context="database"))
+                st.caption(f"Detalle tecnico: {e}")
                 return
 
             st.session_state.pop(schema_init_key, None)

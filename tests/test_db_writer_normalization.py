@@ -1,7 +1,12 @@
 import pandas as pd
 import pytest
 
-from services.db_writer import _get_ingestion_rule, _get_reference_values, _normalize_df_for_load
+from services.db_writer import (
+    _get_ingestion_rule,
+    _get_reference_values,
+    _is_user_actionable_load_error,
+    _normalize_df_for_load,
+)
 
 
 def test_normalize_df_for_load_casts_configured_int_from_text():
@@ -66,3 +71,12 @@ def test_get_reference_values_allows_multiple_values_when_configured():
 
     assert field == "fecha_proceso"
     assert values == ["20240601", "20240602"]
+
+
+def test_ingestion_rule_errors_are_user_actionable():
+    exc = ValueError(
+        "No se cargo el archivo para evitar duplicados. "
+        "Ya existen registros con fecha_proceso: 20240601."
+    )
+
+    assert _is_user_actionable_load_error(exc)

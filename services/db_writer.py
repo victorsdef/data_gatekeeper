@@ -25,6 +25,21 @@ def _setting(name: str, default: Any = None) -> Any:
     return getattr(settings, name, os.getenv(name, default))
 
 
+def _is_user_actionable_load_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(
+        token in text
+        for token in (
+            "regla de ingesta",
+            "no se cargo el archivo para evitar duplicados",
+            "columna referencial",
+            "debe tener un solo valor",
+            "valores invalidos detectados",
+            "no se pudo convertir la columna",
+        )
+    )
+
+
 AUDIT_STORAGE_PATH = _setting("AUDIT_STORAGE_PATH", "/app/audit_storage")
 AUDIT_STORAGE_READONLY_AFTER_WRITE = str(
     _setting("AUDIT_STORAGE_READONLY_AFTER_WRITE", "true")
@@ -164,7 +179,7 @@ def execute_load(
 
     except Exception as exc:
         technical_error = str(exc)
-        error_msg = user_facing_error(exc, context=destino)
+        error_msg = technical_error if _is_user_actionable_load_error(exc) else user_facing_error(exc, context=destino)
         logger.exception(
             "Fallo la carga operation_id=%s catalog_id=%s hacia '%s.%s' usando estrategia '%s'.",
             operation_id,

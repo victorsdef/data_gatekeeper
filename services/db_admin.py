@@ -15,6 +15,29 @@ def _setting(name: str, default: Any = None) -> Any:
     return getattr(settings, name, os.getenv(name, default))
 
 
+def _json_safe(value: Any) -> Any:
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _schema_json_to_db(schema_json: Dict) -> str:
+    return json.dumps(_json_safe(schema_json), ensure_ascii=False, allow_nan=False)
+
+
+def _meta_table(table_name: str) -> str:
+    return f"`{SS_DATABASE}`.`{table_name}`"
+
+
 SS_HOST = _setting("SS_HOST")
 SS_PORT = int(_setting("SS_PORT", 3306))
 SS_USER = _setting("SS_USER")
@@ -201,12 +224,15 @@ def update_catalog_config(
         with conn.cursor() as cur:
             if schema_json is not None:
                 cur.execute(
-                    f"UPDATE {TBL_CATALOGOS} SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s, schema_json=%s WHERE catalog_id=%s",
-                    (nombre, descripcion, estrategia, destino, json.dumps(schema_json, ensure_ascii=False), catalog_id),
+                    f"UPDATE {_meta_table(TBL_CATALOGOS)} "
+                    "SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s, schema_json=%s "
+                    "WHERE catalog_id=%s",
+                    (nombre, descripcion, estrategia, destino, _schema_json_to_db(schema_json), catalog_id),
                 )
             else:
                 cur.execute(
-                    f"UPDATE {TBL_CATALOGOS} SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s WHERE catalog_id=%s",
+                    f"UPDATE {_meta_table(TBL_CATALOGOS)} "
+                    "SET nombre=%s, descripcion=%s, estrategia=%s, destino=%s WHERE catalog_id=%s",
                     (nombre, descripcion, estrategia, destino, catalog_id),
                 )
         conn.commit()
