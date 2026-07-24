@@ -153,11 +153,17 @@ def get_mapped_tables() -> set:
 
 
 def ensure_project_exists(project_id: str, nombre: str) -> None:
-    """Crea el proyecto si no existe (usa la BD como proyecto)."""
+    """Crea o reactiva el proyecto y mantiene actualizado su nombre visible."""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"INSERT IGNORE INTO `{SS_DATABASE}`.{TBL_PROYECTOS} (project_id, nombre, activo) VALUES (%s, %s, 1)",
+                f"""
+                INSERT INTO `{SS_DATABASE}`.{TBL_PROYECTOS} (project_id, nombre, activo)
+                VALUES (%s, %s, 1)
+                ON DUPLICATE KEY UPDATE
+                    nombre = VALUES(nombre),
+                    activo = 1
+                """,
                 (project_id, nombre),
             )
         conn.commit()
@@ -278,14 +284,14 @@ def save_catalog_config(
     schema_json: Dict,
 ) -> bool:
     """
-    Registra el catálogo solo si no existe (INSERT IGNORE).
+    Registra el catálogo solo si no existe.
     Retorna True si se insertó, False si ya existía.
     """
     if catalog_exists(catalog_id):
         return False
 
     sql = f"""
-        INSERT IGNORE INTO `{SS_DATABASE}`.{TBL_CATALOGOS}
+        INSERT INTO `{SS_DATABASE}`.{TBL_CATALOGOS}
             (catalog_id, project_id, nombre, descripcion, base_datos,
              tabla_destino, destino, estrategia, schema_json, activo)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 1)

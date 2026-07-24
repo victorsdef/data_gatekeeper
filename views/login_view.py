@@ -15,6 +15,9 @@ def _logo_b64() -> str:
 
 def render_login() -> None:
     _inject_login_css()
+    st.session_state.setdefault("login_loading", False)
+    st.session_state.setdefault("login_pending_username", "")
+    st.session_state.setdefault("login_pending_password", "")
 
     _, center, _ = st.columns([1, 1, 1])
 
@@ -25,7 +28,7 @@ def render_login() -> None:
         b64 = _logo_b64()
         logo_html = f'<img src="data:image/png;base64,{b64}" width="72" style="margin-bottom:12px;">' if b64 else ""
         st.markdown(f"""
-        <div style="text-align:center; margin-bottom:28px;">
+        <div class="login-hero" style="text-align:center; margin-bottom:28px;">
             {logo_html}
             <div style="font-size:10px; font-weight:600; color:#6B7280; letter-spacing:2px; text-transform:uppercase; margin-bottom:8px;">banco del austro</div>
             <h2 style="font-size:18px; font-weight:700; color:#1C2F6E; margin:0;">
@@ -44,6 +47,7 @@ def render_login() -> None:
                 label="usuario",
                 placeholder="Baxxxxxx",
                 label_visibility="collapsed",
+                disabled=bool(st.session_state.get("login_loading")),
             )
 
             st.markdown("<p class='field-label' style='margin-top:14px;'>Contrasena</p>",
@@ -53,40 +57,64 @@ def render_login() -> None:
                 type="password",
                 placeholder="••••••••",
                 label_visibility="collapsed",
+                disabled=bool(st.session_state.get("login_loading")),
             )
 
             st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
             submitted = st.form_submit_button(
-                "Iniciar sesión",
+                "Validando..." if st.session_state.get("login_loading") else "Iniciar sesión",
                 use_container_width=True,
                 type="primary",
+                disabled=bool(st.session_state.get("login_loading")),
             )
 
         if submitted:
             if not username or not password:
                 st.error("Ingresa tu usuario y contraseña.")
             else:
-                with st.spinner("Verificando credenciales..."):
-                    user_info = authenticate_user(username, password)
-                if user_info:
-                    try:
-                        user_info = get_or_register_user(
-                            user_info["username"],
-                            user_info["nombre"],
-                            user_info["email"],
-                            user_info.get("rol", "Publicador"),
-                        )
-                    except Exception:
-                        pass  # Si la BD falla, seguimos con los datos del LDAP
-                    if user_info.get("activo") is False:
-                        st.error("Tu usuario está desactivado en Data Gatekeeper. Contacta al administrador.")
-                        return
-                    st.session_state.authenticated = True
-                    st.session_state.user_info = user_info
-                    st.session_state.current_view = "upload"
-                    st.rerun()
-                else:
-                    st.error("Usuario o contraseña incorrectos, o no perteneces al grupo Usuarios Hadoop.")
+                st.session_state.login_pending_username = username
+                st.session_state.login_pending_password = password
+                st.session_state.login_loading = True
+                st.rerun()
+
+        if st.session_state.get("login_loading"):
+            st.markdown(
+                """
+                <div class="login-progress-wrap" aria-hidden="true">
+                    <div class="login-spinner"></div>
+                </div>
+                <div class="login-progress-copy">Verificando credenciales corporativas...</div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            username = st.session_state.get("login_pending_username", "")
+            password = st.session_state.get("login_pending_password", "")
+            user_info = authenticate_user(username, password)
+
+            st.session_state.login_loading = False
+            st.session_state.login_pending_username = ""
+            st.session_state.login_pending_password = ""
+
+            if user_info:
+                try:
+                    user_info = get_or_register_user(
+                        user_info["username"],
+                        user_info["nombre"],
+                        user_info["email"],
+                        user_info.get("rol", "Publicador"),
+                    )
+                except Exception:
+                    pass  # Si la BD falla, seguimos con los datos del LDAP
+                if user_info.get("activo") is False:
+                    st.error("Tu usuario está desactivado en Data Gatekeeper. Contacta al administrador.")
+                    return
+                st.session_state.authenticated = True
+                st.session_state.user_info = user_info
+                st.session_state.current_view = "upload"
+                st.rerun()
+
+            st.error("Usuario o contraseña incorrectos, o no perteneces al grupo Usuarios Hadoop.")
 
         st.markdown("""
         <p style="text-align:center; font-size:11px; color:#D1D5DB; margin-top:24px;">
@@ -102,6 +130,32 @@ def _inject_login_css() -> None:
         #MainMenu, footer, header { visibility: hidden; }
         .block-container { padding-top: 0 !important; padding-bottom: 0 !important; }
 
+        @keyframes loginFadeSlide {
+            from {
+                opacity: 0;
+                transform: translateY(18px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes loginSoftFloat {
+            0% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+            100% { transform: translateY(0); }
+        }
+
+        .login-hero {
+            animation: loginFadeSlide 0.55s ease-out;
+        }
+
+        @keyframes loginSpin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
         /* Tarjeta */
         div[data-testid="stForm"] {
             background: white !important;
@@ -109,6 +163,31 @@ def _inject_login_css() -> None:
             padding: 28px 28px 20px !important;
             box-shadow: 0 4px 24px rgba(28,47,110,0.10), 0 0 0 1px rgba(28,47,110,0.06) !important;
             border: none !important;
+            animation: loginFadeSlide 0.7s ease-out 0.08s both, loginSoftFloat 6s ease-in-out 0.9s infinite;
+        }
+
+        .login-progress-wrap {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 14px;
+        }
+        .login-spinner {
+            width: 26px;
+            height: 26px;
+            border-radius: 999px;
+            border: 3px solid #D8E0F5;
+            border-top-color: #1C2F6E;
+            border-right-color: #F5A800;
+            animation: loginSpin 0.85s linear infinite;
+        }
+        .login-progress-copy {
+            margin-top: 8px;
+            text-align: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: #5B678C;
+            animation: loginFadeSlide 0.2s ease-out;
         }
 
         /* Labels */

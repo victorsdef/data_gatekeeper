@@ -480,6 +480,15 @@ def _render_project_inputs(
 ) -> tuple[str, str, bool]:
     suggested_id, suggested_name = _project_defaults(db_name, table_name)
     existing_map = {p["id"]: p["nombre"] for p in projects}
+    mode_key = f"{key_prefix}_project_mode"
+    project_id_key = f"{key_prefix}_project_id"
+    project_name_key = f"{key_prefix}_project_name"
+    project_existing_key = f"{key_prefix}_project_existing"
+    project_id_default_key = f"{key_prefix}_project_id_default"
+    project_name_default_key = f"{key_prefix}_project_name_default"
+
+    st.session_state[project_id_default_key] = suggested_id
+    st.session_state[project_name_default_key] = suggested_name
 
     options = ["Crear o usar sugerido"]
     if existing_map:
@@ -488,30 +497,39 @@ def _render_project_inputs(
     mode = st.radio(
         "Proyecto",
         options,
-        key=f"{key_prefix}_project_mode",
+        key=mode_key,
         horizontal=True,
     )
 
     if mode == "Usar proyecto existente" and existing_map:
+        selected_existing = st.session_state.get(project_existing_key)
+        if selected_existing not in existing_map:
+            st.session_state[project_existing_key] = next(iter(existing_map))
         selected_project_id = st.selectbox(
             "Proyecto existente",
             list(existing_map.keys()),
             format_func=lambda x: existing_map[x],
-            key=f"{key_prefix}_project_existing",
+            key=project_existing_key,
         )
         return selected_project_id, existing_map[selected_project_id], False
 
+    # El ID del proyecto es derivado del origen y no debe quedarse con un valor
+    # vacío o viejo en session_state al cambiar de tabla.
+    st.session_state[project_id_key] = suggested_id
+    if not str(st.session_state.get(project_name_key, "")).strip():
+        st.session_state[project_name_key] = suggested_name
+
     project_id = st.text_input(
         "ID del proyecto",
-        value=st.session_state.get(f"{key_prefix}_project_id_default", suggested_id),
-        key=f"{key_prefix}_project_id",
+        value=st.session_state.get(project_id_default_key, suggested_id),
+        key=project_id_key,
         help="Se genera automáticamente con la convención dg_au_agd_<origen>.",
         disabled=True,
     ).strip()
     project_name = st.text_input(
         "Nombre del proyecto",
-        value=st.session_state.get(f"{key_prefix}_project_name_default", suggested_name),
-        key=f"{key_prefix}_project_name",
+        value=st.session_state.get(project_name_default_key, suggested_name),
+        key=project_name_key,
         help="Puedes dejar el sugerido o escribir un nombre más amigable.",
     ).strip()
     return project_id, project_name, True
@@ -812,6 +830,86 @@ def _confirm_bulk_register_dialog() -> None:
             st.rerun()
 
 
+def _reset_catalog_registration_flow() -> None:
+    prefixes = (
+        "adm_chk_",
+        "adm_bulk_",
+        "bk_",
+    )
+    exact_keys = {
+        "adm_selected_tables",
+        "adm_active_table",
+        "adm_bulk_table_configs",
+        "adm_bk_confirm_open",
+        "adm_bk_do_register",
+        "adm_bk_register_params",
+        "adm_bk_is_ready",
+        "adm_reg_subtab",
+        "adm_reg_subtab_next",
+        "adm_schema",
+        "adm_schema_key",
+        "adm_db",
+        "adm_db_persist",
+        "adm_fuente",
+        "adm_step2_fuente",
+        "adm_step2_db",
+        "adm_step2_selected",
+        "adm_step2_mapped",
+        "adm_db_page",
+    }
+    for key in list(st.session_state.keys()):
+        if key in exact_keys or key.startswith(prefixes):
+            st.session_state.pop(key, None)
+    st.session_state["adm_reg_subtab"] = "Selección"
+
+
+def _render_registration_result_banner() -> None:
+    result = st.session_state.get("adm_register_result")
+    if not result:
+        return
+
+    ok = result.get("ok", [])
+    skipped = result.get("skipped", [])
+    failed = result.get("failed", [])
+    db = result.get("db", "")
+
+    tone = "#166534" if ok and not failed else "#92400E" if failed else "#1C2F6E"
+    bg = "#F0FDF4" if ok and not failed else "#FFF7ED" if failed else "#F8FAFF"
+    border = "#BBF7D0" if ok and not failed else "#FED7AA" if failed else "#C7D2FE"
+    title = "Registro completado" if ok and not failed else "Registro finalizado con observaciones"
+
+    summary_parts = []
+    if ok:
+        summary_parts.append(f"{len(ok)} registrado(s)")
+    if skipped:
+        summary_parts.append(f"{len(skipped)} omitido(s)")
+    if failed:
+        summary_parts.append(f"{len(failed)} con error")
+    summary_text = " · ".join(summary_parts) or "Sin cambios"
+
+    st.markdown(
+        f"""
+        <div style="border:1px solid {border};background:{bg};border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+            <div style="font-size:16px;font-weight:800;color:{tone};margin-bottom:4px;">{title}</div>
+            <div style="font-size:13px;color:#374151;">
+                Base de datos: <code>{html_escape(str(db))}</code> · {html_escape(summary_text)}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    _r1, _r2 = st.columns([1, 1])
+    with _r1:
+        if st.button("Registrar un nuevo catálogo", type="primary", use_container_width=True, key="adm_register_new_catalog"):
+            st.session_state.pop("adm_register_result", None)
+            _reset_catalog_registration_flow()
+            st.rerun()
+    with _r2:
+        if st.button("Cerrar resumen", use_container_width=True, key="adm_register_result_close"):
+            st.session_state.pop("adm_register_result", None)
+            st.rerun()
+
+
 # ------------------------------------------------------------------
 # Tab 1: Registro progresivo de catálogos
 # ------------------------------------------------------------------
@@ -826,6 +924,7 @@ def _tab_registro() -> None:
         st.session_state.adm_reg_subtab = "Selección"
 
     active_subtab = st.session_state.get("adm_reg_subtab", "Selección")
+    _render_registration_result_banner()
 
     # Estado compartido entre sub-tabs (leído de session_state)
     # adm_db es clave de widget y puede perderse cuando el selectbox no renderiza;
@@ -1119,6 +1218,7 @@ def _tab_registro() -> None:
                     db=params["db"],
                     tables=params["tables"],
                     project_id=params["project_id"],
+                    project_name=params["project_name"],
                     estrategia=params["estrategia"],
                     destino=params["destino"],
                     permisos=params["permisos"],
@@ -1203,6 +1303,7 @@ def _tab_registro() -> None:
                             "db": db_sel,
                             "tables": to_reg,
                             "project_id": bk_proj_id,
+                            "project_name": bk_proj_name,
                             "estrategia": bk_est,
                             "destino": bk_dest,
                             "permisos": _collect_permisos("bk"),
@@ -1647,11 +1748,13 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
 
 
 def _ejecutar_registro_masivo(
-    db: str, tables: List[str], project_id: str,
+    db: str, tables: List[str], project_id: str, project_name: str,
     estrategia: str, destino: str, permisos: List[Dict],
 ) -> None:
     progress = st.progress(0, text="Iniciando registro...")
     ok, skipped, failed = [], [], []
+
+    ensure_project_exists(project_id, project_name or project_id)
 
     for i, table in enumerate(tables):
         progress.progress((i + 1) / len(tables), text=f"Procesando `{table}`...")
@@ -1692,6 +1795,13 @@ def _ejecutar_registro_masivo(
         st.error(f"{len(failed)} error(es) al registrar:")
         for msg in failed:
             st.caption(f"• {msg}")
+
+    st.session_state["adm_register_result"] = {
+        "db": db,
+        "ok": ok,
+        "skipped": skipped,
+        "failed": failed,
+    }
 
     # Limpiar selección y forzar recarga
     for k in list(st.session_state.keys()):
@@ -2447,13 +2557,30 @@ def _collect_schema(schema: dict, key_prefix: str) -> dict:
 
 
 def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None) -> None:
-    current    = current or []
+    current = current or []
     usuarios_lookup = _load_usuarios_lookup()
+    role_key = f"{key_prefix}_role_display"
+    users_key = f"{key_prefix}_users"
+    init_key = f"{key_prefix}_permisos_initialized"
+    persisted_role_key = f"{key_prefix}_role_state"
+    persisted_users_key = f"{key_prefix}_users_state"
     init_users = [
         p["valor"] for p in current
         if p["tipo"] == "usuario" and _is_publicador_activo(p["valor"], usuarios_lookup)
     ]
     publicador_default = bool(init_users)
+
+    if not st.session_state.get(init_key):
+        st.session_state[role_key] = publicador_default
+        st.session_state[users_key] = init_users
+        st.session_state[persisted_role_key] = publicador_default
+        st.session_state[persisted_users_key] = init_users
+        st.session_state[init_key] = True
+    else:
+        if role_key not in st.session_state:
+            st.session_state[role_key] = bool(st.session_state.get(persisted_role_key, False))
+        if users_key not in st.session_state:
+            st.session_state[users_key] = list(st.session_state.get(persisted_users_key, []))
 
     st.markdown("**Permisos de acceso**")
     st.caption(
@@ -2466,9 +2593,10 @@ def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None
         publicador_enabled = st.toggle(
             "Permitir publicadores",
             value=publicador_default,
-            key=f"{key_prefix}_role_display",
+            key=role_key,
             help="Si esta activo, debes seleccionar que publicadores tendran acceso.",
         )
+        st.session_state[persisted_role_key] = bool(publicador_enabled)
     with c2:
         users = [
             username
@@ -2481,9 +2609,10 @@ def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None
                 "Publicadores autorizados",
                 users,
                 default=init_users,
-                key=f"{key_prefix}_users",
+                key=users_key,
                 format_func=lambda username: _usuario_label(username, usuarios_lookup),
             )
+            st.session_state[persisted_users_key] = list(st.session_state.get(users_key, []))
 
             st.caption("Si el publicador aun no ingreso al portal, agregalo por usuario BA.")
             add_col, btn_col = st.columns([3, 1])
@@ -2514,11 +2643,13 @@ def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None
                             rol="Publicador",
                             actor_username=actor,
                         )
-                        selected_users = list(st.session_state.get(f"{key_prefix}_users", []))
+                        selected_users = list(st.session_state.get(users_key, []))
                         if username_norm not in selected_users:
                             selected_users.append(username_norm)
-                        st.session_state[f"{key_prefix}_users"] = selected_users
-                        st.session_state[f"{key_prefix}_role_display"] = True
+                        st.session_state[users_key] = selected_users
+                        st.session_state[role_key] = True
+                        st.session_state[persisted_users_key] = selected_users
+                        st.session_state[persisted_role_key] = True
                         st.session_state.pop(f"{key_prefix}_new_publicador_ba", None)
                         st.success(f"Usuario `{username_norm}` agregado como Publicador autorizado.")
                         st.rerun()
@@ -2526,16 +2657,20 @@ def _render_permisos_selector(key_prefix: str, current: List[Dict] | None = None
                         st.error(user_facing_error(e, context="database"))
         else:
             st.caption("Sin publicadores autorizados. Solo Admins veran el catalogo.")
-            st.session_state[f"{key_prefix}_users"] = []
+            st.session_state[users_key] = []
+            st.session_state[persisted_users_key] = []
+            st.session_state[persisted_role_key] = False
 
 
 def _collect_permisos(key_prefix: str) -> List[Dict]:
-    publicador_enabled = bool(st.session_state.get(f"{key_prefix}_role_display", False))
+    publicador_enabled = bool(
+        st.session_state.get(f"{key_prefix}_role_state", st.session_state.get(f"{key_prefix}_role_display", False))
+    )
     if not publicador_enabled:
         return []
     usuarios_lookup = _load_usuarios_lookup()
     users = [
-        u for u in st.session_state.get(f"{key_prefix}_users", [])
+        u for u in st.session_state.get(f"{key_prefix}_users_state", st.session_state.get(f"{key_prefix}_users", []))
         if _is_publicador_activo(u, usuarios_lookup)
     ]
     return [{"tipo": "usuario", "valor": u} for u in users]
@@ -2903,10 +3038,12 @@ def _render_registro_form(
             if catalog_exists(cid):
                 st.error(f"Ya existe un catálogo con ID `{cid}`.")
                 return
+            if not proj_sel.strip():
+                st.error("El proyecto no puede quedar vacío. Vuelve a seleccionar la tabla o refresca el formulario.")
+                return
             _registro_ok = False
             try:
-                if create_project:
-                    ensure_project_exists(proj_sel, proj_name)
+                ensure_project_exists(proj_sel, proj_name or proj_sel)
                 save_catalog_config(
                     catalog_id    = cid,
                     project_id    = proj_sel,
