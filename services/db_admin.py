@@ -148,7 +148,7 @@ def get_mapped_tables() -> set:
     """Retorna un set de (base_datos, tabla_destino) ya registrados en catalogos_config."""
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT base_datos, tabla_destino FROM {TBL_CATALOGOS} WHERE activo = 1")
+            cur.execute(f"SELECT base_datos, tabla_destino FROM {TBL_CATALOGOS}")
             return {(r[0], r[1]) for r in cur.fetchall()}
 
 

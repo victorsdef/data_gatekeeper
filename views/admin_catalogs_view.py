@@ -34,7 +34,7 @@ from services.db_admin import (
 )
 from services.db_writer import get_audit_log
 from utils.error_messages import user_facing_error
-from utils.streamlit_compat import dialog
+from utils.streamlit_compat import dialog, popover
 from services.user_service import (
     get_all_usuarios, update_user_rol, toggle_user_activo,
     export_users_bundle, import_users_bundle, create_or_promote_user,
@@ -301,6 +301,25 @@ def _project_defaults(database: str, table: str | None = None) -> tuple[str, str
     return project_id, project_name
 
 
+def _project_id_from_name(project_name: str, fallback_id: str) -> str:
+    slug = _slugify_id(project_name)
+    if not slug:
+        return fallback_id
+    project_id = f"{_ID_PREFIX}_{slug}"
+    return project_id[:50].strip("_") or fallback_id
+
+
+def _resolved_project_name(key_prefix: str, fallback_name: str = "") -> str:
+    current = str(st.session_state.get(f"{key_prefix}_project_name", "")).strip()
+    if current:
+        return current
+    default_name = str(st.session_state.get(f"{key_prefix}_project_name_default", "")).strip()
+    if default_name:
+        st.session_state[f"{key_prefix}_project_name"] = default_name
+        return default_name
+    return fallback_name.strip()
+
+
 def _catalog_defaults(database: str, table: str) -> tuple[str, str]:
     project_id, _ = _project_defaults(database, table)
     return f"{project_id}__{_slugify_id(table)}", _pretty_label(table)
@@ -423,6 +442,11 @@ def _bulk_field_key(table: str, field: str) -> str:
     return f"adm_bulk_{_slugify_id(table)}_{field}"
 
 
+def _bulk_schema_snapshot(table: str, fallback_schema: Dict | None = None) -> Dict:
+    schema = fallback_schema or st.session_state.get("adm_schema") or {"columnas": []}
+    return _collect_schema(schema, _bulk_table_prefix(table))
+
+
 def _ensure_bulk_table_fields(db: str, table: str) -> Dict[str, str]:
     configs = st.session_state.setdefault("adm_bulk_table_configs", {})
     cfg = configs.get(table, _default_bulk_table_config(db, table))
@@ -441,11 +465,12 @@ def _sync_bulk_form_state(db: str, active_table: str) -> None:
         cid_key = _bulk_field_key(previous_table, "catalog_id")
         nombre_key = _bulk_field_key(previous_table, "nombre")
         desc_key = _bulk_field_key(previous_table, "descripcion")
+        previous_cfg = configs.get(previous_table, _default_bulk_table_config(db, previous_table))
         configs[previous_table] = {
             "catalog_id": st.session_state.get(cid_key, st.session_state.get("adm_bulk_form_cid", "")).strip(),
             "nombre": st.session_state.get(nombre_key, st.session_state.get("adm_bulk_form_nombre", "")).strip(),
             "descripcion": st.session_state.get(desc_key, st.session_state.get("adm_bulk_form_desc", "")).strip(),
-            "schema": configs.get(previous_table, {}).get("schema"),
+            "schema": _bulk_schema_snapshot(previous_table, previous_cfg.get("schema")),
         }
 
     if previous_table != active_table:
@@ -464,11 +489,12 @@ def _persist_bulk_form_state() -> None:
     cid_key = _bulk_field_key(current_table, "catalog_id")
     nombre_key = _bulk_field_key(current_table, "nombre")
     desc_key = _bulk_field_key(current_table, "descripcion")
+    current_cfg = configs.get(current_table, _default_bulk_table_config("", current_table))
     configs[current_table] = {
         "catalog_id": st.session_state.get(cid_key, st.session_state.get("adm_bulk_form_cid", "")).strip(),
         "nombre": st.session_state.get(nombre_key, st.session_state.get("adm_bulk_form_nombre", "")).strip(),
         "descripcion": st.session_state.get(desc_key, st.session_state.get("adm_bulk_form_desc", "")).strip(),
-        "schema": configs.get(current_table, {}).get("schema"),
+        "schema": _bulk_schema_snapshot(current_table, current_cfg.get("schema")),
     }
 
 
@@ -515,23 +541,28 @@ def _render_project_inputs(
 
     # El ID del proyecto es derivado del origen y no debe quedarse con un valor
     # vacío o viejo en session_state al cambiar de tabla.
-    st.session_state[project_id_key] = suggested_id
     if not str(st.session_state.get(project_name_key, "")).strip():
         st.session_state[project_name_key] = suggested_name
+    derived_project_id = _project_id_from_name(
+        str(st.session_state.get(project_name_key, "")).strip(),
+        suggested_id,
+    )
+    st.session_state[project_id_key] = derived_project_id
+    st.session_state[project_id_default_key] = derived_project_id
 
     project_id = st.text_input(
         "ID del proyecto",
-        value=st.session_state.get(project_id_default_key, suggested_id),
         key=project_id_key,
-        help="Se genera automáticamente con la convención dg_au_agd_<origen>.",
+        help="Se genera automáticamente a partir del nombre del proyecto.",
         disabled=True,
     ).strip()
     project_name = st.text_input(
         "Nombre del proyecto",
-        value=st.session_state.get(project_name_default_key, suggested_name),
         key=project_name_key,
         help="Puedes dejar el sugerido o escribir un nombre más amigable.",
     ).strip()
+    if project_name:
+        st.session_state[project_name_default_key] = project_name
     return project_id, project_name, True
 
 
@@ -662,6 +693,8 @@ def render_admin_view() -> None:
         _tab_activos()
     elif active_tab == "Usuarios":
         _tab_usuarios()
+
+    _render_admin_global_dialogs()
 
 
 def _tab_resumen() -> None:
@@ -1225,6 +1258,9 @@ def _tab_registro() -> None:
                 )
             return
 
+        if st.session_state.get("adm_bk_confirm_open"):
+            _confirm_bulk_register_dialog()
+
         if not selected or not db_sel:
             st.info("Cuando selecciones tablas, aquí verás el resumen antes de registrar.")
         else:
@@ -1244,7 +1280,7 @@ def _tab_registro() -> None:
                 bk_proj_name = bk_proj_id
             else:
                 bk_proj_id   = st.session_state.get("adm_bk_project_id", "")
-                bk_proj_name = st.session_state.get("adm_bk_project_name", "")
+                bk_proj_name = _resolved_project_name("adm_bk")
             bk_est  = st.session_state.get("adm_bk_est", "overwrite")
             bk_dest = st.session_state.get("adm_bk_dest", "singlestore")
 
@@ -1280,9 +1316,6 @@ def _tab_registro() -> None:
             if already:
                 st.caption(f"Se omitirán (ya existen): {', '.join(already)}")
 
-            if st.session_state.get("adm_bk_confirm_open"):
-                _confirm_bulk_register_dialog()
-
             if not to_reg:
                 st.info("Todas las tablas seleccionadas ya están registradas.")
             else:
@@ -1309,7 +1342,8 @@ def _tab_registro() -> None:
                             "permisos": _collect_permisos("bk"),
                         }
                         st.session_state["adm_bk_confirm_open"] = True
-                        st.rerun()
+                        _confirm_bulk_register_dialog()
+                        st.stop()
 
 
 # ------------------------------------------------------------------
@@ -1691,13 +1725,19 @@ def _render_bulk_panel(db: str, selected: List[str], mapped: Set[tuple], active_
         ]
         st.markdown("---")
         _bk_est = st.session_state.get("adm_bk_est", "overwrite")
+        quality_open_key = f"{active_key_prefix}_quality_modal_open"
+        ingestion_open_key = f"{active_key_prefix}_ingestion_modal_open"
         _bcal, _bing = st.columns(2)
         with _bcal:
             if st.button("Regla de calidad", use_container_width=True, key=f"btn_calidad_{active_key_prefix}"):
-                _dialog_reglas_calidad(rule_columns, rules_key)
+                st.session_state[ingestion_open_key] = False
+                _open_admin_modal("quality", rule_columns, rules_key, quality_open_key)
         with _bing:
             if st.button("Reglas de ingesta", use_container_width=True, key=f"btn_ingesta_{active_key_prefix}"):
-                _dialog_reglas_ingesta(rule_columns, ingestion_key, _bk_est)
+                st.session_state[quality_open_key] = False
+                st.session_state[ingestion_open_key] = True
+        if st.session_state.get(ingestion_open_key):
+            _render_ingestion_rule_dialog(rule_columns, ingestion_key, _bk_est, ingestion_open_key)
 
     if schema is not None:
         current_schema = _collect_schema(schema, active_key_prefix) if (db, active_table) not in mapped else schema
@@ -1754,7 +1794,8 @@ def _ejecutar_registro_masivo(
     progress = st.progress(0, text="Iniciando registro...")
     ok, skipped, failed = [], [], []
 
-    ensure_project_exists(project_id, project_name or project_id)
+    resolved_project_name = project_name or _resolved_project_name("adm_bk", project_id) or project_id
+    ensure_project_exists(project_id, resolved_project_name)
 
     for i, table in enumerate(tables):
         progress.progress((i + 1) / len(tables), text=f"Procesando `{table}`...")
@@ -1767,7 +1808,7 @@ def _ejecutar_registro_masivo(
                 schema = build_schema_json(rows)
             catalog_id = cfg["catalog_id"]
             if catalog_exists(catalog_id):
-                skipped.append(table)
+                skipped.append(f"{table} (ya existe el catálogo `{catalog_id}`)")
                 continue
             save_catalog_config(
                 catalog_id    = catalog_id,
@@ -2070,6 +2111,7 @@ def _render_quality_rules_dialog(columns: list, state_key: str, open_key: str) -
     _render_rules_editor(columns, state_key)
     if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
         st.session_state[open_key] = False
+        st.session_state.pop("adm_modal_payload", None)
         st.rerun()
 
 
@@ -2082,6 +2124,38 @@ def _render_ingestion_rule_dialog(columns: list, state_key: str, estrategia: str
     if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
         st.session_state[open_key] = False
         st.rerun()
+
+
+def _open_admin_modal(dialog_type: str, columns: list, state_key: str, open_key: str, estrategia: str = "") -> None:
+    st.session_state["adm_modal_payload"] = {
+        "type": dialog_type,
+        "columns": columns,
+        "state_key": state_key,
+        "open_key": open_key,
+        "estrategia": estrategia,
+    }
+    st.session_state[open_key] = True
+    st.rerun()
+
+
+def _render_admin_global_dialogs() -> None:
+    payload = st.session_state.get("adm_modal_payload") or {}
+    if not payload:
+        return
+
+    dialog_type = str(payload.get("type") or "")
+    columns = payload.get("columns", [])
+    state_key = str(payload.get("state_key") or "")
+    open_key = str(payload.get("open_key") or "")
+    estrategia = str(payload.get("estrategia") or "")
+
+    if not open_key or not st.session_state.get(open_key):
+        return
+
+    if dialog_type == "quality":
+        _render_quality_rules_dialog(columns, state_key, open_key)
+    elif dialog_type == "ingestion":
+        _render_ingestion_rule_dialog(columns, state_key, estrategia, open_key)
 
 
 def _render_schema_rule_actions(
@@ -2944,13 +3018,19 @@ def _render_registro_form(
             if str(col.get("nombre", "")).strip()
         ]
         st.markdown("---")
+        quality_open_key = f"{key_prefix}_quality_modal_open"
+        ingestion_open_key = f"{key_prefix}_ingestion_modal_open"
         _rcal, _ring = st.columns(2)
         with _rcal:
             if st.button("Regla de calidad", use_container_width=True, key=f"btn_calidad_{key_prefix}"):
-                _dialog_reglas_calidad(rule_columns, rules_key)
+                st.session_state[ingestion_open_key] = False
+                _open_admin_modal("quality", rule_columns, rules_key, quality_open_key)
         with _ring:
             if st.button("Reglas de ingesta", use_container_width=True, key=f"btn_ingesta_{key_prefix}"):
-                _dialog_reglas_ingesta(rule_columns, ingestion_key, estrategia)
+                st.session_state[quality_open_key] = False
+                st.session_state[ingestion_open_key] = True
+        if st.session_state.get(ingestion_open_key):
+            _render_ingestion_rule_dialog(rule_columns, ingestion_key, estrategia, ingestion_open_key)
 
     current_schema = _collect_schema(schema, key_prefix)
     rule_columns = [
@@ -3397,7 +3477,7 @@ def _tab_activos() -> None:
         st.markdown("##### Catálogos registrados")
         st.caption("Administra proyectos, catálogos, permisos y estado de publicación. Los inactivos no aparecen para publicadores.")
     with head_right:
-        with st.popover("Respaldo / Restaurar", use_container_width=True):
+        with popover("Respaldo / Restaurar", use_container_width=True):
             _render_catalog_backup_dialog()
 
     f_search, f_estado = st.columns([3, 1])
@@ -3737,10 +3817,10 @@ def _tab_usuarios() -> None:
     with header_actions:
         a1, a2 = st.columns(2)
         with a1:
-            with st.popover("Agregar admin BA", use_container_width=True):
+            with popover("Agregar admin BA", use_container_width=True):
                 _render_add_admin_form()
         with a2:
-            with st.popover("Respaldo", use_container_width=True):
+            with popover("Respaldo", use_container_width=True):
                 _render_users_backup_dialog()
 
     ph = st.empty()
