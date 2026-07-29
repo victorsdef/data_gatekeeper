@@ -1748,6 +1748,125 @@ def _render_ingestion_rule_validation(catalog: dict) -> None:
     )
 
 
+def _render_validation_errors_table(errors_df: pd.DataFrame) -> None:
+    if errors_df.empty:
+        st.info("No hay errores para mostrar.")
+        return
+
+    labels = {
+        "Archivo": "Archivo",
+        "Hoja": "Hoja",
+        "Fila origen": "Fila archivo",
+        "Fila": "Fila combinada",
+        "Columna": "Columna",
+        "Valor": "Valor encontrado",
+        "Regla": "Regla",
+        "Detalle": "Detalle",
+    }
+    widths = {
+        "Archivo": 190,
+        "Hoja": 120,
+        "Fila origen": 105,
+        "Fila": 115,
+        "Columna": 220,
+        "Valor": 170,
+        "Regla": 190,
+        "Detalle": 440,
+    }
+    columns = list(errors_df.columns)
+
+    colgroup = "".join(
+        f"<col style='width:{widths.get(column, 160)}px'>"
+        for column in columns
+    )
+    headers = "".join(
+        f"<th>{html.escape(labels.get(column, str(column)))}</th>"
+        for column in columns
+    )
+    rows = []
+    for _, row in errors_df.iterrows():
+        cells = []
+        for column in columns:
+            value = row[column]
+            if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
+                text = "—"
+            else:
+                text = str(value)
+            escaped = html.escape(text)
+            cells.append(f"<td title='{html.escape(text, quote=True)}'>{escaped}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    min_width = sum(widths.get(column, 160) for column in columns)
+    st.markdown(
+        f"""
+        <style>
+          .validation-errors-scroll {{
+            width: min(878px, calc(92vw - 42px)) !important;
+            max-width: min(878px, calc(92vw - 42px)) !important;
+            max-height: 360px;
+            overflow-x: scroll;
+            overflow-y: auto;
+            border: 1px solid #CDD6EE;
+            border-radius: 10px;
+            background: #FFFFFF;
+            box-sizing: border-box;
+            scrollbar-gutter: stable;
+          }}
+          .validation-errors-table {{
+            width: {min_width}px;
+            min-width: {min_width}px;
+            table-layout: fixed;
+            border-collapse: collapse;
+            color: #1C2F6E;
+            font-size: 12px;
+          }}
+          .validation-errors-table th {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            padding: 10px;
+            background: #EEF2FF;
+            border-right: 1px solid #CDD6EE;
+            border-bottom: 1px solid #CDD6EE;
+            text-align: left;
+            white-space: nowrap;
+          }}
+          .validation-errors-table td {{
+            padding: 9px 10px;
+            border-right: 1px solid #E2E8F5;
+            border-bottom: 1px solid #E2E8F5;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }}
+          .validation-errors-table th:last-child,
+          .validation-errors-table td:last-child {{
+            position: sticky;
+            right: 0;
+            border-right: 0;
+            background: #FFFFFF;
+            box-shadow: -5px 0 8px rgba(28, 47, 110, 0.10);
+          }}
+          .validation-errors-table th:last-child {{
+            z-index: 3;
+            background: #EEF2FF;
+          }}
+          .validation-errors-table tr:last-child td {{
+            border-bottom: 0;
+          }}
+        </style>
+        <div class="validation-errors-scroll">
+          <table class="validation-errors-table">
+            <colgroup>{colgroup}</colgroup>
+            <thead><tr>{headers}</tr></thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catalog: dict, in_dialog: bool = False) -> None:
     if result.success:
         st.markdown("""
@@ -1845,34 +1964,9 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
                 table_caption = selected_item["label"]
 
             st.caption(table_caption)
-            st.dataframe(
-                visible_errors,
-                use_container_width=True,
-                height=min(360, 72 + len(visible_errors) * 36),
-                column_config={
-                    "Archivo":     st.column_config.TextColumn("Archivo", width="medium"),
-                    "Hoja":        st.column_config.TextColumn("Hoja", width="small"),
-                    "Fila origen": st.column_config.NumberColumn("Fila archivo", width="small"),
-                    "Fila":        st.column_config.NumberColumn("Fila combinada", width="small"),
-                    "Columna":     st.column_config.TextColumn("Columna", width="medium"),
-                    "Valor":       st.column_config.TextColumn("Valor encontrado"),
-                    "Regla":       st.column_config.TextColumn("Regla"),
-                    "Detalle":     st.column_config.TextColumn("Detalle"),
-                },
-            )
+            _render_validation_errors_table(visible_errors)
         else:
-            st.dataframe(
-                errors_df,
-                use_container_width=True,
-                height=280,
-                column_config={
-                    "Fila":    st.column_config.NumberColumn("Fila", width="small"),
-                    "Columna": st.column_config.TextColumn("Columna", width="medium"),
-                    "Valor":   st.column_config.TextColumn("Valor encontrado"),
-                    "Regla":   st.column_config.TextColumn("Regla"),
-                    "Detalle": st.column_config.TextColumn("Detalle"),
-                },
-            )
+            _render_validation_errors_table(errors_df)
 
         user = st.session_state.get("user_info") or {}
         xlsx_bytes = build_error_report(
