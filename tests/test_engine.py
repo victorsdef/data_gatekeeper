@@ -112,3 +112,45 @@ def test_validate_dataframe_merges_multiple_domain_rules():
 
     assert result.success is True
     assert result.error_count == 0
+
+
+def test_validate_dataframe_accepts_valid_ingestion_rule():
+    df = pd.DataFrame({"periodo": ["202607", "202607"], "codigo": ["1", "2"]})
+    schema = {
+        "columnas": [
+            {"nombre": "periodo", "tipo": "str", "nullable": False},
+            {"nombre": "codigo", "tipo": "int", "nullable": False},
+        ],
+        "regla_ingesta": {
+            "modo": "evitar_duplicados",
+            "campo_referencia": "periodo",
+            "valor_unico_en_archivo": True,
+        },
+    }
+
+    result = validate_dataframe(df, schema)
+
+    assert result.success is True
+    assert result.error_count == 0
+
+
+def test_validate_dataframe_reports_multiple_ingestion_values():
+    df = pd.DataFrame({"periodo": ["202606", "202607"], "codigo": ["1", "2"]})
+    schema = {
+        "columnas": [
+            {"nombre": "periodo", "tipo": "str", "nullable": False},
+            {"nombre": "codigo", "tipo": "int", "nullable": False},
+        ],
+        "regla_ingesta": {
+            "modo": "reemplazar_por_campo",
+            "campo_referencia": "periodo",
+            "valor_unico_en_archivo": True,
+        },
+    }
+
+    result = validate_dataframe(df, schema)
+
+    assert result.success is False
+    assert result.error_count == 1
+    assert result.errors[0].regla == "regla_ingesta"
+    assert result.errors[0].columna == "periodo"

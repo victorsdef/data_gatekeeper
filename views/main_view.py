@@ -299,20 +299,22 @@ def _rules_text(reglas: list) -> str:
     return "; ".join(_rule_detail(r) for r in reglas)
 
 
-def _rules_chips_html(reglas: list) -> str:
+def _rules_count_html(reglas: list) -> str:
     reglas = reglas or []
-    if not reglas:
-        return (
-            '<span class="schema-rule-chip muted" '
-            'title="No tiene reglas adicionales">Sin reglas</span>'
+    count = len(reglas)
+    detail = (
+        "Sin reglas adicionales"
+        if not reglas
+        else " | ".join(
+            f"{index}. {_rule_label(rule)}: {_rule_detail(rule)}"
+            for index, rule in enumerate(reglas, start=1)
         )
-
-    chips = []
-    for regla in reglas:
-        label = html.escape(_rule_label(regla))
-        detail = html.escape(_rule_detail(regla), quote=True)
-        chips.append(f'<span class="schema-rule-chip" title="{detail}">{label}</span>')
-    return "".join(chips)
+    )
+    muted_class = " muted" if not reglas else ""
+    return (
+        f'<span class="schema-rule-count{muted_class}" '
+        f'title="{html.escape(detail, quote=True)}">{count}</span>'
+    )
 
 
 def _schema_rows(cols_schema: list) -> list[dict]:
@@ -344,29 +346,38 @@ def _schema_table_html(cols_schema: list) -> str:
         nombre = html.escape(str(col.get("nombre", "")))
         tipo = html.escape(str(col.get("tipo", "")))
         acepta_vacios = "Si" if bool(col.get("nullable")) else "No"
-        reglas_html = _rules_chips_html(col.get("reglas") or [])
+        reglas_html = _rules_count_html(col.get("reglas") or [])
         rows_html.append(
             "<tr>"
             f"<td class='schema-col-name'><code>{nombre}</code></td>"
             f"<td>{tipo}</td>"
             f"<td>{acepta_vacios}</td>"
-            f"<td>{reglas_html}</td>"
+            f"<td class='schema-rules-cell'>{reglas_html}</td>"
             "</tr>"
         )
 
     return f"""
     <style>
       .schema-table-wrap {{
+        width: min(860px, calc(92vw - 60px)) !important;
+        min-width: 0 !important;
+        max-width: min(860px, calc(92vw - 60px)) !important;
         max-height: 320px;
-        overflow: auto;
+        overflow-x: hidden;
+        overflow-y: auto;
         border: 1px solid #D1D9F0;
         border-radius: 10px;
         background: #F8FAFF;
+        box-sizing: border-box;
       }}
       .schema-table {{
-        width: 100%;
+        width: min(860px, calc(92vw - 60px)) !important;
+        min-width: 0 !important;
+        max-width: min(860px, calc(92vw - 60px)) !important;
+        table-layout: fixed;
         border-collapse: collapse;
         font-size: 12px;
+        box-sizing: border-box;
       }}
       .schema-table th {{
         position: sticky;
@@ -378,15 +389,21 @@ def _schema_table_html(cols_schema: list) -> str:
         text-align: left;
         padding: 8px 10px;
         border-bottom: 1px solid #D1D9F0;
+        box-sizing: border-box;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }}
       .schema-table td {{
         padding: 8px 10px;
         border-bottom: 1px solid #E5E9F5;
         color: #1C2F6E;
         vertical-align: top;
+        box-sizing: border-box;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }}
       .schema-table td.schema-col-name {{
-        width: 40%;
+        width: 54%;
       }}
       .schema-table td.schema-col-name code {{
         display: inline-block;
@@ -410,19 +427,25 @@ def _schema_table_html(cols_schema: list) -> str:
       .schema-table tr:last-child td {{
         border-bottom: 0;
       }}
-      .schema-rule-chip {{
+      .schema-rules-cell {{
+        text-align: center;
+      }}
+      .schema-rule-count {{
         display: inline-flex;
-        margin: 0 4px 4px 0;
-        padding: 2px 8px;
+        align-items: center;
+        justify-content: center;
+        min-width: 28px;
+        height: 24px;
+        padding: 0 8px;
         border-radius: 999px;
         background: #FFF7ED;
         border: 1px solid #FDBA74;
         color: #9A3412;
         font-size: 11px;
-        font-weight: 600;
+        font-weight: 800;
         cursor: help;
       }}
-      .schema-rule-chip.muted {{
+      .schema-rule-count.muted {{
         background: #F3F4F6;
         border-color: #E5E7EB;
         color: #6B7280;
@@ -430,6 +453,12 @@ def _schema_table_html(cols_schema: list) -> str:
     </style>
     <div class="schema-table-wrap">
       <table class="schema-table">
+        <colgroup>
+          <col style="width:54%">
+          <col style="width:14%">
+          <col style="width:18%">
+          <col style="width:14%">
+        </colgroup>
         <thead>
           <tr>
             <th>Columna</th>
@@ -550,6 +579,11 @@ def _render_history_dialog() -> None:
     is_admin = user.get("rol") == "Admin"
     username = user.get("username", "")
     render_history_content(user, is_admin, username)
+    _, close_col, _ = st.columns([1, 2, 1])
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key="btn_close_history_dialog"):
+            st.session_state["history_dialog_open"] = False
+            st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -657,23 +691,30 @@ def _render_catalog_selector_dialog() -> None:
         st.caption("Este catálogo no tiene esquema configurado.")
 
     st.divider()
-    if st.button("Confirmar selección", type="primary", use_container_width=True, key="btn_dialog_confirmar"):
-        prev_id = (st.session_state.get("selected_catalog") or {}).get("catalog_id")
-        if prev_id != cat_sel_id:
-            _reset_upload_flow(remount_uploader=True)
-            st.session_state.current_step = "upload"
-        st.session_state.selected_catalog = {
-            "catalog_id":    cat_sel_id,
-            "nombre":        selected_cat["nombre"],
-            "base_datos":    selected_cat["base_datos"],
-            "tabla_destino": selected_cat["tabla_destino"],
-            "estrategia":    estrategia,
-            "destino":       destino,
-            "schema":        schema,
-        }
-        st.session_state.selected_project_id = proy_sel_id
-        st.session_state.selected_project_name = proy_options.get(proy_sel_id, proy_sel_id)
-        st.rerun()
+    close_col, confirm_col = st.columns(2)
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key="btn_dialog_catalog_close"):
+            st.session_state["catalog_selector_dialog_open"] = False
+            st.rerun()
+    with confirm_col:
+        if st.button("Confirmar selección", type="primary", use_container_width=True, key="btn_dialog_confirmar"):
+            prev_id = (st.session_state.get("selected_catalog") or {}).get("catalog_id")
+            if prev_id != cat_sel_id:
+                _reset_upload_flow(remount_uploader=True)
+                st.session_state.current_step = "upload"
+            st.session_state.selected_catalog = {
+                "catalog_id":    cat_sel_id,
+                "nombre":        selected_cat["nombre"],
+                "base_datos":    selected_cat["base_datos"],
+                "tabla_destino": selected_cat["tabla_destino"],
+                "estrategia":    estrategia,
+                "destino":       destino,
+                "schema":        schema,
+            }
+            st.session_state.selected_project_id = proy_sel_id
+            st.session_state.selected_project_name = proy_options.get(proy_sel_id, proy_sel_id)
+            st.session_state["catalog_selector_dialog_open"] = False
+            st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -683,6 +724,10 @@ def render_main_app() -> None:
     _inject_main_css()
     _render_sidebar()
     _render_main_content()
+    if st.session_state.get("catalog_selector_dialog_open"):
+        _render_catalog_selector_dialog()
+    elif st.session_state.get("history_dialog_open"):
+        _render_history_dialog()
 
 
 _UPLOAD_STATE_KEYS = [
@@ -726,6 +771,8 @@ def _go_to_post_login_home() -> None:
         "selected_project_id",
         "selected_project_name",
         "selected_catalog",
+        "catalog_selector_dialog_open",
+        "history_dialog_open",
     ]:
         st.session_state.pop(key, None)
     _reset_upload_flow(remount_uploader=True)
@@ -827,7 +874,8 @@ def _render_sidebar() -> None:
                 unsafe_allow_html=True,
             )
             if st.button("Cambiar catálogo", use_container_width=True, key="btn_cambiar_catalogo"):
-                _render_catalog_selector_dialog()
+                st.session_state["history_dialog_open"] = False
+                st.session_state["catalog_selector_dialog_open"] = True
         else:
             st.markdown(
                 "<div class='mn-no-catalog' style='padding:12px; background:rgba(255,255,255,0.04);"
@@ -848,7 +896,8 @@ def _render_sidebar() -> None:
                 unsafe_allow_html=True,
             )
             if st.button("Seleccionar catálogo", use_container_width=True, key="btn_sel_catalogo"):
-                _render_catalog_selector_dialog()
+                st.session_state["history_dialog_open"] = False
+                st.session_state["catalog_selector_dialog_open"] = True
 
         _render_sidebar_footer(user)
 
@@ -881,7 +930,8 @@ def _render_sidebar_footer(user: dict) -> None:
         unsafe_allow_html=True,
     )
     if st.button("Historial de cargas", use_container_width=True, key="btn_history"):
-        _render_history_dialog()
+        st.session_state["catalog_selector_dialog_open"] = False
+        st.session_state["history_dialog_open"] = True
 
     _logout_b64 = _nav_icon_b64("usuarios.png")
     _logout_html = (
@@ -1650,7 +1700,6 @@ def _render_validate_step(catalog: dict) -> None:
 
     if result is not None:
         if st.session_state.get("validation_dialog_open", False):
-            st.session_state.validation_dialog_open = False
             try:
                 _render_validation_result_dialog(result, df, catalog)
             except Exception as exc:
@@ -1668,6 +1717,35 @@ def _render_validate_step(catalog: dict) -> None:
                 if st.button("Ver resultado de validación", use_container_width=True, key="btn_show_validation_result"):
                     st.session_state.validation_dialog_open = True
                     st.rerun()
+
+
+def _render_ingestion_rule_validation(catalog: dict) -> None:
+    schema = catalog.get("schema") or {}
+    rule = schema.get("regla_ingesta") or {}
+    if not isinstance(rule, dict):
+        return
+
+    mode = str(rule.get("modo") or "sin_regla").strip().lower()
+    if mode == "sin_regla":
+        return
+
+    mode_labels = {
+        "evitar_duplicados": "Rechazar la carga si ya existe",
+        "reemplazar_por_campo": "Reemplazar datos por campo de control",
+    }
+    mode_label = mode_labels.get(mode, mode)
+    reference_col = str(rule.get("campo_referencia") or "").strip() or "Sin configurar"
+    unique_label = (
+        "un solo valor por archivo"
+        if bool(rule.get("valor_unico_en_archivo", True))
+        else "varios valores permitidos"
+    )
+
+    st.info(
+        f"Regla de ingesta revisada: **{mode_label}**. "
+        f"Campo de control: `{reference_col}`; {unique_label}. "
+        "La existencia del valor en la tabla destino se comprobará al confirmar la carga."
+    )
 
 
 def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catalog: dict, in_dialog: bool = False) -> None:
@@ -1695,34 +1773,23 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
         c1.metric("Filas validadas", f"{result.rows_checked:,}")
         c2.metric("Errores encontrados", "0")
 
+        _render_ingestion_rule_validation(catalog)
+
         st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-        if st.session_state.get("confirm_load_requested"):
-            st.warning(
-                "Confirma la carga solo si revisaste la previsualización y la validación. "
-                f"Se insertarán {result.rows_checked:,} fila(s) en `{catalog['tabla_destino']}` "
-                f"con estrategia `{catalog['estrategia'].upper()}` y se guardará evidencia auditada."
-            )
-            c_yes, c_no = st.columns(2)
-            with c_yes:
-                if st.button("Sí, confirmar carga", type="primary", use_container_width=True, key="btn_confirm_yes"):
+        _, confirm_col, _ = st.columns([1, 2, 1])
+        with confirm_col:
+            if st.button("Confirmar carga →", type="primary", use_container_width=True, key="btn_confirm"):
+                st.session_state.confirm_load_requested = False
+                st.session_state.validation_dialog_open = False
+                st.session_state.current_step = "result"
+                st.rerun()
+        if in_dialog:
+            _, close_col, _ = st.columns([1, 2, 1])
+            with close_col:
+                if st.button("Cerrar", use_container_width=True, key="btn_close_validation_ok"):
                     st.session_state.confirm_load_requested = False
                     st.session_state.validation_dialog_open = False
-                    st.session_state.current_step = "result"
                     st.rerun()
-            with c_no:
-                if st.button("Cancelar", use_container_width=True, key="btn_confirm_no"):
-                    st.session_state.confirm_load_requested = False
-                    st.session_state.validation_dialog_open = True
-                    st.rerun()
-        else:
-            if st.button("Confirmar carga →", type="primary", use_container_width=True, key="btn_confirm"):
-                st.session_state.confirm_load_requested = True
-                st.session_state.validation_dialog_open = True
-                st.rerun()
-        if in_dialog and st.button("Cerrar", use_container_width=True, key="btn_close_validation_ok"):
-            st.session_state.confirm_load_requested = False
-            st.session_state.validation_dialog_open = False
-            st.rerun()
     else:
         st.markdown(f"""
         <div style="
@@ -1741,6 +1808,8 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        _render_ingestion_rule_validation(catalog)
 
         st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
         st.markdown("**Consola de errores**")
@@ -1812,16 +1881,21 @@ def _render_validation_results(result: ValidationResult, df: pd.DataFrame, catal
             filename=st.session_state.get("uploaded_name", "archivo"),
             username=user.get("username", "—"),
         )
-        st.download_button(
-            label="Descargar reporte de errores (.xlsx)",
-            data=xlsx_bytes,
-            file_name="reporte_errores_validacion.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-        if in_dialog and st.button("Cerrar", use_container_width=True, key="btn_close_validation_error"):
-            st.session_state.validation_dialog_open = False
-            st.rerun()
+        _, download_col, _ = st.columns([1, 2, 1])
+        with download_col:
+            st.download_button(
+                label="Descargar reporte de errores (.xlsx)",
+                data=xlsx_bytes,
+                file_name="reporte_errores_validacion.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        if in_dialog:
+            _, close_col, _ = st.columns([1, 2, 1])
+            with close_col:
+                if st.button("Cerrar", use_container_width=True, key="btn_close_validation_error"):
+                    st.session_state.validation_dialog_open = False
+                    st.rerun()
         validation_zip_path = st.session_state.get("validation_failure_zip_path")
         if validation_zip_path:
             st.info(f"Archivo fallido guardado en auditoría: `{validation_zip_path}`")
@@ -2082,7 +2156,8 @@ def _render_success_result(catalog: dict, load_result: dict, filename: str, user
             st.rerun()
     with action_history:
         if st.button("Ver historial", key="btn_result_history", use_container_width=True):
-            _render_history_dialog()
+            st.session_state["catalog_selector_dialog_open"] = False
+            st.session_state["history_dialog_open"] = True
 
 
 def _is_ingestion_rule_failure(load_result: dict) -> bool:

@@ -19,7 +19,13 @@ def dialog(title: str, width: str = "small") -> Callable:
                 "medium": "720px",
                 "large": "920px",
             }
+            half_width_map = {
+                "small": "260px",
+                "medium": "360px",
+                "large": "460px",
+            }
             modal_width = width_map.get(width, "720px")
+            modal_half_width = half_width_map.get(width, "360px")
             with st.container():
                 st.markdown(
                     f"""
@@ -35,19 +41,53 @@ def dialog(title: str, width: str = "small") -> Callable:
                             > div:first-child .compat-modal-anchor
                         ) {{
                             position: fixed !important;
-                            top: 50% !important;
-                            left: 50% !important;
-                            transform: translate(-50%, -50%) !important;
+                            top: 6vh !important;
+                            left: max(4vw, calc(50% - {modal_half_width})) !important;
+                            transform: none !important;
                             z-index: 999990 !important;
                             width: min({modal_width}, 92vw) !important;
+                            min-width: 0 !important;
                             height: auto !important;
                             max-height: 88vh !important;
                             overflow-y: auto !important;
+                            overflow-x: hidden !important;
                             background: #FFFFFF !important;
                             border-radius: 18px !important;
                             box-shadow: 0 26px 80px rgba(15, 23, 42, 0.24) !important;
                             border: 1px solid rgba(28, 47, 110, 0.12) !important;
                             padding: 18px 20px 16px !important;
+                            box-sizing: border-box !important;
+                        }}
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) > div,
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) [data-testid="stHorizontalBlock"] {{
+                            width: 100% !important;
+                            min-width: 0 !important;
+                            max-width: 100% !important;
+                            box-sizing: border-box !important;
+                        }}
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) [data-testid="stElementContainer"],
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) [data-testid="stMarkdownContainer"],
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) .element-container {{
+                            width: 100% !important;
+                            min-width: 0 !important;
+                            max-width: 100% !important;
+                            box-sizing: border-box !important;
+                        }}
+                        div[data-testid="stVerticalBlock"]:has(
+                            > div:first-child .compat-modal-anchor
+                        ) [data-testid="column"] {{
+                            min-width: 0 !important;
+                            max-width: 100% !important;
                             box-sizing: border-box !important;
                         }}
                         .compat-modal-anchor {{

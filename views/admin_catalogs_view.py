@@ -684,6 +684,10 @@ def render_admin_view() -> None:
 
     if active_tab != "Catálogos activos":
         st.session_state.pop("adm_catalog_dialog", None)
+        st.session_state["adm_backup_dialog_open"] = False
+    if active_tab != "Usuarios":
+        st.session_state["usr_add_admin_dialog_open"] = False
+        st.session_state["usr_backup_dialog_open"] = False
 
     if active_tab == "Resumen":
         _tab_resumen()
@@ -833,6 +837,152 @@ def _tab_resumen() -> None:
         st.dataframe(by_project, use_container_width=True, hide_index=True)
 
 
+def _build_step2_review(db: str, selected: List[str], mapped: Set[tuple]) -> Dict:
+    to_register = [table for table in selected if (db, table) not in mapped]
+    configs = st.session_state.get("adm_bulk_table_configs", {})
+
+    project_mode = st.session_state.get("adm_bk_project_mode", "Crear o usar sugerido")
+    if project_mode == "Usar proyecto existente":
+        project_id = str(st.session_state.get("adm_bk_project_existing", "") or "").strip()
+        project_name = project_id
+    else:
+        project_id = str(st.session_state.get("adm_bk_project_id", "") or "").strip()
+        project_name = _resolved_project_name("adm_bk")
+    project_errors = _validate_project_fields(project_id, project_name)
+
+    data_errors: List[str] = []
+    column_errors: List[str] = []
+    total_columns = 0
+    for table in to_register:
+        cfg = configs.get(table)
+        if not cfg:
+            data_errors.append(f"`{table}` no tiene configurados sus datos.")
+            column_errors.append(f"`{table}` no tiene configuradas sus columnas.")
+            continue
+
+        catalog_id = str(cfg.get("catalog_id", "") or "").strip()
+        catalog_name = str(cfg.get("nombre", "") or "").strip()
+        if not catalog_id:
+            data_errors.append(f"`{table}` no tiene ID de catálogo.")
+        elif not re.match(r"^[a-z0-9_]+$", catalog_id):
+            data_errors.append(f"`{table}` tiene un ID de catálogo inválido.")
+        if not catalog_name:
+            data_errors.append(f"`{table}` no tiene nombre legible.")
+
+        schema = cfg.get("schema") or {}
+        columns = schema.get("columnas", []) if isinstance(schema, dict) else []
+        total_columns += len(columns)
+        for error in _validate_schema_definition(schema):
+            column_errors.append(f"`{table}`: {error}")
+
+    permissions_enabled = bool(
+        st.session_state.get("bk_role_state", st.session_state.get("bk_role_display", False))
+    )
+    permissions = _collect_permisos("bk")
+    permission_errors: List[str] = []
+    if permissions_enabled and not permissions:
+        permission_errors.append("Selecciona al menos un publicador autorizado o desactiva Publicadores.")
+    permission_detail = (
+        f"{len(permissions)} publicador(es) autorizado(s)"
+        if permissions_enabled
+        else "Solo administradores"
+    )
+
+    strategy = str(st.session_state.get("adm_bk_est", "") or "").strip()
+    destination = str(st.session_state.get("adm_bk_dest", "") or "").strip()
+    load_errors: List[str] = []
+    if strategy not in _ESTRATEGIAS:
+        load_errors.append("Selecciona una estrategia de carga válida.")
+    if destination not in _DESTINOS:
+        load_errors.append("Selecciona un destino de carga válido.")
+    if not to_register:
+        data_errors.append("No hay tablas pendientes para registrar.")
+
+    sections = [
+        {
+            "name": "Proyecto",
+            "detail": f"{project_name or 'Sin nombre'} · {project_id or 'Sin ID'}",
+            "errors": project_errors,
+        },
+        {
+            "name": "Datos",
+            "detail": f"{len(to_register)} tabla(s) pendiente(s) en {db}",
+            "errors": data_errors,
+        },
+        {
+            "name": "Columnas",
+            "detail": f"{total_columns} columna(s) configurada(s)",
+            "errors": column_errors,
+        },
+        {
+            "name": "Permisos",
+            "detail": permission_detail,
+            "errors": permission_errors,
+        },
+        {
+            "name": "Carga",
+            "detail": f"{strategy.upper() or 'SIN ESTRATEGIA'} → {destination.upper() or 'SIN DESTINO'}",
+            "errors": load_errors,
+        },
+    ]
+    return {
+        "sections": sections,
+        "ready": not any(section["errors"] for section in sections),
+    }
+
+
+@dialog("Revisar configuración", width="medium")
+def _confirm_step2_review_dialog() -> None:
+    review = st.session_state.get("adm_step2_review_payload") or {}
+    sections = review.get("sections", [])
+    ready = bool(review.get("ready"))
+
+    st.caption(
+        "Revisa los cinco apartados antes de pasar al Paso 3. "
+        "La configuración todavía no será registrada."
+    )
+    for section in sections:
+        errors = section.get("errors", [])
+        status = "Revisar" if errors else "Listo"
+        color = "#B45309" if errors else "#15803D"
+        background = "#FFF7ED" if errors else "#F0FDF4"
+        border = "#FED7AA" if errors else "#BBF7D0"
+        st.markdown(
+            f'<div style="padding:10px 12px;margin-bottom:8px;border-radius:9px;'
+            f'background:{background};border:1px solid {border};">'
+            f'<div style="display:flex;justify-content:space-between;gap:12px;">'
+            f'<b style="color:#1C2F6E;">{html_escape(str(section.get("name", "")))}</b>'
+            f'<span style="color:{color};font-size:12px;font-weight:700;">{status}</span>'
+            f'</div><div style="font-size:12px;color:#6B7280;margin-top:3px;">'
+            f'{html_escape(str(section.get("detail", "")))}</div></div>',
+            unsafe_allow_html=True,
+        )
+        for error in errors:
+            st.warning(error)
+
+    if ready:
+        st.info("Todo está completo. ¿Estás seguro de continuar al Paso 3?")
+    else:
+        st.error("Corrige los apartados indicados antes de continuar.")
+
+    cancel_col, continue_col = st.columns(2)
+    with cancel_col:
+        if st.button("Volver a revisar", use_container_width=True, key="adm_step2_review_cancel"):
+            st.session_state["adm_step2_review_open"] = False
+            st.rerun()
+    with continue_col:
+        if st.button(
+            "Sí, continuar",
+            type="primary",
+            use_container_width=True,
+            key="adm_step2_review_confirm",
+            disabled=not ready,
+        ):
+            st.session_state["adm_step2_review_open"] = False
+            st.session_state.adm_reg_subtab_next = "Revisión"
+            st.rerun()
+
+
 @dialog("Confirmar registro de tablas", width="small")
 def _confirm_bulk_register_dialog() -> None:
     params = st.session_state.get("adm_bk_register_params", {})
@@ -877,6 +1027,8 @@ def _reset_catalog_registration_flow() -> None:
         "adm_bk_do_register",
         "adm_bk_register_params",
         "adm_bk_is_ready",
+        "adm_step2_review_open",
+        "adm_step2_review_payload",
         "adm_reg_subtab",
         "adm_reg_subtab_next",
         "adm_schema",
@@ -1229,15 +1381,20 @@ def _tab_registro() -> None:
                 st.rerun()
         if selected and db_sel:
             with _c_fwd:
-                _bk_ready = st.session_state.get("adm_bk_is_ready", False)
                 if st.button(
                     "Continuar →", type="primary",
                     use_container_width=True, key="adm_step2_continue",
-                    disabled=not _bk_ready,
                 ):
                     _persist_bulk_form_state()
-                    st.session_state.adm_reg_subtab_next = "Revisión"
-                    st.rerun()
+                    st.session_state["adm_step2_review_payload"] = _build_step2_review(
+                        db_sel,
+                        selected,
+                        mapped,
+                    )
+                    st.session_state["adm_step2_review_open"] = True
+
+        if st.session_state.get("adm_step2_review_open"):
+            _confirm_step2_review_dialog()
 
     # ── Sub-tab: Revisión ──────────────────────────────────────────
     elif active_subtab == "Revisión":
@@ -1392,9 +1549,10 @@ def _render_step_indicator(current: int) -> None:
                 f'</div>',
                 unsafe_allow_html=True,
             )
-            if st.button(" ", use_container_width=True, key=f"step_goto_{current}_{idx}"):
-                st.session_state.adm_reg_subtab_next = tab
-                st.rerun()
+            if idx < current:
+                if st.button(" ", use_container_width=True, key=f"step_goto_{current}_{idx}"):
+                    st.session_state.adm_reg_subtab_next = tab
+                    st.rerun()
 
 
 # ------------------------------------------------------------------
@@ -2083,22 +2241,23 @@ def _render_ingestion_rule_form(columns: list, state_key: str, estrategia: str) 
         st.warning("No hay columnas disponibles para usar como campo referencial.")
         return
 
-    current_field = str(st.session_state.get(f"{state_key}_field") or "")
-    if not current_field and column_names:
-        st.session_state[f"{state_key}_field"] = column_names[0]
-        current_field = column_names[0]
-    field_index = column_names.index(current_field) if current_field in column_names else 0
+    field_key = f"{state_key}_field"
+    current_field = str(st.session_state.get(field_key) or "")
+    if current_field not in column_names:
+        st.session_state[field_key] = column_names[0]
     st.selectbox(
         "Campo de control",
         column_names,
-        index=field_index,
-        key=f"{state_key}_field",
+        key=field_key,
         help="Campo que identifica el bloque de datos. Ejemplos: fecha_proceso, periodo, fecha_corte, codigo_lote o version.",
     )
+
+    single_key = f"{state_key}_single"
+    if single_key not in st.session_state:
+        st.session_state[single_key] = True
     st.checkbox(
         "El archivo debe traer un solo valor para este campo",
-        value=bool(st.session_state.get(f"{state_key}_single", True)),
-        key=f"{state_key}_single",
+        key=single_key,
         help="Recomendado cuando el archivo corresponde a una sola fecha, periodo, lote o corte.",
     )
 
@@ -2109,10 +2268,12 @@ def _render_quality_rules_dialog(columns: list, state_key: str, open_key: str) -
         "Configura reglas por columna. Estas reglas se validan en memoria antes de cargar datos."
     )
     _render_rules_editor(columns, state_key)
-    if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
-        st.session_state[open_key] = False
-        st.session_state.pop("adm_modal_payload", None)
-        st.rerun()
+    _, close_col, _ = st.columns([1, 2, 1])
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key=f"{open_key}_close"):
+            st.session_state[open_key] = False
+            st.session_state.pop("adm_modal_payload", None)
+            st.rerun()
 
 
 @dialog("Accion de ingesta", width="large")
@@ -2247,6 +2408,19 @@ def _add_quality_rule(state_key: str, column_name: str, rule_type: str) -> None:
     st.session_state[state_key] = rules
 
 
+def _render_add_quality_rule_button(state_key: str, column_name: str, rule_type: str) -> None:
+    _, button_col, _ = st.columns([1, 2, 1])
+    with button_col:
+        st.button(
+            "+ Agregar",
+            key=f"{state_key}_add_btn",
+            type="primary",
+            use_container_width=True,
+            on_click=_add_quality_rule,
+            args=(state_key, column_name, rule_type),
+        )
+
+
 def _render_rules_editor(columns: list, state_key: str) -> None:
     """Editor visual de reglas de calidad por columna. state_key → {col_name: [reglas]}."""
     if not columns:
@@ -2303,8 +2477,7 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
         unsafe_allow_html=True,
     )
     if col_rules:
-        scroll_h = min(220, 60 + len(col_rules) * 52)
-        with st.container(height=scroll_h, border=False):
+        with st.container():
             for i, regla in enumerate(col_rules):
                 c1, c2 = st.columns([8, 1])
                 with c1:
@@ -2351,26 +2524,12 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
             key=f"{state_key}_new_isin",
             placeholder="Ej: C, D, N",
         )
-        st.button(
-            "+ Agregar",
-            key=f"{state_key}_add_btn",
-            type="primary",
-            use_container_width=True,
-            on_click=_add_quality_rule,
-            args=(state_key, sel_col, "isin"),
-        )
+        _render_add_quality_rule_button(state_key, sel_col, "isin")
 
     elif tipo_sel in ("gte", "lte"):
         label = "Valor mínimo (≥)" if tipo_sel == "gte" else "Valor máximo (≤)"
         st.number_input(label, key=f"{state_key}_new_num", value=0.0)
-        st.button(
-            "+ Agregar",
-            key=f"{state_key}_add_btn",
-            type="primary",
-            use_container_width=True,
-            on_click=_add_quality_rule,
-            args=(state_key, sel_col, tipo_sel),
-        )
+        _render_add_quality_rule_button(state_key, sel_col, tipo_sel)
 
     elif tipo_sel == "min_length":
         st.number_input(
@@ -2378,26 +2537,12 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
             key=f"{state_key}_new_minlen",
             value=1, min_value=1, step=1,
         )
-        st.button(
-            "+ Agregar",
-            key=f"{state_key}_add_btn",
-            type="primary",
-            use_container_width=True,
-            on_click=_add_quality_rule,
-            args=(state_key, sel_col, "min_length"),
-        )
+        _render_add_quality_rule_button(state_key, sel_col, "min_length")
 
     elif tipo_sel == "str_length":
         st.number_input("Longitud mínima", key=f"{state_key}_new_slmin", value=1, min_value=0, step=1)
         st.number_input("Longitud máxima", key=f"{state_key}_new_slmax", value=50, min_value=1, step=1)
-        st.button(
-            "+ Agregar",
-            key=f"{state_key}_add_btn",
-            type="primary",
-            use_container_width=True,
-            on_click=_add_quality_rule,
-            args=(state_key, sel_col, "str_length"),
-        )
+        _render_add_quality_rule_button(state_key, sel_col, "str_length")
 
     elif tipo_sel == "regex":
         st.text_input(
@@ -2405,14 +2550,7 @@ def _render_rules_editor(columns: list, state_key: str) -> None:
             key=f"{state_key}_new_regex",
             placeholder=r"^[A-Z0-9_-]+$",
         )
-        st.button(
-            "+ Agregar",
-            key=f"{state_key}_add_btn",
-            type="primary",
-            use_container_width=True,
-            on_click=_add_quality_rule,
-            args=(state_key, sel_col, "regex"),
-        )
+        _render_add_quality_rule_button(state_key, sel_col, "regex")
 
 
 def _render_schema_editor(schema: dict, key_prefix: str, show_rule_actions: bool = True) -> None:
@@ -3418,9 +3556,17 @@ def _render_activate_catalog_dialog(cat: dict) -> None:
             st.rerun()
 
 
+@dialog("Respaldo / Restaurar", width="medium")
 def _render_catalog_backup_dialog() -> None:
     st.caption("Exporta la configuración actual o restaura un backup JSON generado por el sistema.")
-    if st.button("Preparar backup JSON", use_container_width=True, key="adm_export_bundle_modal"):
+    _, prepare_col, _ = st.columns([1, 2, 1])
+    with prepare_col:
+        prepare_backup = st.button(
+            "Preparar backup JSON",
+            use_container_width=True,
+            key="adm_export_bundle_modal",
+        )
+    if prepare_backup:
         try:
             st.session_state["adm_export_bundle_payload"] = export_catalogs_bundle()
             st.success("Backup preparado.")
@@ -3428,13 +3574,15 @@ def _render_catalog_backup_dialog() -> None:
             st.error(user_facing_error(e, context="database"))
     payload = st.session_state.get("adm_export_bundle_payload")
     if payload:
-        st.download_button(
-            "Descargar backup",
-            data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name="catalogos_config_backup.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+        _, download_col, _ = st.columns([1, 2, 1])
+        with download_col:
+            st.download_button(
+                "Descargar backup",
+                data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="catalogos_config_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
     st.divider()
     uploaded_bundle = st.file_uploader(
         "Restaurar configuración desde backup JSON",
@@ -3447,7 +3595,16 @@ def _render_catalog_backup_dialog() -> None:
         key="adm_import_overwrite_modal",
         help="Si está activo, actualiza configuración y permisos de catálogos ya registrados.",
     )
-    if uploaded_bundle is not None and st.button("Importar backup", use_container_width=True, key="adm_import_bundle_btn_modal"):
+    import_backup = False
+    if uploaded_bundle is not None:
+        _, import_col, _ = st.columns([1, 2, 1])
+        with import_col:
+            import_backup = st.button(
+                "Importar backup",
+                use_container_width=True,
+                key="adm_import_bundle_btn_modal",
+            )
+    if uploaded_bundle is not None and import_backup:
         _import_ok = False
         try:
             bundle = json.loads(uploaded_bundle.getvalue().decode("utf-8"))
@@ -3461,24 +3618,29 @@ def _render_catalog_backup_dialog() -> None:
             st.error("No se pudo importar el backup. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
         if _import_ok:
             st.rerun()
-    if st.button("Cerrar", use_container_width=True, key="adm_backup_close"):
-        st.rerun()
+    _, close_col, _ = st.columns([1, 2, 1])
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key="adm_backup_close"):
+            st.session_state["adm_backup_dialog_open"] = False
+            st.rerun()
 
 
 # ------------------------------------------------------------------
 # Tab 2: Catálogos registrados
 # ------------------------------------------------------------------
 def _tab_activos() -> None:
-    for _stale_key in ("adm_backup_dialog_open", "adm_project_dialog"):
-        st.session_state.pop(_stale_key, None)
+    st.session_state.pop("adm_project_dialog", None)
 
     head_left, head_right = st.columns([4, 1])
     with head_left:
         st.markdown("##### Catálogos registrados")
         st.caption("Administra proyectos, catálogos, permisos y estado de publicación. Los inactivos no aparecen para publicadores.")
     with head_right:
-        with popover("Respaldo / Restaurar", use_container_width=True):
-            _render_catalog_backup_dialog()
+        if st.button("Respaldo / Restaurar", use_container_width=True, key="adm_backup_open"):
+            st.session_state["adm_backup_dialog_open"] = True
+
+    if st.session_state.get("adm_backup_dialog_open"):
+        _render_catalog_backup_dialog()
 
     f_search, f_estado = st.columns([3, 1])
     with f_search:
@@ -3721,11 +3883,13 @@ def _render_add_admin_form() -> None:
             key="usr_add_admin_username",
         )
 
-        submitted = st.form_submit_button(
-            "Guardar como Admin",
-            type="primary",
-            use_container_width=True,
-        )
+        _, submit_col, _ = st.columns([1, 2, 1])
+        with submit_col:
+            submitted = st.form_submit_button(
+                "Guardar como Admin",
+                type="primary",
+                use_container_width=True,
+            )
 
     if not submitted:
         return
@@ -3756,12 +3920,31 @@ def _render_add_admin_form() -> None:
     except Exception as e:
         st.error(user_facing_error(e, context="database"))
     if _admin_ok:
+        st.session_state["usr_add_admin_dialog_open"] = False
         st.rerun()
 
 
+@dialog("Agregar admin BA", width="small")
+def _render_add_admin_dialog() -> None:
+    _render_add_admin_form()
+    _, close_col, _ = st.columns([1, 2, 1])
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key="usr_add_admin_close"):
+            st.session_state["usr_add_admin_dialog_open"] = False
+            st.rerun()
+
+
+@dialog("Respaldo de usuarios", width="medium")
 def _render_users_backup_dialog() -> None:
     st.caption("Exporta usuarios, roles y estado activo/inactivo, o restaura un backup JSON.")
-    if st.button("Preparar backup usuarios", use_container_width=True, key="usr_export_bundle_modal"):
+    _, prepare_col, _ = st.columns([1, 2, 1])
+    with prepare_col:
+        prepare_backup = st.button(
+            "Preparar backup usuarios",
+            use_container_width=True,
+            key="usr_export_bundle_modal",
+        )
+    if prepare_backup:
         try:
             st.session_state["usr_export_bundle_payload"] = export_users_bundle()
             st.success("Backup de usuarios preparado.")
@@ -3769,13 +3952,15 @@ def _render_users_backup_dialog() -> None:
             st.error(user_facing_error(e, context="database"))
     users_payload = st.session_state.get("usr_export_bundle_payload")
     if users_payload:
-        st.download_button(
-            "Descargar backup usuarios",
-            data=json.dumps(users_payload, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name="usuarios_backup.json",
-            mime="application/json",
-            use_container_width=True,
-        )
+        _, download_col, _ = st.columns([1, 2, 1])
+        with download_col:
+            st.download_button(
+                "Descargar backup usuarios",
+                data=json.dumps(users_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="usuarios_backup.json",
+                mime="application/json",
+                use_container_width=True,
+            )
     st.divider()
     uploaded_users = st.file_uploader(
         "Restaurar usuarios desde backup JSON",
@@ -3788,7 +3973,16 @@ def _render_users_backup_dialog() -> None:
         key="usr_import_overwrite_modal",
         help="Si está activo, actualiza rol, nombre, correo y estado de usuarios ya existentes.",
     )
-    if uploaded_users is not None and st.button("Importar usuarios", use_container_width=True, key="usr_import_bundle_btn_modal"):
+    import_users = False
+    if uploaded_users is not None:
+        _, import_col, _ = st.columns([1, 2, 1])
+        with import_col:
+            import_users = st.button(
+                "Importar usuarios",
+                use_container_width=True,
+                key="usr_import_bundle_btn_modal",
+            )
+    if uploaded_users is not None and import_users:
         _users_import_ok = False
         try:
             bundle = json.loads(uploaded_users.getvalue().decode("utf-8"))
@@ -3802,8 +3996,11 @@ def _render_users_backup_dialog() -> None:
             st.error("No se pudo importar el backup de usuarios. Verifica que sea un JSON válido exportado por Data Gatekeeper.")
         if _users_import_ok:
             st.rerun()
-    if st.button("Cerrar", use_container_width=True, key="usr_backup_close"):
-        st.rerun()
+    _, close_col, _ = st.columns([1, 2, 1])
+    with close_col:
+        if st.button("Cerrar", use_container_width=True, key="usr_backup_close"):
+            st.session_state["usr_backup_dialog_open"] = False
+            st.rerun()
 
 
 def _tab_usuarios() -> None:
@@ -3817,11 +4014,18 @@ def _tab_usuarios() -> None:
     with header_actions:
         a1, a2 = st.columns(2)
         with a1:
-            with popover("Agregar admin BA", use_container_width=True):
-                _render_add_admin_form()
+            if st.button("Agregar admin BA", use_container_width=True, key="usr_add_admin_open"):
+                st.session_state["usr_backup_dialog_open"] = False
+                st.session_state["usr_add_admin_dialog_open"] = True
         with a2:
-            with popover("Respaldo", use_container_width=True):
-                _render_users_backup_dialog()
+            if st.button("Respaldo", use_container_width=True, key="usr_backup_open"):
+                st.session_state["usr_add_admin_dialog_open"] = False
+                st.session_state["usr_backup_dialog_open"] = True
+
+    if st.session_state.get("usr_add_admin_dialog_open"):
+        _render_add_admin_dialog()
+    elif st.session_state.get("usr_backup_dialog_open"):
+        _render_users_backup_dialog()
 
     ph = st.empty()
     ph.markdown(_skeleton_html(5), unsafe_allow_html=True)

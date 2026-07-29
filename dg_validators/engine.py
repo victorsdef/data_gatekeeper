@@ -143,6 +143,8 @@ def validate_dataframe(df: pd.DataFrame, schema_config: Dict[str, Any]) -> Valid
     # ------------------------------------------------------------------
     # Paso 2: Validación de tipos y reglas (pandas)
     # ------------------------------------------------------------------
+    result.errors.extend(_validate_ingestion_rule(df, schema_config))
+
     try:
         columnas_def = schema_config.get("columnas", [])
         for col_def in columnas_def:
@@ -200,6 +202,85 @@ def validate_dataframe(df: pd.DataFrame, schema_config: Dict[str, Any]) -> Valid
         )
 
     return result
+
+
+def _validate_ingestion_rule(
+    df: pd.DataFrame,
+    schema_config: Dict[str, Any],
+) -> List[ValidationError]:
+    rule = schema_config.get("regla_ingesta") or {}
+    if not isinstance(rule, dict):
+        return []
+
+    mode = str(rule.get("modo") or "sin_regla").strip().lower()
+    if mode == "sin_regla":
+        return []
+
+    if mode not in {"evitar_duplicados", "reemplazar_por_campo"}:
+        return [
+            ValidationError(
+                fila=0,
+                columna="general",
+                valor=mode,
+                regla="regla_ingesta",
+                detalle="La regla de ingesta configurada no es valida.",
+            )
+        ]
+
+    reference_col = str(rule.get("campo_referencia") or "").strip()
+    if not reference_col:
+        return [
+            ValidationError(
+                fila=0,
+                columna="general",
+                valor="--",
+                regla="regla_ingesta",
+                detalle="La regla de ingesta requiere un campo de control.",
+            )
+        ]
+
+    if reference_col not in df.columns:
+        return [
+            ValidationError(
+                fila=0,
+                columna=reference_col,
+                valor="--",
+                regla="regla_ingesta",
+                detalle=f"El campo de control '{reference_col}' no existe en el archivo.",
+            )
+        ]
+
+    series = df[reference_col]
+    as_text = series.astype("string").str.strip()
+    non_blank = series[series.notna() & as_text.fillna("").ne("")]
+    values = non_blank.drop_duplicates().tolist()
+
+    if not values:
+        return [
+            ValidationError(
+                fila=0,
+                columna=reference_col,
+                valor="--",
+                regla="regla_ingesta",
+                detalle=f"El campo de control '{reference_col}' no contiene valores.",
+            )
+        ]
+
+    if bool(rule.get("valor_unico_en_archivo", True)) and len(values) != 1:
+        return [
+            ValidationError(
+                fila=0,
+                columna=reference_col,
+                valor=len(values),
+                regla="regla_ingesta",
+                detalle=(
+                    f"El campo de control '{reference_col}' debe tener un solo "
+                    f"valor en el archivo y se encontraron {len(values)}."
+                ),
+            )
+        ]
+
+    return []
 
 
 def _coerce_series(series: pd.Series, tipo_str: str) -> Tuple[pd.Series, pd.Series, str]:
